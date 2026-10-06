@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Packaging
+build/
+dist/
+*.egg-info/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+
+# NEST / generated data
+*.h5
+*.dat
+*.gdf
+*.events
+*.log
+
+# Local configuration
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db

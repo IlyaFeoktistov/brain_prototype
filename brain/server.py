@@ -47,6 +47,8 @@ class BrainHost:
         self.busy = False
         # Спит во время тишины (между порциями сна тоже).
         self.dozing = False
+        # Сколько проигрываний осталось в текущем сне.
+        self.sleep_left = 0
         # Очередь фонового чтения: мозг читает порциями между сообщениями.
         self.reading: deque = deque()
         # Когда мозг последний раз заговорил сам и думал в тишине.
@@ -277,27 +279,46 @@ class BrainHost:
                 elif self._should_wander(last_activity):
                     self._wander()
 
-                # Если есть невыученные впечатления — спать порциями,
-                # чтобы новое сообщение будило за секунду-две.
-                if self._should_sleep(last_activity):
+                # Устал и тихо — засыпает надолго: длительность сна задаётся
+                # при засыпании (N проигрываний на каждое новое впечатление).
+                if not self.dozing and self._should_fall_asleep(last_activity):
+                    language = self.mind.language
+                    self.sleep_left = language.sleep_pressure * self.mind.cfg.replays_per_episode
+                    self._out(
+                        f"Засыпаю: новых впечатлений {language.sleep_pressure}, "
+                        f"сон на {self.sleep_left} проигрываний",
+                        "info",
+                    )
                     self._doze(True)
+
+                # Спит порциями, чтобы сообщение будило за секунду-две.
+                if self.dozing:
+                    portion = min(self.mind.cfg.sleep_batch, self.sleep_left)
                     self._execute(
-                        lambda session: session.language.sleep(self.mind.cfg.sleep_batch),
+                        lambda session: session.language.sleep(portion),
                         Future(),
                         None,
                         quiet=True,
                     )
-                    # Между порциями сна мозг остаётся спящим.
+                    self.sleep_left -= portion
+                    # Между порциями мозг остаётся спящим.
                     self.mind.language.emotions.sleeping = True
-                elif self.dozing:
-                    self._doze(False)
+
+                    if self.sleep_left <= 0:
+                        self._doze(False)
+                        self.mind.language.emotions.sleepy = False
+                        self._out("Выспался: новые впечатления закреплены", "info")
+                        self.session.autosave(force=True)
                 continue
 
             if job is None:
                 break
 
-            # Сообщение будит мозг.
-            self._doze(False)
+            # Сообщение будит мозг; недоспанное останется давлением сна.
+            if self.dozing:
+                self._doze(False)
+                self.sleep_left = 0
+                self._out("Проснулся (разбудили)", "info")
             last_activity = time.time()
             self._execute(*job)
 
@@ -411,14 +432,15 @@ class BrainHost:
             self.mind.language.dialog.append({"who": "мозг", "text": text, "initiative": reason})
             self._emit_emotion()
 
-    def _should_sleep(self, last_activity: float) -> bool:
+    def _should_fall_asleep(self, last_activity: float) -> bool:
+        """Засыпает, только когда устал (накопились впечатления) и тихо."""
+
         cfg = self.mind.cfg
-        language = self.mind.language
         return (
             not self.reading
             and cfg.sleep_when_idle
             and time.time() - last_activity >= cfg.idle_sleep_seconds
-            and language.sleep_pressure > 0
+            and self.mind.language.sleep_pressure >= cfg.sleepy_after_episodes
         )
 
     def submit(self, fn, sink=None) -> Future:

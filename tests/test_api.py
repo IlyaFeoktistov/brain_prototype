@@ -95,3 +95,23 @@ def test_background_reading_does_not_block_chat(client):
             break
         time.sleep(0.2)
     assert not client.get("/api/state").json()["reading"]
+
+
+def test_falls_asleep_only_when_tired(client):
+    from brain.server import host
+
+    cfg = host.mind.cfg
+    threshold = cfg.sleepy_after_episodes
+    pressure = host.mind.language.sleep_pressure
+    try:
+        cfg.sleepy_after_episodes = pressure + 1
+        # Пара новых реплик — ещё не устал, даже в долгой тишине.
+        assert not host._should_fall_asleep(last_activity=0)
+
+        cfg.sleepy_after_episodes = max(1, pressure)
+        if pressure:
+            assert host._should_fall_asleep(last_activity=0)
+        # Сразу после сообщения — не засыпает.
+        assert not host._should_fall_asleep(last_activity=__import__("time").time())
+    finally:
+        cfg.sleepy_after_episodes = threshold

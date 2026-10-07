@@ -31,6 +31,9 @@ class BrainNetwork:
         ▼ │
         I ─┘
 
+    sensory -> E, sensory -> I:
+        статическая проекция (органы чувств не учатся)
+
     E -> E:
         dopamine-modulated STDP
 
@@ -53,16 +56,17 @@ class BrainNetwork:
         self.inhibitory = nest.NodeCollection()
 
         self.sensory = nest.NodeCollection()
+        self.sensory_generators = nest.NodeCollection()
 
         self.background = None
         self.activity_recorder = None
+        self.window_recorder = None
 
         self.dopamine_neurons = None
         self.dopamine_parrot = None
         self.dopamine_transmitter = None
 
         self.excitatory_synapse_model = None
-        self.sensory_synapse_model = None
 
         self.previous_event_counts: Dict[int, int] = {}
 
@@ -73,6 +77,7 @@ class BrainNetwork:
     def setup(self) -> None:
         nest.ResetKernel()
 
+        nest.local_num_threads = self.cfg.threads
         nest.resolution = self.cfg.resolution_ms
         nest.rng_seed = self.cfg.rng_seed
         nest.verbosity = nest.VerbosityLevel.ERROR
@@ -157,7 +162,7 @@ class BrainNetwork:
                 "A_minus": 0.004,
 
                 "tau_plus": 30.0,
-                "tau_c": 1500.0,
+                "tau_c": self.cfg.dopamine_tau_c,
                 "tau_n": 100.0,
 
                 "b": self.cfg.dopamine_baseline,
@@ -165,10 +170,6 @@ class BrainNetwork:
         )
 
         self.excitatory_synapse_model = (
-            "brain_dopamine"
-        )
-
-        self.sensory_synapse_model = (
             "brain_dopamine"
         )
 
@@ -311,8 +312,8 @@ class BrainNetwork:
             syn_spec={
                 "synapse_model": self.excitatory_synapse_model,
                 "weight": nest.random.uniform(
-                    min=0.05,
-                    max=0.20,
+                    min=self.cfg.ee_weight_min,
+                    max=self.cfg.ee_weight_max,
                 ),
                 "delay": 1.0,
             },
@@ -364,13 +365,38 @@ class BrainNetwork:
     # ==============================================================
 
     def _create_sensory_layer(self) -> None:
+        """
+        Органы чувств.
+
+        Каждый sensory-канал — parrot_neuron со своим
+        spike_generator. Parrot повторяет каждый входной спайк,
+        поэтому sensory-код доходит до коры без потерь
+        и без подбора порогов.
+
+        Проекция sensory -> E статическая:
+        одинаковый стимул каждый раз приходит
+        через один и тот же путь.
+        Пластичность живёт только внутри коры (E -> E).
+        """
+
         self.sensory = nest.Create(
-            "iaf_psc_delta",
-            self.cfg.language_input_size,
-            params={
-                "V_th": -55.0,
-                "V_reset": -70.0,
-                "V_m": -70.0,
+            "parrot_neuron",
+            self.cfg.sensory_size,
+        )
+
+        self.sensory_generators = nest.Create(
+            "spike_generator",
+            self.cfg.sensory_size,
+        )
+
+        nest.Connect(
+            self.sensory_generators,
+            self.sensory,
+            conn_spec="one_to_one",
+            syn_spec={
+                "synapse_model": "static_synapse",
+                "weight": 1.0,
+                "delay": 1.0,
             },
         )
 
@@ -382,11 +408,30 @@ class BrainNetwork:
             self.excitatory,
             conn_spec={
                 "rule": "pairwise_bernoulli",
-                "p": 0.12,
+                "p": self.cfg.sensory_p,
             },
             syn_spec={
-                "synapse_model": self.sensory_synapse_model,
+                "synapse_model": "static_synapse",
                 "weight": self.cfg.input_weight,
+                "delay": 1.0,
+            },
+        )
+
+        # Feedforward inhibition:
+        # сильный стимул сразу будит и тормозные клетки,
+        # поэтому побеждает компактный ансамбль,
+        # а не вся кора.
+        nest.Connect(
+            self.sensory,
+            self.inhibitory,
+            conn_spec={
+                "rule": "pairwise_bernoulli",
+                "p": self.cfg.sensory_p,
+            },
+            syn_spec={
+                "synapse_model": "static_synapse",
+                "weight": self.cfg.input_weight
+                * self.cfg.sensory_inhibitory_gain,
                 "delay": 1.0,
             },
         )
@@ -433,6 +478,16 @@ class BrainNetwork:
             },
         )
 
+        # Отдельный рекордер для коротких окон наблюдения.
+        # Его очищают перед каждым окном, поэтому чтение
+        # не зависит от того, сколько мозг уже прожил.
+        self.window_recorder = nest.Create(
+            "spike_recorder",
+            params={
+                "record_to": "memory",
+            },
+        )
+
         self._connect_to_recorder(
             self.excitatory
         )
@@ -448,42 +503,94 @@ class BrainNetwork:
                 self.activity_recorder,
             )
 
+            nest.Connect(
+                nodes,
+                self.window_recorder,
+            )
+
     # ==============================================================
     # SENSORY ACCESS
     # ==============================================================
 
-    def create_sensory_input(
-        self, size: int
-    ) -> nest.NodeCollection:
-        """Возвращает sensory слой для языкового интерфейса."""
-        return self.sensory
-
-    def connect_sensory(
+    def schedule_sensory(
         self,
-        sensory: nest.NodeCollection,
-        target: nest.NodeCollection,
-        weight: float,
+        trains: Dict[int, list[float]],
     ) -> None:
         """
-        Создаёт синапсы от sensory нейронов к target population.
-        Используется языковым интерфейсом для подключения слов.
-        """
-        if len(sensory) == 0 or len(target) == 0:
-            return
+        Внешний мир -> sensory spikes.
 
-        nest.Connect(
-            sensory,
-            target,
-            conn_spec={
-                "rule": "pairwise_bernoulli",
-                "p": 0.35,
-            },
-            syn_spec={
-                "synapse_model": self.sensory_synapse_model,
-                "weight": weight,
-                "delay": 1.0,
-            },
+        trains: индекс sensory-канала -> времена спайков
+        относительно текущего момента (мс).
+
+        Никакого teacher output здесь нет.
+        """
+
+        now = float(
+            nest.biological_time
         )
+
+        # Спайк, отправленный в момент t, приходит
+        # в parrot через delay; планируем строго в будущее.
+        offset = now + self.cfg.resolution_ms
+
+        for index, times in trains.items():
+            if not times:
+                continue
+
+            generator = self.sensory_generators[
+                index
+            ]
+
+            generator.set(
+                {
+                    "spike_times": [
+                        round(offset + t, 1)
+                        for t in sorted(times)
+                    ],
+                }
+            )
+
+    def observe(
+        self,
+        duration_ms: float,
+    ) -> Dict[int, float]:
+        """
+        Прожить duration_ms и вернуть частоты (Hz)
+        excitatory нейронов в этом окне.
+        """
+
+        self.window_recorder.n_events = 0
+
+        self.simulate(duration_ms)
+
+        senders = self.window_recorder.events[
+            "senders"
+        ]
+
+        counts: Dict[int, int] = {}
+
+        for gid in senders:
+            gid = int(gid)
+
+            record = self.records.get(gid)
+
+            if record is None:
+                continue
+
+            if not record.alive or not record.excitatory:
+                continue
+
+            counts[gid] = counts.get(gid, 0) + 1
+
+        duration_s = max(
+            0.001,
+            duration_ms / 1000.0,
+        )
+
+        return {
+            gid: count / duration_s
+            for gid, count in counts.items()
+        }
 
     # ==============================================================
     # FIRING RATES
@@ -559,78 +666,6 @@ class BrainNetwork:
         return nest.NodeCollection(
             sorted(ids)
         )
-
-    # ==============================================================
-    # SENSORY ACTIVATION
-    # ==============================================================
-
-    def stimulate_sensory(
-        self,
-        neurons: list[int],
-        duration_ms: float,
-        weight: float = 1.0,
-    ) -> tuple[float, float]:
-        """
-        Активирует sensory pathway.
-
-        Внешний мир → sensory spikes → cortex.
-
-        Никакого teacher output здесь нет.
-        """
-
-        if not neurons:
-            return (
-                float(nest.biological_time),
-                float(nest.biological_time),
-            )
-
-        now = float(
-            nest.biological_time
-        )
-
-        sensory = nest.NodeCollection(
-            sorted(neurons)
-        )
-
-        spike_times = []
-
-        for index, _gid in enumerate(neurons):
-            spike_times.append(
-                now
-                + 1.0
-                + index * 2.0
-            )
-
-        generator = nest.Create(
-            "spike_generator",
-            params={
-                "spike_times": spike_times,
-            },
-        )
-
-        nest.Connect(
-            generator,
-            sensory,
-            syn_spec={
-                "synapse_model": "static_synapse",
-                "weight": weight,
-                "delay": 0.1,
-            },
-        )
-
-        start = float(
-            nest.biological_time
-        )
-
-        nest.Simulate(
-            duration_ms
-        )
-
-        end = float(
-            nest.biological_time
-        )
-
-        return start, end
 
     # ==============================================================
     # ACTIVITY
@@ -756,6 +791,16 @@ class BrainNetwork:
         self,
         amplitude: float | None = None,
     ) -> None:
+        """
+        Dopamine-импульс.
+
+        stdp_dopamine_synapse превращает накопленные
+        eligibility traces в изменение весов
+        пропорционально концентрации dopamine.
+        Концентрация растёт на 1/tau_n с каждым dopamine-спайком,
+        поэтому амплитуда — это число спайков в залпе.
+        """
+
         if not self.cfg.dopamine_enabled:
             return
 
@@ -763,6 +808,11 @@ class BrainNetwork:
             amplitude = (
                 self.cfg.dopamine_reward_amplitude
             )
+
+        spikes = int(round(amplitude))
+
+        if spikes <= 0:
+            return
 
         now = float(
             nest.biological_time
@@ -772,7 +822,8 @@ class BrainNetwork:
             "spike_generator",
             params={
                 "spike_times": [
-                    now + 1.0
+                    round(now + 1.0 + i * 1.0, 1)
+                    for i in range(spikes)
                 ],
             },
         )
@@ -782,7 +833,7 @@ class BrainNetwork:
             self.dopamine_parrot,
             syn_spec={
                 "synapse_model": "static_synapse",
-                "weight": amplitude,
+                "weight": 1.0,
                 "delay": 1.0,
             },
         )
@@ -791,22 +842,161 @@ class BrainNetwork:
     # CONNECTION INSPECTION
     # ==============================================================
 
-    def connections_between(
+    def recurrent_connections(
         self,
-        source: list[int],
-        target: list[int],
+        source: list[int] | None = None,
+        target: list[int] | None = None,
     ):
-        if not source or not target:
-            return nest.GetConnections()
+        """
+        Пластичные E -> E синапсы (вся долговременная
+        ассоциативная память коры).
+        """
 
-        return nest.GetConnections(
-            source=nest.NodeCollection(
-                sorted(source)
-            ),
-            target=nest.NodeCollection(
-                sorted(target)
-            ),
+        kwargs = {
+            "synapse_model": self.excitatory_synapse_model,
+        }
+
+        if source is not None:
+            if not source:
+                return None
+
+            kwargs["source"] = nest.NodeCollection(
+                sorted(set(source))
+            )
+
+        if target is not None:
+            if not target:
+                return None
+
+            kwargs["target"] = nest.NodeCollection(
+                sorted(set(target))
+            )
+
+        connections = nest.GetConnections(**kwargs)
+
+        if not len(connections):
+            return None
+
+        return connections
+
+    def recurrent_drive(
+        self,
+        rates: Dict[int, float],
+        baseline: float = 0.0,
+    ) -> Dict[int, float]:
+        """
+        Куда текущее состояние толкает кору
+        через выученные E -> E синапсы.
+
+            drive[post] = sum(rate[pre] * max(0, w(pre -> post) - baseline))
+
+        Это и есть ожидание следующего состояния:
+        оно целиком определяется весами сети.
+        baseline отсекает врождённый случайный фон,
+        оставляя только то, что выучено.
+        """
+
+        active = [
+            gid
+            for gid, rate in rates.items()
+            if rate > 0
+        ]
+
+        connections = self.recurrent_connections(
+            source=active,
         )
+
+        if connections is None:
+            return {}
+
+        data = connections.get(
+            ["source", "target", "weight"]
+        )
+
+        drive: Dict[int, float] = {}
+
+        for pre, post, weight in zip(
+            data["source"],
+            data["target"],
+            data["weight"],
+        ):
+            weight -= baseline
+
+            if weight <= 0:
+                continue
+
+            drive[post] = (
+                drive.get(post, 0.0)
+                + rates[pre] * weight
+            )
+
+        return drive
+
+    # ==============================================================
+    # HOMEOSTASIS: SYNAPTIC SCALING
+    # ==============================================================
+
+    def synaptic_scaling(self) -> int:
+        """
+        Homeostatic synaptic scaling (Turrigiano).
+
+        Суммарный входной E -> E вес каждого нейрона
+        не может расти бесконечно: если он превысил
+        бюджет, все входящие синапсы нейрона
+        мультипликативно уменьшаются.
+
+        Без этого нейроны, отвечающие сразу на многие
+        стимулы, становятся «хабами» и размывают
+        все ассоциации.
+
+        Возвращает число нейронов, которые пришлось масштабировать.
+        """
+
+        connections = self.recurrent_connections()
+
+        if connections is None:
+            return 0
+
+        data = connections.get(["target", "weight"])
+
+        targets = data["target"]
+        weights = data["weight"]
+
+        total: Dict[int, float] = {}
+        fan_in: Dict[int, int] = {}
+
+        for post, weight in zip(targets, weights):
+            total[post] = total.get(post, 0.0) + weight
+            fan_in[post] = fan_in.get(post, 0) + 1
+
+        innate = (
+            self.cfg.ee_weight_min
+            + self.cfg.ee_weight_max
+        ) / 2.0
+
+        factor: Dict[int, float] = {}
+
+        for post, value in total.items():
+            budget = (
+                fan_in[post]
+                * innate
+                * self.cfg.synaptic_scaling_budget
+            )
+
+            if value > budget:
+                factor[post] = budget / value
+
+        if not factor:
+            return 0
+
+        connections.set(
+            weight=[
+                weight * factor.get(post, 1.0)
+                for post, weight in zip(targets, weights)
+            ]
+        )
+
+        return len(factor)
 
     def alive_connection_count(self) -> int:
         nodes = self.alive_nodes()

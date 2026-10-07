@@ -23,6 +23,7 @@ const SHORT: Record<string, string> = {
   association: "смысл",
   prefrontal: "раб. память",
   motor: "речь",
+  limbic: "чувства",
 };
 
 function place(name: string, index: number): [number, number] {
@@ -89,25 +90,28 @@ export function Pathways({ anatomy, status, activity, emotion }: Props) {
             <circle r={13} className={area.kind === "memory" ? "node node-memory" : "node"} />
             {local && <circle r={16} className="node-plastic" />}
             <text
-              x={x >= 350 ? 26 : 0}
-              y={x >= 350 ? 4 : 30}
-              className={x >= 350 ? "node-label node-label-side" : "node-label"}
+              x={x >= 350 || area.name === "limbic" ? 26 : 0}
+              y={x >= 350 || area.name === "limbic" ? 4 : 30}
+              className={x >= 350 || area.name === "limbic" ? "node-label node-label-side" : "node-label"}
             >
-              {SHORT[area.name] ?? area.name}
+              {area.name === "limbic" && emotion ? `чувства: ${emotion.name}` : SHORT[area.name] ?? area.name}
             </text>
           </g>
         );
       })}
 
-      {/* Лимбическая система: модель, а не спайковая зона — пунктир. */}
-      <path d={edge(POSITION.limbic, place("association", 0), 0)} className="path path-limbic" />
-      <g transform={`translate(${POSITION.limbic[0]},${POSITION.limbic[1]})`}>
-        <circle r={10} className={emotion ? "node node-limbic" : "node node-limbic node-off"} />
-        <text x={18} y={4} className="node-label node-label-side">
-          {emotion ? `эмоции: ${emotion.name}` : "эмоции выкл."}
-        </text>
-        <title>Лимбическая система: эмоции из дофамина, похвалы и уверенности</title>
-      </g>
+      {/* Старые мозги без лимбической зоны: эмоции — модель, пунктир. */}
+      {!index.has("limbic") && (
+        <>
+          <path d={edge(POSITION.limbic, place("association", 0), 0)} className="path path-limbic" />
+          <g transform={`translate(${POSITION.limbic[0]},${POSITION.limbic[1]})`}>
+            <circle r={10} className={emotion ? "node node-limbic" : "node node-limbic node-off"} />
+            <text x={18} y={4} className="node-label node-label-side">
+              {emotion ? `эмоции: ${emotion.name}` : "эмоции выкл."}
+            </text>
+          </g>
+        </>
+      )}
 
       <text x={POSITION.ear[0]} y={POSITION.ear[1] + 4} className="endpoint">
         ухо

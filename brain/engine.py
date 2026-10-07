@@ -508,6 +508,10 @@ class SpikingBrain:
 
         for area in self.areas.values():
             self.bias[area.I.slice] = cfg.i_excitability
+
+        # Сигнал «изнутри тела» (мВ): чувство возбуждает свой набор
+        # нейронов лимбической зоны — как ухо возбуждает слуховую кору.
+        self.interoception = z()
         # Истинная eligibility = eligibility * eligibility_scale:
         # затухание всех следов — одно умножение скаляра.
         self.eligibility_scale = torch.ones(1, device=self.device)
@@ -598,7 +602,7 @@ class SpikingBrain:
 
         dv = (
             cfg.v_rest - self.v + exp_term - self.adapt
-            + self.i_syn + self.i_slow + self.bias
+            + self.i_syn + self.i_slow + self.bias + self.interoception
         ) * self.decay_m
         v = torch.where(self.refractory <= 0, self.v + dv, self.v)
         self.refractory.sub_(cfg.dt_ms)
@@ -829,6 +833,11 @@ class SpikingBrain:
         low, high = self.cfg.homeostasis_bias_range
 
         for spec in self.cfg.areas:
+            # target_activity = 0: активность зоны задаёт её вход
+            # (лимбическая — само чувство), а не гомеостаз.
+            if spec.target_activity <= 0:
+                continue
+
             E = self.areas[spec.name].E
             active = (rates[E.slice] > 0).float().mean()
             error = (spec.target_activity - active) / spec.target_activity
@@ -929,7 +938,7 @@ class SpikingBrain:
     _DYNAMIC = (
         "v", "i_syn", "i_slow", "adapt", "refractory", "spikes",
         "trace_pre", "trace_pre_rise", "ltp_kernel", "trace_post", "counts", "eligibility",
-        "eligibility_scale", "dropped", "bias",
+        "eligibility_scale", "dropped", "bias", "interoception",
     )
 
     def _snapshot(self) -> dict:
@@ -958,6 +967,18 @@ class SpikingBrain:
             self._restore(saved)
             self.time_ms = time_ms
             self.plasticity = plasticity
+
+    def feel(self, area: str, neurons: torch.Tensor | None, amplitude: float) -> None:
+        """Подать внутренний сигнал: neurons — индексы E-нейронов зоны (локальные)."""
+
+        if area not in self.areas:
+            return
+
+        E = self.areas[area].E
+        self.interoception[E.slice] = 0.0
+
+        if neurons is not None and amplitude:
+            self.interoception[E.start + neurons] = amplitude
 
     def quiet(self, area: str) -> None:
         """Погасить активность зоны (только внутри frozen())."""

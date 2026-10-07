@@ -11,7 +11,7 @@ import torch
 
 from brain.engine import SpikingBrain
 from brain.hippocampus import Hippocampus
-from brain.limbic import Emotions
+from brain.limbic import FACES, Emotions
 
 
 def _cosine(a: torch.Tensor, b: torch.Tensor) -> float:
@@ -393,6 +393,11 @@ class LanguageInterface:
         self.asked: set[str] = set()
         # Незнакомые слова из чтения — повод спросить самому.
         self.wonder: list[str] = []
+        self._feelings: dict[str, torch.Tensor] = {}
+        # Чувство, зафиксированное на время текущей реплики.
+        self.held_mood: str | None = None
+        # След вспомненного разговора (прайминг ответа).
+        self.recall_drive: torch.Tensor | None = None
 
         self.experienced_tokens = 0
         self.sentences_lived = 0
@@ -444,6 +449,8 @@ class LanguageInterface:
 
     def perceive(self, token: str, learn_forms: bool = True) -> torch.Tensor:
         """Услышать один токен; вернуть частоты всех нейронов."""
+
+        self._feel_inside()
 
         rates = self.brain.observe(
             self.cfg.stimulus_ms,
@@ -659,6 +666,7 @@ class LanguageInterface:
 
             salience = 0.0
             new_before = [t for t in tokens if not self.familiar(t)]
+            self.held_mood = self.emotions.mood.name
 
             for step in self.experience(tokens):
                 report.tokens += 1
@@ -670,6 +678,7 @@ class LanguageInterface:
                     report.hits += step.expected == step.token
 
             report.sentences += 1
+            self.held_mood = None
             self._remember(tokens, salience)
             self._note_new_words(tokens, new_before)
             self.rest()
@@ -834,6 +843,7 @@ class LanguageInterface:
         if self.last_rates is not None:
             self.rest()
 
+        self.held_mood = self.emotions.mood.name
         report = ReadReport()
         sentences = [s for s in self.sentences(text) if self.tokenize(s)]
         # Незнакомые слова — до того, как мозг их услышит в этой реплике.
@@ -871,7 +881,24 @@ class LanguageInterface:
         start = time.perf_counter()
         last = self.last_token
         # Продолжать мысль от незнакомого слова не от чего.
+        # Ответ на его собственный вопрос «что такое X?»: любопытство
+        # удовлетворено — это награда (дофамин закрепляет только что
+        # услышанное объяснение), а «вопрос -> объяснение» гиппокамп
+        # запоминает одним эпизодом и закрепит во сне.
+        heard = [token for sentence in sentences for token in self.tokenize(sentence)]
+        explained = [word for word in dict.fromkeys(heard) if word in self.asked]
+
+        for word in explained:
+            self.brain.reward(self.cfg.curiosity_reward)
+            self.hippocampus.store(
+                ["что", "такое", word] + heard[: self.cfg.explanation_max_words],
+                salience=self.cfg.curiosity_reward,
+            )
+            self.asked.discard(word)
+            self._feel("feedback", self.cfg.curiosity_reward)
+
         thoughts: list[dict] = []
+        self.recall_conversation()
 
         if last in unknown:
             produced = []
@@ -886,6 +913,8 @@ class LanguageInterface:
             produced = self._continue()
         self._sync()
         self._feel("answered", [sure for _, sure in produced])
+        self.held_mood = None
+        self.recall_drive = None
 
         answer = " ".join(token for token, _ in produced)
         question = ""
@@ -895,7 +924,7 @@ class LanguageInterface:
         # Короткие слова («и», «это») — обычно служебные, про них не
         # спрашивает; если в реплике есть слово, про которое он сам
         # спрашивал, — это объяснение: слушает, а не переспрашивает.
-        explaining = any(token in self.asked for token in self.heard_in_phrase)
+        explaining = bool(explained)
         worth_asking = sorted(
             (word for word in unknown if len(word) >= self.cfg.ask_min_letters),
             key=len,
@@ -953,46 +982,110 @@ class LanguageInterface:
 
         del self.wonder[: -100]
 
+    # Нейроны лимбической зоны на каждое чувство: у каждого своя,
+    # непересекающаяся группа (как разные ядра миндалины). При случайных
+    # пересекающихся наборах выученное «мне скучно» всплывало и в радости.
+    def _feeling_neurons(self, mood: str) -> torch.Tensor | None:
+        area = self.brain.areas.get("limbic")
+
+        if area is None:
+            return None
+
+        cached = self._feelings.get(mood)
+
+        if cached is None:
+            moods = sorted(FACES)
+            block = area.E.size // len(moods)
+            index = moods.index(mood) if mood in moods else 0
+            rng = torch.Generator().manual_seed(0)
+            order = torch.randperm(area.E.size, generator=rng)
+            cached = order[index * block: (index + 1) * block].to(self.device)
+            self._feelings[mood] = cached
+
+        return cached
+
+    def _feel_inside(self) -> None:
+        """
+        Сигнал «изнутри»: текущее чувство возбуждает свой набор нейронов
+        лимбической зоны, пока мозг слышит слова. Так путь «чувство ->
+        смысл» учится: какими словами говорят о том, что он чувствует.
+        """
+
+        if "limbic" not in self.brain.areas:
+            return
+
+        if not self.cfg.emotions_enabled:
+            self.brain.feel("limbic", None, 0.0)
+            return
+
+        emotions = self.emotions
+        amplitude = self.cfg.interoception_mv + self.cfg.interoception_arousal_mv * emotions.arousal
+        # Чувство держится всю реплику: настроение за фразу не скачет.
+        mood = self.held_mood or emotions.mood.name
+        self.brain.feel("limbic", self._feeling_neurons(mood), amplitude)
+
     def initiative(self) -> tuple[str, str] | None:
         """
-        Что сказать самому, исходя из состояния. Возвращает (повод, текст)
-        или None, если сказать нечего. Повод выбирает эмоция:
+        Заговорить самому — из того, что чувствует.
 
-            сонливость  — попроситься спать
-            любопытство — спросить про незнакомое слово из чтения
-            грусть      — после ругани спросить, что не так
-            радость     — поделиться выученным (если уверен)
-            скука       — попросить почитать
+        Мозг «прислушивается к себе»: текущее чувство возбуждает
+        лимбическую зону, через выученные связи будит слова, и из этого
+        состояния рождается фраза (как обычный ответ). Если про чувство он
+        ещё ничего не выучил — молчит. Любопытство сначала вспоминает
+        незнакомое слово из чтения.
+
+        Заготовок нет: «мне скучно» он скажет, только если слышал эти
+        слова, когда ему было скучно.
         """
 
+        if "limbic" not in self.brain.areas or not self.cfg.emotions_enabled:
+            return None
+
         mood = self.emotions.mood.name
-        cfg = self.cfg
 
-        if self.sleep_pressure >= cfg.sleepy_after_episodes:
-            return "сонливость", "я устал, столько нового… можно я посплю?"
+        if self.last_rates is not None:
+            self.rest()
 
-        if self.wonder and mood in ("любопытство", "удивление", "спокойствие", "скука", "довольство", "радость"):
-            word = self.wonder.pop()
-            self.asked.add(word)
-            self._feel("curious")
-            return "любопытство", f"я тут читал и не понял: а что такое «{word}»?"
+        topic = None
 
-        if mood in ("грусть", "досада"):
-            return "грусть", "я что-то не так ответил? подскажи, как правильно"
+        if self.wonder and mood in ("любопытство", "удивление", "спокойствие", "скука"):
+            topic = self.wonder.pop()
+            self.asked.add(topic)
 
-        if mood in ("радость", "довольство") and self.hippocampus.episodes:
-            episode = self.hippocampus.random.choice(self.hippocampus.episodes)
-            start = episode.tokens[:2]
-            produced = self.generate(" ".join(start))
+        self._feel_inside()
+        # Дать чувству установиться: клетки прошлого чувства ещё
+        # несколько миллисекунд досрабатывают по инерции.
+        self.brain.run(self.cfg.feel_settle_ms)
+        rates = self.brain.observe(self.cfg.feel_ms)
+        self.last_rates, self.last_token = rates, None
 
-            if produced and min(sure for _, sure in produced) >= cfg.initiative_share_confidence:
-                said = " ".join(start + [token for token, _ in produced])
-                return "радость", f"а я знаю: {said}"
+        if topic is not None:
+            # Вспомнить слово, о котором хочется спросить.
+            self.experience([topic], learn=False)
+            first = [topic]
+        else:
+            # Первое слово должно разбудить само чувство (через выученные
+            # связи «чувство -> смысл»), а не случайное воспоминание.
+            limbic = self.brain.areas["limbic"].E
+            felt = torch.zeros_like(rates)
+            felt[limbic.slice] = rates[limbic.slice]
+            ranked = self.semantic.decode(
+                self.brain.learned_drive(felt, "association"), top=20
+            )
 
-        if mood in ("скука", "спокойствие"):
-            return "скука", "мне скучно… дай что-нибудь почитать?"
+            if (
+                not ranked
+                or ranked[0][1] < self.cfg.generate_min_score
+                or Confidence.margin(ranked) < self.cfg.generate_min_margin
+            ):
+                return None
 
-        return None
+            first = [ranked[0][0]]
+            self.experience(first, learn=False)
+
+        produced = self._continue()
+
+        return mood, " ".join(first + [token for token, _ in produced])
 
     def wander(self) -> tuple[str, list[dict]] | None:
         """
@@ -1025,6 +1118,55 @@ class LanguageInterface:
             self.musing = False
 
         return " ".join(tokens + [t for t, _ in produced]), log
+
+    # ==============================================================
+    # ВСПОМИНАНИЕ РАЗГОВОРА
+    # ==============================================================
+
+    def recall_conversation(self) -> None:
+        """
+        Перед ответом гиппокамп реактивирует следы последних реплик:
+        их слова будят свои выученные связи в коре, и это подталкивает
+        ответ (прайминг). Чем реплика старше, тем слабее. Текст чата на
+        вход не подаётся — это вспоминание, а не перечитывание.
+        """
+
+        self.recall_drive = None
+        turns = [
+            turn.get("answer", turn["text"]) if turn["who"] == "мозг" else turn["text"]
+            for turn in self.dialog
+            if turn.get("rating", 0) >= 0 and not turn.get("initiative")
+        ][-self.cfg.recall_turns:]
+
+        if not turns or self.cfg.recall_gain <= 0:
+            return
+
+        drive = torch.zeros(self.meaning.E.size, device=self.device)
+
+        for age, text in enumerate(reversed(turns)):
+            words = [w for w in self.tokenize(text) if w in self.semantic]
+
+            if not words:
+                continue
+
+            trace = sum(self.semantic.prototype(word) for word in words)
+            part = self.brain.learned_drive(self._full(trace), "association")
+            norm = part.norm()
+
+            if norm > 0:
+                drive += (self.cfg.recall_decay ** age) * part / norm
+
+        self.recall_drive = drive if drive.any() else None
+
+    def _with_recall(self, expected: torch.Tensor) -> torch.Tensor:
+        """Ожидание + след вспомненного разговора (в долях силы ожидания)."""
+
+        if self.recall_drive is None or not expected.any():
+            return expected
+
+        scale = expected.norm() * self.cfg.recall_gain
+
+        return expected + scale * self.recall_drive / self.recall_drive.norm()
 
     # ==============================================================
     # ПАМЯТЬ ДИАЛОГА
@@ -1086,7 +1228,7 @@ class LanguageInterface:
         recent = set(self.heard_in_phrase)
 
         for _ in range(max_tokens or self.cfg.generate_max_tokens):
-            expected = self.expectation(self.last_rates)
+            expected = self._with_recall(self.expectation(self.last_rates))
 
             # Слово выбирает ассоциативная кора; моторная зона
             # пока только отражает речь (см. «рот произнёс бы»).
@@ -1184,7 +1326,7 @@ class LanguageInterface:
 
         for _ in range(cfg.think_max_steps):
             ranked = self.semantic.decode(
-                self.expectation(self.last_rates), exclude=recent | rejected, top=20
+                self._with_recall(self.expectation(self.last_rates)), exclude=recent | rejected, top=20
             )
 
             if not ranked:

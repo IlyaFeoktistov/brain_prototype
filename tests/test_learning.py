@@ -117,3 +117,19 @@ def test_separate_messages_are_not_glued(mind):
     # Конец одной реплики не должен предсказывать начало следующей.
     assert rank(language, "столица германии", "квантовая") > 3
     assert before >= 3
+
+
+def test_answer_to_own_question_is_rewarded_and_remembered(mind):
+    language = mind.language
+    language.read_text(FACTS)
+    language.converse("Столица Франции хромодинамика")
+    assert "хромодинамика" in language.asked
+
+    weights = mind.brain.net_weight.clone()
+    episodes = len(language.hippocampus)
+    language.converse("Хромодинамика это раздел физики")
+
+    assert "хромодинамика" not in language.asked
+    assert len(language.hippocampus) > episodes
+    assert any(e.tokens[:3] == ["что", "такое", "хромодинамика"] for e in language.hippocampus.episodes)
+    assert not (weights == mind.brain.net_weight).all()

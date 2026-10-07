@@ -83,34 +83,48 @@ def test_dialog_persists(mind, tmp_dir):
     assert Mind.load(path).language.dialog == mind.language.dialog
 
 
-def test_initiative_asks_about_new_word_from_reading(mind, tmp_dir):
+def test_new_words_from_reading_survive_restart(mind, tmp_dir):
     import os
     from brain.mind import Mind
 
-    language = mind.language
-    language.read_text(FACTS + " Фотосинтез происходит в хлоропластах.")
+    mind.language.read_text(FACTS + " Фотосинтез происходит в хлоропластах.")
     path = os.path.join(tmp_dir, "wonder.pt")
     mind.save(path)
 
-    # Незнакомые слова переживают перезапуск.
-    loaded = Mind.load(path).language
-    assert "хлоропластах" in loaded.wonder
-
-    language.emotions.valence, language.emotions.arousal = 0.0, 0.5
-    said = language.initiative()
-    assert said is not None and said[0] == "любопытство"
-    assert "что такое" in said[1]
+    assert "хлоропластах" in Mind.load(path).language.wonder
 
 
-def test_initiative_sleepy_and_sad(mind):
+def _bored(emotions):
+    emotions.valence, emotions.arousal, emotions.confusion, emotions.predictability = 0.0, 0.05, 0.0, 0.9
+
+
+def _joyful(emotions):
+    emotions.valence, emotions.arousal, emotions.confusion, emotions.predictability = 0.6, 0.6, 0.0, 0.0
+
+
+def test_initiative_is_learned_not_scripted():
+    from tests.conftest import make_mind
+
+    mind = make_mind("small")
     language = mind.language
-    language.emotions.feedback(-6)
-    language.emotions.feedback(-6)
-    assert language.initiative()[0] == "грусть"
+    language.read_text(FACTS)
 
-    for i in range(mind.cfg.sleepy_after_episodes):
-        language.hippocampus.store(["слово", f"номер{i}"], 1.0)
-    assert language.initiative()[0] == "сонливость"
+    scripted = ("дай что-нибудь почитать", "можно я посплю", "что-то не так ответил")
+
+    # Слышит «мне скучно», когда ему скучно, — и связывает чувство со словами.
+    for _ in range(8):
+        _bored(language.emotions)
+        language.converse("мне скучно")
+
+    _bored(language.emotions)
+    said = language.initiative()
+    assert said is not None and "скучно" in said[1]
+    assert not any(phrase in said[1] for phrase in scripted)
+
+    # В другом чувстве выученное про скуку не всплывает.
+    _joyful(language.emotions)
+    joyful = language.initiative()
+    assert joyful is None or "скучно" not in joyful[1]
 
 
 def test_wandering_does_not_change_brain(mind):

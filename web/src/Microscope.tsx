@@ -158,6 +158,7 @@ const PLACES: Record<string, string> = {
   association: "association",
   prefrontal: "prefrontal",
   motor: "motor",
+  limbic: "limbic",
 };
 
 export function Microscope({ anatomy, fluo, onActivity }: Props) {

@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { connect, type Anatomy, type ClientMessage, type Connection, type ServerMessage, type Status, type StepEvent } from "./brain";
-import { Chat, type ChatEntry } from "./Chat";
+import { connect, type Anatomy, type Brains, type EmotionState, type Connection, type ServerMessage, type Status, type StepEvent } from "./brain";
+import { Chat, type ChatActions, type ChatEntry } from "./Chat";
+import * as api from "./api";
 import { Fluorescence, Microscope } from "./Microscope";
 import { Guide } from "./Guide";
+import { Face } from "./Face";
 import { Pathways } from "./Pathways";
 import { Timeline } from "./Timeline";
 
@@ -21,6 +23,8 @@ export function App() {
   const [progress, setProgress] = useState<string | null>(null);
   const [activity, setActivity] = useState<Record<string, number>>({});
   const [connected, setConnected] = useState(false);
+  const [brains, setBrains] = useState<Brains | null>(null);
+  const [emotion, setEmotion] = useState<EmotionState | null>(null);
 
   const connection = useRef<Connection | null>(null);
   const nextId = useRef(1);
@@ -44,6 +48,7 @@ export function App() {
           break;
         case "status":
           setStatus(message);
+          setEmotion(message.emotionsEnabled ? message.emotion : null);
           if (!message.busy) setProgress(null);
           break;
         case "spikes":
@@ -53,22 +58,14 @@ export function App() {
           setSteps((list) => [...list, message].slice(-TIMELINE_LENGTH));
           break;
         case "out":
+          // Чат живёт на HTTP API; по WebSocket — только прогресс чтения.
           if (message.kind === "progress") setProgress(message.text);
-          else if (message.kind === "brain") addEntry({ who: "brain", text: message.text });
-          // Строку скорости интерфейс рисует сам из события reply.
-          else if (!message.text.startsWith("[промпт:")) addEntry({ who: "info", text: message.text });
           break;
-        case "reply":
-          setEntries((list) => {
-            const copy = [...list];
-            for (let i = copy.length - 1; i >= 0; i--) {
-              if (copy[i].who === "brain") {
-                copy[i] = { ...copy[i], reply: message };
-                break;
-              }
-            }
-            return copy;
-          });
+        case "brains":
+          setBrains(message);
+          break;
+        case "emotion":
+          setEmotion(message);
           break;
       }
     };
@@ -76,12 +73,93 @@ export function App() {
     return () => connection.current?.close();
   }, [addEntry]);
 
-  const send = useCallback((message: ClientMessage) => connection.current?.send(message), []);
+  const report = useCallback(
+    (error: unknown) => addEntry({ who: "info", text: `Ошибка: ${(error as Error).message}` }),
+    [addEntry],
+  );
+
+  const actions = useMemo<ChatActions>(
+    () => ({
+      say: (text) => {
+        addEntry({ who: "you", text });
+        const id = nextId.current++;
+        setEntries((list) => [...list, { id, who: "brain", text: "", streaming: true, words: [] }]);
+        const update = (patch: (entry: ChatEntry) => ChatEntry) =>
+          setEntries((list) => list.map((entry) => (entry.id === id ? patch(entry) : entry)));
+        api
+          .chat(text, (token, confidence) =>
+            update((entry) => ({
+              ...entry,
+              text: `${entry.text} ${token}`.trim(),
+              words: [...(entry.words ?? []), { token, confidence }],
+            })),
+          )
+          .then(({ text: final, reply }) => update((entry) => ({ ...entry, text: final, streaming: false, reply })))
+          .catch((error) => {
+            update((entry) => ({ ...entry, text: "…", streaming: false }));
+            report(error);
+          });
+      },
+      command: (text) => {
+        addEntry({ who: "you", text });
+        api
+          .command(text)
+          .then(({ output }) =>
+            output.forEach((line) => addEntry({ who: line.kind === "brain" ? "brain" : "info", text: line.text })),
+          )
+          .catch(report);
+      },
+      upload: (name, text, size) => {
+        addEntry({ who: "you", text: `Загружаю «${name}» (${(size / 1024).toFixed(0)} КБ)` });
+        api
+          .read(name, text)
+          .then((r) =>
+            addEntry({
+              who: "info",
+              text: `${name}: ${r.tokens} слов, ${r.sentences} фраз, угадал ${r.guessed} из ${r.predicted}, dopamine ${r.dopamine.toFixed(0)}`,
+            }),
+          )
+          .catch(report);
+      },
+      feedback: (reward) => {
+        setEntries((list) => list.map((entry) => (entry.who === "brain" ? { ...entry, rated: true } : entry)));
+        addEntry({ who: "you", text: reward > 0 ? "Верно" : "Неверно" });
+        api.feedback(reward).then(({ text }) => addEntry({ who: "info", text })).catch(report);
+      },
+      stop: () => {
+        api.stop().catch(report);
+      },
+    }),
+    [addEntry, report],
+  );
 
   return (
     <div className="app">
       <header className="masthead">
         <h1>Срез мозга</h1>
+        {brains && brains.items.length > 0 && (
+          <label className="brain-picker">
+            <span>Мозг</span>
+            <select
+              value={brains.current}
+              disabled={!connected || status?.busy}
+              onChange={(event) => {
+                const name = event.target.value;
+                addEntry({ who: "you", text: `Переключаюсь на ${name}` });
+                api
+                  .load(name)
+                  .then((r) => addEntry({ who: "info", text: `Загружено: ${r.brain} — ${r.neurons.toLocaleString("ru")} нейронов` }))
+                  .catch(report);
+              }}
+            >
+              {brains.items.map((brain) => (
+                <option key={brain.name} value={brain.name}>
+                  {brain.name} · {brain.megabytes} МБ
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         {anatomy ? (
           <p className="vitals">
             <span>{anatomy.neurons.toLocaleString("ru")} нейронов</span>
@@ -107,7 +185,7 @@ export function App() {
             <>
               <Microscope anatomy={anatomy} fluo={fluo} onActivity={setActivity} />
               <div className="legend">
-                <Pathways anatomy={anatomy} status={status} activity={activity} />
+                <Pathways anatomy={anatomy} status={status} activity={activity} emotion={emotion} />
                 <dl className="key">
                   <div>
                     <dt className="swatch swatch-e" />
@@ -132,12 +210,25 @@ export function App() {
         </div>
 
         <Chat
+          header={
+            <div className="mood">
+              <Face emotion={emotion} />
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={status?.emotionsEnabled ?? true}
+                  disabled={!connected}
+                  onChange={(event) => api.setEmotions(event.target.checked).catch(report)}
+                />
+                Эмоции
+              </label>
+            </div>
+          }
           entries={entries}
           progress={progress}
           busy={status?.busy ?? false}
           connected={connected}
-          send={send}
-          onLocal={addEntry}
+          actions={actions}
         />
       </main>
     </div>

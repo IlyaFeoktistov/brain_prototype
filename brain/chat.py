@@ -37,9 +37,26 @@ def _clean(text: str) -> str:
     return "".join(out).strip()
 
 
+_streamed = False
+_last_face = ""
+
+
 def _out(text: str, kind: str) -> None:
-    if kind == "brain":
-        print("Мозг:", text)
+    global _streamed, _last_face
+
+    if kind == "token":
+        token, _, _ = text.partition("\t")
+        print(("Мозг: " if not _streamed else " ") + token, end="", flush=True)
+        _streamed = True
+    elif kind == "face":
+        # Рожица печатается, только когда эмоция сменилась.
+        if text != _last_face:
+            print(text)
+            _last_face = text
+    elif kind == "brain":
+        # Если ответ уже напечатан по словам — только перевод строки.
+        print() if _streamed else print("Мозг:", text)
+        _streamed = False
     elif kind == "progress":
         print("\r  " + text, end="", flush=True)
     else:

@@ -204,11 +204,26 @@ class SpikingBrain:
         self.tau_m[self.n:] = 1.0
         self.tau_syn[self.n:] = 1.0
         self.is_adex = self.delta_t > 0
+        # Ветка LTD (пре после поста) есть у всех, кроме нейронов
+        # рабочей памяти при ковариационном правиле.
+        self.ltd_mask = self._fill(
+            {
+                "cortex_E": 1.0,
+                "memory_E": 0.0 if cfg.context_rule == "covariance" else 1.0,
+                "I": 1.0,
+            }
+        )
+        self.memory_pops = [a.E for a in self.areas.values() if a.kind == "memory"]
         self.safe_delta_t = self.delta_t.clamp(min=1e-3)
 
         # Скачок синаптического тока при весе J даёт
         # интеграл PSP ≈ J мВ·τm независимо от τsyn.
         self.syn_scale = self.tau_m / self.tau_syn
+        # Быстрый ток рабочей памяти ослаблен: она должна держать
+        # прошлые слова, а не дублировать текущее.
+        for area in self.areas.values():
+            if area.kind == "memory":
+                self.syn_scale[area.E.slice] *= cfg.memory_ampa_ratio
 
         dt = cfg.dt_ms
         self.decay_m = dt / self.tau_m
@@ -217,6 +232,18 @@ class SpikingBrain:
         self.slow_scale = self.slow_gain * self.tau_m / cfg.memory_tau_syn
         self.decay_adapt = math.exp(-dt / cfg.e_adapt_tau)
         self.decay_plus = math.exp(-dt / cfg.stdp_tau_plus)
+        # Ядро LTP со сдвигом: exp(-t/τ+) - exp(-t/τrise), нормировано
+        # на пик 1. Одновременные спайки (одно слово) почти не
+        # потенцируются, спайк ~1 слово назад — сильнее всего.
+        rise = cfg.stdp_ltp_rise
+        self.decay_rise = math.exp(-dt / rise) if rise > 0 else 0.0
+
+        if rise > 0:
+            tau = cfg.stdp_tau_plus
+            peak_t = tau * rise / (tau - rise) * math.log(tau / rise)
+            self.ltp_gain = 1.0 / (math.exp(-peak_t / tau) - math.exp(-peak_t / rise))
+        else:
+            self.ltp_gain = 1.0
         self.decay_minus = math.exp(-dt / cfg.stdp_tau_minus)
         self.decay_eligibility = math.exp(-dt / cfg.eligibility_tau)
         # Число фоновых входных спайков за шаг ~ Poisson(λ).
@@ -278,6 +305,9 @@ class SpikingBrain:
         )
         proj.pre_pop = pre_pop
         proj.innate_range = weight
+        proj.source_kind = next(
+            a.kind for a in self.areas.values() if pre_pop in (a.E, a.I)
+        )
         self.projections.append(proj)
 
         return proj
@@ -409,8 +439,15 @@ class SpikingBrain:
             self.n_plastic + self.DUMMY_SYNAPSES, device=self.device
         )
 
+        # Вес каждого пластичного синапса при рождении: выученное —
+        # это отклонение от него, а не от общего врождённого максимума.
+        self.birth_weight = self.net_weight[: self.n_plastic].clone()
+
         for p in self.plastic:
             p.eligibility = self.eligibility[
+                p.offset: p.offset + p.weight.numel()
+            ].view(p.weight.shape)
+            p.birth = self.birth_weight[
                 p.offset: p.offset + p.weight.numel()
             ].view(p.weight.shape)
 
@@ -461,6 +498,8 @@ class SpikingBrain:
         self.spikes = z()
         # STDP-следы: пре (LTP) и пост (LTD).
         self.trace_pre = z()
+        self.trace_pre_rise = z()
+        self.ltp_kernel = z()
         self.trace_post = z()
         # Счётчик спайков для окна наблюдения.
         self.counts = z()
@@ -474,11 +513,17 @@ class SpikingBrain:
         self.eligibility_scale = torch.ones(1, device=self.device)
         # Спайки, не влезшие в таблицу шага (должно быть 0).
         self.dropped = torch.zeros(1, device=self.device)
-        self.max_spikes = max(32, int(self.n * cfg.max_spike_fraction))
+        # У маленьких мозгов зоны малы, и случайные пики занимают
+        # большую долю нейронов — им нужен запас не по доле, а в штуках.
+        self.max_spikes = max(
+            int(self.n * cfg.max_spike_fraction),
+            min(int(self.n * 0.2), cfg.min_spike_table),
+        )
         # Пустые строки event-таблицы -> разные фиктивные нейроны.
         self.dummy_rows = (
             self.n + torch.arange(self.max_spikes, device=self.device) % self.DUMMY_NEURONS
         )
+
 
         # Вход уха на CHUNK шагов вперёд.
         self.ear_input = torch.zeros(
@@ -525,14 +570,17 @@ class SpikingBrain:
         drive.index_add_(0, self.ear_post, heard * self.ear_weight)
 
         if plastic:
-            # LTD: пре пришёл после поста.
-            synapses = self.out_plastic.index_select(0, fired_before).flatten()
-            post = self.net_post.index_select(0, synapses)
+            # LTD: пре пришёл после поста. Нейроны рабочей памяти
+            # (ковариационное правило) этой ветки не имеют.
+            rows = self.out_plastic.index_select(0, fired_before)
+            synapses = rows.flatten()
+            post = self.net_post.index_select(0, synapses).view_as(rows)
+            ltd = self.trace_post.index_select(0, post.flatten()).view_as(rows)
+            ltd = ltd * self.ltd_mask.index_select(0, fired_before)[:, None]
             self.eligibility.index_add_(
                 0,
                 synapses,
-                self.trace_post.index_select(0, post)
-                * (-cfg.stdp_a_minus / self.eligibility_scale),
+                ltd.flatten() * (-cfg.stdp_a_minus / self.eligibility_scale),
             )
 
         self.i_syn.mul_(self.decay_syn).add_(drive * self.syn_scale)
@@ -573,12 +621,23 @@ class SpikingBrain:
             self.eligibility.index_add_(
                 0,
                 synapses,
-                self.trace_pre.index_select(0, pre)
+                self.ltp_kernel.index_select(0, pre)
                 * (cfg.stdp_a_plus / self.eligibility_scale),
             )
             self.eligibility_scale.mul_(self.decay_eligibility)
 
         self.trace_pre.mul_(self.decay_plus).add_(self.spikes)
+        self.trace_pre_rise.mul_(self.decay_rise).add_(self.spikes)
+        torch.sub(self.trace_pre, self.trace_pre_rise, out=self.ltp_kernel)
+        self.ltp_kernel.mul_(self.ltp_gain)
+
+        if self.cfg.context_rule == "covariance":
+            # Рабочая память: вклад нейрона = насколько он сейчас
+            # активнее среднего по зоне (ковариационное правило, BCM).
+            for pop in self.memory_pops:
+                trace = self.trace_pre[pop.slice]
+                torch.sub(trace, trace.mean(), out=self.ltp_kernel[pop.slice])
+                self.ltp_kernel[pop.slice].mul_(self.cfg.context_hebb_gain)
         self.trace_post.mul_(self.decay_minus).add_(self.spikes)
 
     def _fired(self) -> torch.Tensor:
@@ -628,8 +687,10 @@ class SpikingBrain:
         chunks = max(1, round(steps / self.CHUNK))
         use_graph = self.device.type == "cuda"
 
-        if use_graph and self.plasticity not in self._graphs:
-            self._graphs[self.plasticity] = self._capture(self.plasticity)
+        key = self.plasticity
+
+        if use_graph and key not in self._graphs:
+            self._graphs[key] = self._capture(self.plasticity)
 
         for c in range(chunks):
             begin = c * self.CHUNK
@@ -645,9 +706,10 @@ class SpikingBrain:
                 before = self.counts.clone()
 
             if use_graph:
-                self._graphs[self.plasticity].replay()
+                self._graphs[key].replay()
             else:
                 self._chunk(self.plasticity)
+
 
             if self.on_chunk is not None:
                 fired = (self.counts[: self.n] > before[: self.n]).nonzero().squeeze(1)
@@ -743,6 +805,7 @@ class SpikingBrain:
             proj.weight[weak] = low + (high - low) * torch.rand(
                 count, device=self.device, generator=self.generator
             )
+            proj.birth[weak] = proj.weight[weak]
             proj.eligibility[weak] = 0.0
             grown += count
 
@@ -804,26 +867,42 @@ class SpikingBrain:
     def learned_drive(self, rates: torch.Tensor, area: str) -> torch.Tensor:
         """
         Куда текущее состояние толкает E-нейроны зоны через
-        ВЫУЧЕННЫЕ синапсы (вес выше врождённого максимума):
+        ВЫУЧЕННЫЕ синапсы (вес выше, чем был при рождении):
 
-            drive[post] = Σ rate[pre] * max(0, w - innate_max)
+            drive[post] = Σ rate[pre] * max(0, w - w_при_рождении)
 
-        Это ожидание следующего состояния. Его источники —
-        все пластичные пути в зону: локальная память и контекст
-        из рабочей памяти.
+        Это ожидание следующего состояния. Источники — все
+        пластичные пути в зону. Вклад рабочей памяти либо
+        складывается (context_mode="add"), либо умножает отклик
+        на текущее слово (context_mode="gain": контекст выбирает
+        среди кандидатов, которых предлагает текущее слово).
         """
 
         target = self.areas[area].E
-        drive = torch.zeros(target.size, device=self.device)
+        local = torch.zeros(target.size, device=self.device)
+        context = torch.zeros(target.size, device=self.device)
 
         for proj in self.plastic:
             if proj.post is not target:
                 continue
 
-            learned = (proj.weight - proj.innate_max).clamp(min=0.0)
-            drive += (rates.index_select(0, proj.pre.flatten()).view_as(learned) * learned).sum(1)
+            reference = proj.birth if self.cfg.learned_from_birth else proj.innate_max
+            learned = (proj.weight - reference).clamp(min=0.0)
+            got = rates.index_select(0, proj.pre.flatten()).view_as(learned)
+            part = (got * learned).sum(1)
 
-        return drive
+            if proj.source_kind == "memory":
+                context += part
+            else:
+                local += part
+
+        gain = self.cfg.context_gain
+
+        if self.cfg.context_mode == "gain":
+            scale = context.mean().clamp(min=1e-9)
+            return local * (1.0 + gain * context / scale)
+
+        return local + gain * context
 
     def projection(self, name: str) -> Projection:
         return next(p for p in self.projections if p.name == name)
@@ -849,7 +928,7 @@ class SpikingBrain:
     # всегда восстанавливают через copy_, а не присваиванием.
     _DYNAMIC = (
         "v", "i_syn", "i_slow", "adapt", "refractory", "spikes",
-        "trace_pre", "trace_post", "counts", "eligibility",
+        "trace_pre", "trace_pre_rise", "ltp_kernel", "trace_post", "counts", "eligibility",
         "eligibility_scale", "dropped", "bias",
     )
 
@@ -901,6 +980,7 @@ class SpikingBrain:
                 "net_pre": self.net_pre,
                 "net_weight": self.net_weight,
                 "ear_pre": self.ear_pre,
+                "birth_weight": self.birth_weight,
                 "innate_mean": {p.name: p.innate_mean for p in self.plastic},
             },
             "generator": self.generator.get_state(),
@@ -916,6 +996,9 @@ class SpikingBrain:
         # copy_ в те же тензоры: view проекций остаются валидными.
         for name in ("net_pre", "net_weight", "ear_pre"):
             getattr(self, name).copy_(synapses[name])
+
+        if "birth_weight" in synapses:
+            self.birth_weight.copy_(synapses["birth_weight"])
 
         for proj in self.plastic:
             proj.innate_mean = synapses["innate_mean"][proj.name]

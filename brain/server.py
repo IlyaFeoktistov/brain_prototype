@@ -14,6 +14,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 import os
+from concurrent.futures import Future
 import queue
 import threading
 import time
@@ -26,6 +27,7 @@ from brain.commands import Session
 from brain.config import BrainConfig
 from brain.language import Reply, Step
 from brain.mind import Mind
+from brain.api import build_router
 
 
 WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
@@ -94,9 +96,23 @@ class BrainHost:
                 "learn": learn,
             }
         )
+        self._emit_emotion()
+
+    def _emit_emotion(self) -> None:
+        if self.mind.cfg.emotions_enabled:
+            self.emit({"type": "emotion", **self.mind.language.emotions.state()})
 
     def _out(self, text: str, kind: str) -> None:
-        self.emit({"type": "out", "kind": kind, "text": text})
+        if kind == "face":
+            self._emit_emotion()
+            return
+
+        if kind == "token":
+            token, _, sure = text.partition("\t")
+            self.flush_spikes()
+            self.emit({"type": "speak", "token": token, "confidence": float(sure or 0)})
+        else:
+            self.emit({"type": "out", "kind": kind, "text": text})
 
     def _on_reply(self, reply: Reply) -> None:
         report = reply.report
@@ -111,6 +127,7 @@ class BrainHost:
                 "hits": report.hits,
                 "predicted": len(report.errors),
                 "dopamine": report.dopamine,
+                "confidence": reply.confidence,
             }
         )
 
@@ -150,6 +167,22 @@ class BrainHost:
             ],
         }
 
+    def brains(self) -> dict:
+        current = Path(self.mind.cfg.save_path).expanduser().resolve()
+
+        return {
+            "type": "brains",
+            "current": current.name,
+            "items": [
+                {
+                    "name": path.name,
+                    "megabytes": round(path.stat().st_size / 2**20),
+                    "modified": path.stat().st_mtime,
+                }
+                for path in self.session.brain_files()
+            ],
+        }
+
     def status(self) -> dict:
         brain = self.mind.brain
         language = self.mind.language
@@ -162,6 +195,8 @@ class BrainHost:
             "dialogTurns": language.dialog_turns,
             "timeMs": brain.time_ms,
             "grown": brain.synapses_grown,
+            "emotionsEnabled": self.mind.cfg.emotions_enabled,
+            "emotion": language.emotions.state(),
             "plastic": [
                 {
                     "name": p.name,
@@ -187,6 +222,7 @@ class BrainHost:
         self.ready.set()
         self.emit(self.anatomy())
         self.emit(self.status())
+        self.emit(self.brains())
         self._out(
             ("Загружен сохранённый мозг: " if restored else "Новый мозг: ")
             + cfg.save_path,
@@ -199,33 +235,44 @@ class BrainHost:
             if job is None:
                 break
 
-            kind, payload = job
-            self.busy = True
+            self._execute(*job)
+
+    def submit(self, fn, sink=None) -> Future:
+        """
+        Выполнить fn(session) в потоке мозга. sink(text, kind) получает
+        всё, что сессия говорит (ответ, служебные строки, слова стрима).
+        """
+
+        future: Future = Future()
+        self.jobs.put((fn, future, sink))
+
+        return future
+
+    def _execute(self, fn, future: Future, sink) -> None:
+        self.busy = True
+        self.emit(self.status())
+
+        if sink is not None:
+            self.session.out = lambda text, kind: (sink(text, kind), self._out(text, kind))
+
+        try:
+            mind = self.session.mind
+            future.set_result(fn(self.session))
+
+            if self.session.mind is not mind:
+                # /load — новый мозг, новая анатомия.
+                self.mind = self.session.mind
+                self._attach()
+                self.emit(self.anatomy())
+        except Exception as error:  # noqa: BLE001 — вернуть вызывающему, мозг жив
+            self._out(f"Ошибка: {error}", "info")
+            future.set_exception(error)
+        finally:
+            self.session.out = self._out
+            self.flush_spikes()
+            self.busy = False
             self.emit(self.status())
-
-            try:
-                if kind == "line":
-                    mind = self.session.mind
-                    self.session.handle(payload)
-
-                    if self.session.mind is not mind:
-                        # /load — новый мозг, новая анатомия.
-                        self.mind = self.session.mind
-                        self._attach()
-                        self.emit(self.anatomy())
-                elif kind == "read_text":
-                    name, text = payload
-                    self.session.stop.clear()
-                    self.session.read_text(name, text)
-
-                    if self.mind.cfg.autosave:
-                        self.mind.save()
-            except Exception as error:  # noqa: BLE001 — показать в чате, не уронить мозг
-                self._out(f"Ошибка: {error}", "info")
-            finally:
-                self.flush_spikes()
-                self.busy = False
-                self.emit(self.status())
+            self.emit(self.brains())
 
     def _attach(self) -> None:
         self.mind.brain.on_chunk = self._on_chunk
@@ -262,6 +309,7 @@ async def socket(ws: WebSocket) -> None:
     if host.ready.is_set():
         await ws.send_json(host.anatomy())
         await ws.send_json(host.status())
+        await ws.send_json(host.brains())
 
     async def sender():
         while True:
@@ -274,10 +322,11 @@ async def socket(ws: WebSocket) -> None:
             message = await ws.receive_json()
             kind = message.get("type")
 
+            # Действия идут через HTTP API (brain/api.py); здесь
+            # оставлено для совместимости и остановки чтения.
             if kind == "line":
-                host.jobs.put(("line", str(message.get("text", ""))))
-            elif kind == "read_text":
-                host.jobs.put(("read_text", (str(message.get("name", "файл")), str(message.get("text", "")))))
+                text = str(message.get("text", ""))
+                host.submit(lambda session: session.handle(text))
             elif kind == "stop" and host.session is not None:
                 host.session.stop.set()
     except WebSocketDisconnect:
@@ -285,6 +334,9 @@ async def socket(ws: WebSocket) -> None:
     finally:
         task.cancel()
         host.clients.discard(outbox)
+
+
+app.include_router(build_router(host))
 
 
 if WEB_DIST.exists():

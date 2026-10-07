@@ -1,20 +1,35 @@
-import { useEffect, useRef, useState } from "react";
-import type { ClientMessage, ReplyEvent } from "./brain";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import type { ReplyEvent } from "./brain";
 
 export interface ChatEntry {
   id: number;
   who: "you" | "brain" | "info";
   text: string;
   reply?: ReplyEvent;
+  // Ответ ещё произносится: слова приходят по одному.
+  streaming?: boolean;
+  // Слова ответа с уверенностью каждого.
+  words?: { token: string; confidence: number }[];
+  // Человек уже похвалил или поругал этот ответ.
+  rated?: boolean;
 }
 
 interface Props {
+  header?: ReactNode;
   entries: ChatEntry[];
   progress: string | null;
   busy: boolean;
   connected: boolean;
-  send: (message: ClientMessage) => void;
-  onLocal: (entry: Omit<ChatEntry, "id">) => void;
+  actions: ChatActions;
+}
+
+// Что чат умеет делать с мозгом (реализация — HTTP API, см. api.ts).
+export interface ChatActions {
+  say: (text: string) => void;
+  command: (text: string) => void;
+  upload: (name: string, text: string, size: number) => void;
+  feedback: (reward: number) => void;
+  stop: () => void;
 }
 
 function speed(reply: ReplyEvent): string {
@@ -27,7 +42,15 @@ function speed(reply: ReplyEvent): string {
   return text + `, угадал ${reply.hits} из ${reply.predicted}`;
 }
 
-export function Chat({ entries, progress, busy, connected, send, onLocal }: Props) {
+function percent(value: number): string {
+  return `${Math.round(value * 100)}%`;
+}
+
+function averageConfidence(words: { confidence: number }[]): number {
+  return words.reduce((sum, w) => sum + w.confidence, 0) / words.length;
+}
+
+export function Chat({ header, entries, progress, busy, connected, actions }: Props) {
   const [draft, setDraft] = useState("");
   const log = useRef<HTMLDivElement>(null);
   const files = useRef<HTMLInputElement>(null);
@@ -39,17 +62,15 @@ export function Chat({ entries, progress, busy, connected, send, onLocal }: Prop
   const submit = (text: string) => {
     const line = text.trim();
     if (!line) return;
-    onLocal({ who: "you", text: line });
-    send({ type: "line", text: line });
+    if (line.startsWith("/")) actions.command(line);
+    else actions.say(line);
     setDraft("");
   };
 
   const upload = async (list: FileList | null) => {
     if (!list) return;
     for (const file of Array.from(list)) {
-      const text = await file.text();
-      onLocal({ who: "you", text: `Загружаю «${file.name}» (${(file.size / 1024).toFixed(0)} КБ)` });
-      send({ type: "read_text", name: file.name, text });
+      actions.upload(file.name, await file.text(), file.size);
     }
     if (files.current) files.current.value = "";
   };
@@ -58,23 +79,47 @@ export function Chat({ entries, progress, busy, connected, send, onLocal }: Prop
 
   return (
     <section className="chat" aria-label="Разговор с мозгом">
+      {header}
       <div className="chat-log" ref={log} aria-live="polite">
         {entries.length === 0 && (
           <p className="chat-empty">
             Напиши фразу целиком, например «Столица Франции Париж». Мозг учится на каждой
             реплике и отвечает продолжением мысли. Похвали удачный ответ кнопкой «Верно».
+            Бледные слова — те, в которых мозг не уверен; если не знает, так и скажет.
           </p>
         )}
         {entries.map((entry) => (
           <div key={entry.id} className={`line line-${entry.who}`}>
-            {entry.who === "info" ? <pre>{entry.text}</pre> : <p>{entry.text}</p>}
+            {entry.who === "info" ? (
+              <pre>{entry.text}</pre>
+            ) : (
+              <p>
+                {entry.words?.length
+                  ? entry.words.map((w, i) => (
+                      <span
+                        key={i}
+                        className="spoken"
+                        style={{ opacity: 0.45 + 0.55 * w.confidence }}
+                        title={`уверенность ${percent(w.confidence)}`}
+                      >
+                        {i ? " " : ""}
+                        {w.token}
+                      </span>
+                    ))
+                  : entry.text}
+                {entry.streaming && <span className="caret" aria-hidden="true" />}
+              </p>
+            )}
+            {entry.who === "brain" && !entry.streaming && entry.words?.length ? (
+              <small>уверен на {percent(averageConfidence(entry.words))}</small>
+            ) : null}
             {entry.reply && entry.reply.promptTokens > 0 && <small>{speed(entry.reply)}</small>}
-            {entry === lastBrain && entry.text !== "..." && !busy && (
+            {entry === lastBrain && !entry.streaming && !entry.rated && entry.text !== "не знаю" && !busy && (
               <div className="feedback">
-                <button type="button" onClick={() => submit("+")}>
+                <button type="button" onClick={() => actions.feedback(1)}>
                   Верно
                 </button>
-                <button type="button" onClick={() => submit("-")}>
+                <button type="button" onClick={() => actions.feedback(-1)}>
                   Неверно
                 </button>
               </div>
@@ -112,7 +157,7 @@ export function Chat({ entries, progress, busy, connected, send, onLocal }: Prop
             Дать прочитать файл
           </button>
           {busy && (
-            <button type="button" className="stop" onClick={() => send({ type: "stop" })}>
+            <button type="button" className="stop" onClick={actions.stop}>
               Остановить чтение
             </button>
           )}

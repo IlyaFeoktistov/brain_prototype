@@ -36,8 +36,23 @@ export interface PlasticStatus {
   mean: number;
 }
 
+export interface EmotionState {
+  name: string;
+  title: string;
+  face: string;
+  valence: number;
+  arousal: number;
+  confusion: number;
+}
+
+export interface EmotionEvent extends EmotionState {
+  type: "emotion";
+}
+
 export interface Status {
   type: "status";
+  emotionsEnabled: boolean;
+  emotion: EmotionState;
   busy: boolean;
   words: number;
   tokens: number;
@@ -78,9 +93,38 @@ export interface ReplyEvent {
   hits: number;
   predicted: number;
   dopamine: number;
+  // Уверенность каждого слова ответа (0..1), выученная мозгом из опыта.
+  confidence: number[];
 }
 
-export type ServerMessage = Anatomy | Status | Spikes | StepEvent | Out | ReplyEvent;
+export interface SpeakEvent {
+  type: "speak";
+  token: string;
+  confidence: number;
+}
+
+export interface BrainFile {
+  name: string;
+  megabytes: number;
+  modified: number;
+}
+
+export interface Brains {
+  type: "brains";
+  current: string;
+  items: BrainFile[];
+}
+
+export type ServerMessage =
+  | Anatomy
+  | Status
+  | Spikes
+  | StepEvent
+  | Out
+  | ReplyEvent
+  | SpeakEvent
+  | Brains
+  | EmotionEvent;
 
 export type ClientMessage =
   | { type: "line"; text: string }

@@ -1,0 +1,91 @@
+"""
+Регрессия обучения: то, что уже работает, не должно сломаться.
+
+Пороги взяты с запасом от замеров (docs/DESIGN.md), чтобы тест ловил
+поломку механизма, а не шум отдельного прогона.
+"""
+
+from brain.language import Confidence
+from tests.conftest import FACTS, make_mind
+
+
+def rank(language, prompt: str, target: str) -> int:
+    probe = language.probe(prompt)
+    ranked = language.semantic.decode(probe["expected"], {prompt.split()[-1]}, top=200)
+    return next((i + 1 for i, (token, _) in enumerate(ranked) if token == target), 999)
+
+
+def test_learns_facts_from_reading(trained):
+    language = trained.language
+    # Ответ среди первых трёх ожиданий (словарь ~20 слов).
+    assert rank(language, "столица франции", "париж") <= 3
+    assert rank(language, "столица германии", "берлин") <= 3
+
+
+def test_prediction_improves_and_dopamine_falls():
+    mind = make_mind("small")
+    language = mind.language
+    first = language.read_text(FACTS)
+
+    for _ in range(4):
+        last = language.read_text(FACTS)
+
+    assert last.hits > first.hits
+    # Выученное перестаёт перестраивать сеть.
+    assert last.dopamine < first.dopamine
+
+
+def test_unknown_last_word_gets_dont_know(trained):
+    assert trained.language.generate("квантовая хромодинамика описывает") == []
+
+
+def test_does_not_ask_about_short_words(mind):
+    language = mind.language
+    language.read_text(FACTS)
+    assert "что такое" not in language.converse("Столица Франции и").text
+
+
+def test_asks_about_unknown_words(mind):
+    language = mind.language
+    language.read_text(FACTS)
+
+    reply = language.converse("Столица Франции хромодинамика")
+    assert "что такое «хромодинамика»" in reply.text
+    assert reply.unknown == ["хромодинамика"]
+
+    # Ответ человека — обычный опыт: теперь слово знакомо,
+    # и на объяснение мозг не отвечает встречными вопросами.
+    explained = language.converse("Хромодинамика это раздел физики")
+    assert "что такое" not in explained.text
+    assert language.familiar("хромодинамика")
+    assert "хромодинамика" not in language.converse("Хромодинамика это").text
+
+
+def test_answer_does_not_repeat_words(trained):
+    produced = trained.language.generate("столица франции")
+    tokens = [token for token, _ in produced]
+
+    assert len(tokens) == len(set(tokens))
+    assert not {"столица", "франции"} & set(tokens)
+
+
+def test_confidence_is_monotone():
+    confidence = Confidence()
+
+    for margin, hit in [(1.0, False)] * 20 + [(1.6, True)] * 10 + [(1.6, False)] * 10 + [(2.5, True)] * 9:
+        confidence.update(margin, hit)
+
+    assert confidence(1.0) < confidence(1.6) <= confidence(2.5)
+    # Более резкое ожидание не менее надёжно даже без данных.
+    assert confidence(3.5) >= confidence(2.5)
+
+
+def test_praise_changes_weights(mind):
+    language = mind.language
+    language.read_text(FACTS)
+    language.converse("столица франции")
+    before = mind.brain.net_weight.clone()
+
+    language.converse("+")
+
+    assert not (before == mind.brain.net_weight).all()

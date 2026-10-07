@@ -1,9 +1,10 @@
-import type { Anatomy, Status } from "./brain";
+import type { Anatomy, EmotionState, Status } from "./brain";
 
 interface Props {
   anatomy: Anatomy;
   status: Status | null;
   activity: Record<string, number>;
+  emotion: EmotionState | null;
 }
 
 // Схема проводящих путей: ухо -> зоны -> рот.
@@ -14,6 +15,7 @@ const POSITION: Record<string, [number, number]> = {
   prefrontal: [360, 28],
   motor: [360, 112],
   mouth: [470, 136],
+  limbic: [250, 136],
 };
 
 const SHORT: Record<string, string> = {
@@ -27,7 +29,7 @@ function place(name: string, index: number): [number, number] {
   return POSITION[name] ?? [80 + index * 90, 150];
 }
 
-export function Pathways({ anatomy, status, activity }: Props) {
+export function Pathways({ anatomy, status, activity, emotion }: Props) {
   const index = new Map(anatomy.areas.map((a, i) => [a.name, i]));
   const learned = new Map(status?.plastic.map((p) => [p.name, p]) ?? []);
 
@@ -38,7 +40,7 @@ export function Pathways({ anatomy, status, activity }: Props) {
   };
 
   return (
-    <svg className="pathways" viewBox="0 0 500 150" role="img" aria-label="Схема проводящих путей между зонами">
+    <svg className="pathways" viewBox="0 0 500 160" role="img" aria-label="Схема проводящих путей между зонами">
       <defs>
         <marker id="tip" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
           <path d="M0,0 L10,5 L0,10 z" className="tip" />
@@ -96,6 +98,16 @@ export function Pathways({ anatomy, status, activity }: Props) {
           </g>
         );
       })}
+
+      {/* Лимбическая система: модель, а не спайковая зона — пунктир. */}
+      <path d={edge(POSITION.limbic, place("association", 0), 0)} className="path path-limbic" />
+      <g transform={`translate(${POSITION.limbic[0]},${POSITION.limbic[1]})`}>
+        <circle r={10} className={emotion ? "node node-limbic" : "node node-limbic node-off"} />
+        <text x={18} y={4} className="node-label node-label-side">
+          {emotion ? `эмоции: ${emotion.name}` : "эмоции выкл."}
+        </text>
+        <title>Лимбическая система: эмоции из дофамина, похвалы и уверенности</title>
+      </g>
 
       <text x={POSITION.ear[0]} y={POSITION.ear[1] + 4} className="endpoint">
         ухо

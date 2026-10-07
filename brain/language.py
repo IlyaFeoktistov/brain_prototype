@@ -10,6 +10,7 @@ from typing import Callable
 import torch
 
 from brain.engine import SpikingBrain
+from brain.limbic import Emotions
 
 
 def _cosine(a: torch.Tensor, b: torch.Tensor) -> float:
@@ -43,10 +44,26 @@ class Ear:
         self.cache: dict[str, torch.Tensor] = {}
 
     def encode(self, token: str) -> torch.Tensor:
-        raster = self.cache.get(token)
+        channels, pattern = self._code(token)
 
-        if raster is not None:
-            return raster
+        raster = torch.zeros(
+            pattern.shape[0], self.cfg.sensory_size, device=self.device
+        )
+        raster[:, channels] = pattern
+
+        return raster
+
+    def _code(self, token: str) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Компактный код звучания: 32 канала + узор спайков [steps, 32].
+        Полный растр [steps, 2048] весит 0.5 МБ — на словаре в десятки
+        тысяч слов кэш полных растров не влезал в видеокарту.
+        """
+
+        code = self.cache.get(token)
+
+        if code is not None:
+            return code
 
         cfg = self.cfg
         seed = int.from_bytes(
@@ -60,20 +77,16 @@ class Ear:
             : cfg.sensory_channels_per_token
         ]
         p = cfg.sensory_rate_hz * cfg.dt_ms / 1000.0
+        pattern = (torch.rand(steps, len(channels), generator=rng) < p).float()
 
-        raster = torch.zeros(steps, cfg.sensory_size)
-        raster[:, channels] = (
-            torch.rand(steps, len(channels), generator=rng) < p
-        ).float()
+        code = (channels.to(self.device), pattern.to(self.device))
 
-        raster = raster.to(self.device)
-
-        if len(self.cache) > 50_000:
+        if len(self.cache) > 200_000:
             self.cache.clear()
 
-        self.cache[token] = raster
+        self.cache[token] = code
 
-        return raster
+        return code
 
 
 # ==================================================================
@@ -200,6 +213,72 @@ class Readout:
 
 
 # ==================================================================
+# УВЕРЕННОСТЬ (метапознание)
+# ==================================================================
+
+
+class Confidence:
+    """
+    Насколько мозг уверен в своём ожидании — выучено из опыта.
+
+    Резкость ожидания (margin) = во сколько раз лучший кандидат
+    сильнее среднего из 20 лучших. Сама по себе это просто число.
+    Пока мозг читает, он каждый раз видит, сбылось ли ожидание,
+    и копит статистику «при такой резкости я прав в X% случаев».
+    Эту долю он и называет своей уверенностью: хорошо выученное
+    («столица германии -> берлин») идёт с высокой, слабо
+    выученное — с низкой.
+    """
+
+    EDGES = (1.1, 1.2, 1.3, 1.5, 1.8, 2.2, 3.0)
+
+    def __init__(self):
+        self.hits = [0] * (len(self.EDGES) + 1)
+        self.total = [0] * (len(self.EDGES) + 1)
+
+    @staticmethod
+    def margin(ranked: list[tuple[str, float]]) -> float:
+        if not ranked:
+            return 0.0
+
+        mean = sum(score for _, score in ranked) / len(ranked)
+
+        return ranked[0][1] / mean if mean > 0 else 0.0
+
+    def _bin(self, margin: float) -> int:
+        return sum(margin >= edge for edge in self.EDGES)
+
+    def update(self, margin: float, hit: bool) -> None:
+        index = self._bin(margin)
+        self.total[index] += 1
+        self.hits[index] += hit
+
+    @property
+    def experience(self) -> int:
+        return sum(self.total)
+
+    def __call__(self, margin: float) -> float:
+        """Доля сбывшихся ожиданий при такой резкости (0..1)."""
+
+        # Сглаживание (Лаплас) + монотонность: более резкое
+        # ожидание не может быть менее надёжным, чем мягкое.
+        probability = 0.0
+
+        for index in range(self._bin(margin) + 1):
+            estimate = (self.hits[index] + 1) / (self.total[index] + 2)
+            probability = max(probability, estimate) if index else estimate
+
+        return probability
+
+    def state_dict(self) -> dict:
+        return {"hits": self.hits, "total": self.total}
+
+    def load_state_dict(self, state: dict) -> None:
+        self.hits = list(state["hits"])
+        self.total = list(state["total"])
+
+
+# ==================================================================
 # ИНТЕРФЕЙС
 # ==================================================================
 
@@ -213,6 +292,7 @@ class Step:
     expected_score: float = 0.0
     error: float | None = None
     dopamine: float = 0.0
+    margin: float = 0.0
 
 
 @dataclass
@@ -224,6 +304,10 @@ class Reply:
     prompt_seconds: float = 0.0
     generated: int = 0
     generate_seconds: float = 0.0
+    # Уверенность каждого слова ответа (0..1), выученная из опыта.
+    confidence: list[float] = field(default_factory=list)
+    # Слова реплики, которых мозг раньше не слышал.
+    unknown: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -289,13 +373,22 @@ class LanguageInterface:
             self.motor.E.size, cfg.readout_top_k, cfg.readout_rate, self.device
         )
 
+        self.confidence = Confidence()
+        self.emotions = Emotions()
+
         self.last_rates: torch.Tensor | None = None
         self.last_token: str | None = None
+        # Слова текущей фразы (с последней паузы).
+        self.heard_in_phrase: list[str] = []
+        # Слова, про которые мозг сам спрашивал «что такое…».
+        self.asked: set[str] = set()
 
         self.experienced_tokens = 0
         self.sentences_lived = 0
         # Наблюдатель (веб-интерфейс): вызывается после каждого слова.
         self.on_step: Callable[[Step, bool], None] | None = None
+        # Стрим ответа: вызывается, как только мозг выбрал слово.
+        self.on_speak: Callable[[str, float], None] | None = None
         self.dialog_turns = 0
 
     # ==============================================================
@@ -351,10 +444,13 @@ class LanguageInterface:
 
         self.brain.run(self.cfg.rest_ms)
 
-        if self.cfg.synaptic_scaling_enabled:
-            self.brain.synaptic_scaling()
-
         self.sentences_lived += 1
+
+        if (
+            self.cfg.synaptic_scaling_enabled
+            and self.sentences_lived % self.cfg.synaptic_scaling_every == 0
+        ):
+            self.brain.synaptic_scaling()
 
         if (
             self.cfg.structural_plasticity_enabled
@@ -364,6 +460,7 @@ class LanguageInterface:
 
         self.last_rates = None
         self.last_token = None
+        self.heard_in_phrase = []
 
     # ==============================================================
     # PREDICTION
@@ -379,19 +476,53 @@ class LanguageInterface:
 
         drive = self.brain.learned_drive(rates, "association")
         active = self._area(rates, self.meaning) > 0
+        drive = drive.masked_fill(active, 0.0)
 
-        return drive.masked_fill(active, 0.0)
+        # Выстрелили бы только самые возбуждённые: торможение зоны
+        # оставляет ~target_activity нейронов (k-WTA).
+        fraction = self.cfg.expectation_top_fraction
+
+        if fraction > 0:
+            k = max(1, int(drive.numel() * fraction))
+            top = drive.topk(k)
+            drive = torch.zeros_like(drive).scatter_(0, top.indices, top.values)
+
+        return drive
+
+    @staticmethod
+    def _winners(drive: torch.Tensor, fraction: float) -> torch.Tensor:
+        """k-WTA: остаются только самые возбуждённые нейроны."""
+
+        k = max(1, int(drive.numel() * fraction))
+        top = drive.topk(k)
+
+        return torch.zeros_like(drive).scatter_(0, top.indices, top.values)
 
     def speak(self, expected: torch.Tensor) -> torch.Tensor:
-        """Ожидание смысла -> ожидаемый моторный паттерн (рот)."""
+        """
+        Ожидание смысла -> ожидаемый моторный паттерн (рот).
+
+        В моторную зону уходят только нейроны смысла, которые
+        реально выстрелили бы, и в ней самой побеждают самые
+        возбуждённые — как при настоящем произнесении слова.
+        """
+
+        sparse = self.cfg.mouth_sparse
+
+        if sparse:
+            expected = self._winners(expected, self._target("association"))
 
         full = torch.zeros(self.brain.n, device=self.device)
         full[self.meaning.E.slice] = expected
         proj = self.brain.projection("association -> motor")
 
         got = full.index_select(0, proj.pre.flatten()).view_as(proj.weight)
+        motor = (got * proj.weight).sum(1)
 
-        return (got * proj.weight).sum(1)
+        return self._winners(motor, self._target("motor")) if sparse else motor
+
+    def _target(self, area: str) -> float:
+        return next(a.target_activity for a in self.cfg.areas if a.name == area)
 
     def predict(
         self,
@@ -433,11 +564,12 @@ class LanguageInterface:
             ranked = self.semantic.decode(
                 expected_state,
                 exclude={self.last_token} if self.last_token else None,
-                top=1,
+                top=20,
             )
 
             if ranked:
                 step.expected, step.expected_score = ranked[0]
+                step.margin = Confidence.margin(ranked)
 
         rates = self.perceive(token, learn_forms=learn)
 
@@ -445,6 +577,10 @@ class LanguageInterface:
             step.error = 1.0 - _cosine(
                 expected_state, self.semantic.prototype(token)
             )
+
+            if learn and step.expected is not None:
+                # Мозг сверяет: при такой резкости ожидания сбылось ли?
+                self.confidence.update(step.margin, step.expected == token)
 
             if learn:
                 step.dopamine = self.surprise_dopamine(
@@ -454,9 +590,14 @@ class LanguageInterface:
                 # превращает eligibility traces только что
                 # прошедших пар в изменение весов.
                 self.brain.reward(step.dopamine)
+                self._feel("heard",
+                    step.dopamine,
+                    step.expected == token if step.expected is not None else None,
+                )
 
         self.last_rates = rates
         self.last_token = token
+        self.heard_in_phrase.append(token)
 
         if self.on_step:
             self.on_step(step, learn)
@@ -573,12 +714,20 @@ class LanguageInterface:
 
         if amplitude is not None:
             self.brain.reward(amplitude)
+            self._feel("feedback", amplitude)
             self.brain.run(self.cfg.rest_ms)
             word = "закрепил" if amplitude > 0 else "ослабил"
             return Reply(f"[dopamine {amplitude:+.0f}: {word} последний ответ]", ReadReport())
 
         report = ReadReport()
         sentences = [s for s in self.sentences(text) if self.tokenize(s)]
+        # Незнакомые слова — до того, как мозг их услышит в этой реплике.
+        unknown = list(dict.fromkeys(
+            token
+            for sentence in sentences
+            for token in self.tokenize(sentence)
+            if not self.familiar(token)
+        ))
         start = time.perf_counter()
 
         for i, sentence in enumerate(sentences):
@@ -601,16 +750,56 @@ class LanguageInterface:
         prompt_seconds = time.perf_counter() - start
 
         start = time.perf_counter()
-        produced = self._continue()
+        last = self.last_token
+        # Продолжать мысль от незнакомого слова не от чего.
+        produced = [] if last in unknown else self._continue()
         self._sync()
+        self._feel("answered", [sure for _, sure in produced])
+
+        answer = " ".join(token for token, _ in produced)
+        question = ""
+
+        # Врождённый рефлекс любопытства: спросить про новое.
+        # Ответ человека — обычная реплика, на ней мозг и учится.
+        # Короткие слова («и», «это») — обычно служебные, про них не
+        # спрашивает; если в реплике есть слово, про которое он сам
+        # спрашивал, — это объяснение: слушает, а не переспрашивает.
+        explaining = any(token in self.asked for token in self.heard_in_phrase)
+        worth_asking = sorted(
+            (word for word in unknown if len(word) >= self.cfg.ask_min_letters),
+            key=len,
+            reverse=True,
+        )[:2]
+
+        if worth_asking and not explaining and self.cfg.ask_about_unknown:
+            question = "а что такое " + " и ".join(f"«{word}»" for word in worth_asking) + "?"
+            self.asked.update(worth_asking)
+            self._feel("curious")
+
+        text = " … ".join(part for part in (answer, question) if part) or "не знаю"
 
         return Reply(
-            " ".join(token for token, _ in produced) or "...",
+            text,
             report,
             prompt_seconds=prompt_seconds,
             generated=len(produced),
             generate_seconds=time.perf_counter() - start,
+            confidence=[sure for _, sure in produced],
+            unknown=unknown,
         )
+
+    def familiar(self, token: str) -> bool:
+        """Слышал ли мозг это слово раньше (хотя бы раз)."""
+
+        row = self.semantic.index.get(token)
+
+        return row is not None and self.semantic.observations[row] >= self.cfg.familiar_after
+
+    def _feel(self, event: str, *args) -> None:
+        """Передать событие лимбической системе, если эмоции включены."""
+
+        if self.cfg.emotions_enabled:
+            getattr(self.emotions, event)(*args)
 
     def _sync(self) -> None:
         if self.device.type == "cuda":
@@ -628,26 +817,42 @@ class LanguageInterface:
             return []
 
         produced: list[tuple[str, float]] = []
-        recent = [self.last_token] if self.last_token else []
+        # Привыкание: уже прозвучавшие в этой фразе слова (реплика
+        # человека и собственный ответ) мозг не повторяет — иначе
+        # ответ ходит по кругу «париж столица франции париж…».
+        recent = set(self.heard_in_phrase)
 
         for _ in range(max_tokens or self.cfg.generate_max_tokens):
             expected = self.expectation(self.last_rates)
 
             # Слово выбирает ассоциативная кора; моторная зона
             # пока только отражает речь (см. «рот произнёс бы»).
-            ranked = self.semantic.decode(expected, exclude=set(recent), top=1)
+            ranked = self.semantic.decode(expected, exclude=recent, top=20)
 
             if not ranked:
                 break
 
             token, score = ranked[0]
+            margin = Confidence.margin(ranked)
+            sure = self.confidence(margin)
 
-            if score < self.cfg.generate_min_score:
+            if score < self.cfg.generate_min_score or margin < self.cfg.generate_min_margin:
                 break
 
-            produced.append((token, score))
+            # Когда мозг уже знает свою надёжность — молчит,
+            # если почти наверняка ошибётся.
+            if (
+                self.confidence.experience >= self.cfg.confidence_min_experience
+                and sure < self.cfg.generate_min_confidence
+            ):
+                break
+
+            produced.append((token, sure))
+
+            if self.on_speak:
+                self.on_speak(token, sure)
             self.experience([token], learn=False)
-            recent = (recent + [token])[-3:]
+            recent.add(token)
 
         return produced
 
@@ -657,6 +862,10 @@ class LanguageInterface:
         tokens = self.tokenize(prompt)
 
         if not tokens:
+            return []
+
+        # От незнакомого слова продолжать не от чего — «не знаю».
+        if not self.familiar(tokens[-1]):
             return []
 
         with self.isolated():
@@ -673,18 +882,18 @@ class LanguageInterface:
 
         def __enter__(self):
             i = self.interface
-            self.saved = (i.last_rates, i.last_token, i.experienced_tokens)
+            self.saved = (i.last_rates, i.last_token, i.experienced_tokens, i.heard_in_phrase)
             self.frozen = i.brain.frozen()
             self.frozen.__enter__()
             # Чистый контекст: пауза тишины, прошлое затухает само.
             i.brain.run(i.cfg.probe_pause_ms)
-            i.last_rates, i.last_token = None, None
+            i.last_rates, i.last_token, i.heard_in_phrase = None, None, []
             return self
 
         def __exit__(self, *exc):
             i = self.interface
             self.frozen.__exit__(*exc)
-            i.last_rates, i.last_token, i.experienced_tokens = self.saved
+            i.last_rates, i.last_token, i.experienced_tokens, i.heard_in_phrase = self.saved
             return False
 
     def isolated(self) -> "_Isolated":
@@ -917,6 +1126,8 @@ class LanguageInterface:
             "mouth": self.mouth.state_dict(),
             "experienced_tokens": self.experienced_tokens,
             "sentences_lived": self.sentences_lived,
+            "confidence": self.confidence.state_dict(),
+            "emotions": self.emotions.state_dict(),
             "dialog_turns": self.dialog_turns,
         }
 
@@ -926,3 +1137,9 @@ class LanguageInterface:
         self.experienced_tokens = state["experienced_tokens"]
         self.dialog_turns = state["dialog_turns"]
         self.sentences_lived = state.get("sentences_lived", 0)
+
+        if "confidence" in state:
+            self.confidence.load_state_dict(state["confidence"])
+
+        if "emotions" in state:
+            self.emotions.load_state_dict(state["emotions"])

@@ -35,8 +35,11 @@ HELP = """
   /debug слово                ансамбль слова по зонам
   /debug_association a b      E -> E синапсы между ансамблями
   /stats                      зоны, синапсы, что выучено
+  /mood                       что мозг сейчас чувствует
+  /emotions on|off            включить / выключить эмоции
 
-  /save [путь]  /load путь    сохранить / загрузить мозг
+  /brains                     список сохранённых мозгов
+  /save [путь]  /load имя     сохранить / переключиться на другой мозг
   /help /quit                 (на выходе мозг сохраняется сам)
 """.strip("\n")
 
@@ -76,6 +79,9 @@ def speed_line(reply: Reply) -> str | None:
             f"({gen_speed:.0f} ток/с)"
         )
 
+    if reply.confidence:
+        line += f" · уверенность {100 * sum(reply.confidence) / len(reply.confidence):.0f}%"
+
     return (
         line
         + f" · угадал следующих {report.hits}/{len(report.errors)}"
@@ -101,6 +107,7 @@ class Session:
         self.out = out
         self.on_reply = on_reply
         self.stop = threading.Event()
+        self._saved_at = time.time()
 
     @property
     def language(self):
@@ -109,8 +116,18 @@ class Session:
     # ==============================================================
 
     def say(self, text: str) -> Reply:
-        reply = self.language.converse(text)
+        # Слова ответа уходят наружу сразу, как мозг их выбрал.
+        self.language.on_speak = lambda token, sure: self.out(f"{token}\t{sure:.2f}", "token")
+
+        try:
+            reply = self.language.converse(text)
+        finally:
+            self.language.on_speak = None
+
         self.out(reply.text, "brain")
+
+        if self.mind.cfg.emotions_enabled:
+            self.out(self.language.emotions.state()["face"], "face")
 
         speed = speed_line(reply)
 
@@ -174,16 +191,75 @@ class Session:
                 self.read(payload)
         elif command == "/save":
             out(f"Сохранено: {self.mind.save(payload or None)}")
+        elif command == "/emotions":
+            if payload in ("on", "вкл"):
+                self.mind.cfg.emotions_enabled = True
+            elif payload in ("off", "выкл"):
+                self.mind.cfg.emotions_enabled = False
+            out(f"Эмоции: {'включены' if self.mind.cfg.emotions_enabled else 'выключены'}")
+        elif command == "/mood":
+            state = language.emotions.state()
+            out(
+                f"{state['face']}\n  {state['title']}  "
+                f"(настроение {state['valence']:+.2f}, возбуждение {state['arousal']:.2f}, "
+                f"растерянность {state['confusion']:.2f})"
+            )
+        elif command == "/brains":
+            out(self.brains_text())
         elif command == "/load":
-            if not payload or not Path(payload).expanduser().exists():
-                out("Формат: /load путь_к_файлу.pt")
+            target = self.resolve_brain(payload)
+
+            if target is None:
+                out("Формат: /load имя_или_путь.pt  (список — /brains)")
             else:
-                self.mind = Mind.load(payload)
-                out(f"Загружено: {payload}")
+                # Текущий мозг сохраняется, чтобы прогресс не потерять.
+                self.autosave(force=True)
+                self.mind = Mind.load(str(target))
+                out(f"Загружено: {target} — {self.mind.brain.n:,} нейронов")
         else:
             out("Неизвестная команда. /help — список команд")
 
         return True
+
+    # ==============================================================
+    # МОЗГИ
+    # ==============================================================
+
+    def brain_files(self) -> list[Path]:
+        """Сохранённые мозги: *.pt рядом с текущим и в data/."""
+
+        folders = {Path(self.mind.cfg.save_path).expanduser().resolve().parent, Path("data").resolve()}
+        files = {p.resolve() for folder in folders if folder.exists() for p in folder.glob("*.pt")}
+
+        return sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+
+    def resolve_brain(self, name: str) -> Path | None:
+        if not name:
+            return None
+
+        path = Path(name).expanduser()
+
+        if path.exists():
+            return path
+
+        for candidate in self.brain_files():
+            if candidate.name in (name, f"{name}.pt"):
+                return candidate
+
+        return None
+
+    def brains_text(self) -> str:
+        current = Path(self.mind.cfg.save_path).expanduser().resolve()
+        lines = ["Сохранённые мозги (/load имя):"]
+
+        for path in self.brain_files():
+            mark = "●" if path == current else " "
+            lines.append(
+                f" {mark} {path.name:24s} {path.stat().st_size / 2**20:8.0f} МБ  "
+                f"{time.strftime('%d.%m %H:%M', time.localtime(path.stat().st_mtime))}"
+            )
+
+        return "\n".join(lines)
 
     # ==============================================================
 
@@ -199,6 +275,16 @@ class Session:
         self.out(f"{name}: {report_line(report, time.time() - start)}", "info")
 
         return report
+
+    def autosave(self, force: bool = False) -> None:
+        """Сохранить мозг, но не чаще раза в autosave_minutes (большой мозг весит ГБ)."""
+
+        cfg = self.mind.cfg
+        now = time.time()
+
+        if cfg.autosave and (force or now - self._saved_at >= cfg.autosave_minutes * 60):
+            self.mind.save()
+            self._saved_at = now
 
     def read(self, payload: str) -> None:
         self.stop.clear()
@@ -236,8 +322,8 @@ class Session:
                     continue
 
                 total.merge(self.read_text(path.name, text))
-
-                if self.mind.cfg.autosave:
-                    self.mind.save()
+                self.autosave()
 
             self.out(f"проход {index}: {report_line(total, time.time() - start)}", "info")
+
+        self.autosave(force=True)

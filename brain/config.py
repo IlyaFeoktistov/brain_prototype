@@ -1,13 +1,13 @@
 from dataclasses import dataclass
+import os
 
 
 @dataclass
 class BrainConfig:
     resolution_ms: float = 0.1
-    # Потоки NEST. NEST не умеет structural plasticity в нескольких
-    # потоках: для ускорения (~4x на 8 потоках) поставь
-    # threads=8 и structural_plasticity_enabled=False.
-    threads: int = 1
+    # Потоки NEST (~4x быстрее на 8 потоках).
+    # NEST не умеет structural plasticity в нескольких потоках.
+    threads: int = min(8, os.cpu_count() or 1)
     epoch_ms: float = 500.0
     epochs: int = 60
 
@@ -33,7 +33,11 @@ class BrainConfig:
     min_connections_before_death: int = 1
     death_patience_epochs: int = 8
 
-    structural_plasticity_enabled: bool = True
+    # Выключено: E -> E синапсы (stdp_dopamine_synapse), которые
+    # создаёт structural plasticity, через несколько сотен токенов
+    # получают вес NaN, и NaN расползается по ожиданию и dopamine.
+    # Включать только вместе с threads=1.
+    structural_plasticity_enabled: bool = False
     structural_update_interval_ms: float = 1000.0
 
     ca_target_excitatory: float = 0.05

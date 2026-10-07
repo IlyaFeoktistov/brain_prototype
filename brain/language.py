@@ -3,186 +3,204 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 import hashlib
-import math
-import random
 import re
+import time
+from typing import Callable
 
-import nest
+import torch
 
-from brain.network import BrainNetwork
-
-
-State = dict[int, float]
+from brain.engine import SpikingBrain
 
 
-def _cosine(a: State, b: State) -> float:
-    if not a or not b:
-        return 0.0
-
-    if len(a) > len(b):
-        a, b = b, a
-
-    dot = sum(
-        value * b.get(gid, 0.0)
-        for gid, value in a.items()
-    )
-
-    na = math.sqrt(sum(v * v for v in a.values()))
-    nb = math.sqrt(sum(v * v for v in b.values()))
+def _cosine(a: torch.Tensor, b: torch.Tensor) -> float:
+    na = a.norm()
+    nb = b.norm()
 
     if not na or not nb:
         return 0.0
 
-    return dot / (na * nb)
+    return float((a @ b) / (na * nb))
 
 
 # ==================================================================
-# SENSORY ENCODER
+# УХО: текст -> sensory spike pattern
 # ==================================================================
 
 
-class SensoryEncoder:
+class Ear:
     """
-    Токен -> sensory spike pattern.
+    Токен -> растр sensory-спайков [steps, sensory_size].
 
-    Одинаковый токен всегда даёт один и тот же набор
-    sensory-каналов и одинаковые времена спайков
-    (аналог: одинаковый звук -> одинаковая активация улитки).
-
-    Какие нейроны КОРЫ ответят на этот паттерн,
-    здесь не решается — это делает сама сеть.
+    Одинаковый токен всегда даёт один и тот же набор каналов
+    и одинаковые времена спайков (одинаковый звук ->
+    одинаковая активация улитки). Какие нейроны коры
+    ответят — решает сама сеть.
     """
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, device):
         self.cfg = cfg
+        self.device = device
+        self.cache: dict[str, torch.Tensor] = {}
 
-    def encode(self, token: str) -> dict[int, list[float]]:
-        rng = random.Random(
-            hashlib.blake2b(
-                token.encode("utf-8"),
-                digest_size=16,
-            ).digest()
-        )
+    def encode(self, token: str) -> torch.Tensor:
+        raster = self.cache.get(token)
 
-        channels = rng.sample(
-            range(self.cfg.sensory_size),
-            self.cfg.sensory_channels_per_token,
-        )
+        if raster is not None:
+            return raster
 
-        rate_per_ms = self.cfg.sensory_rate_hz / 1000.0
+        cfg = self.cfg
+        seed = int.from_bytes(
+            hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest(),
+            "little",
+        ) & 0x7FFFFFFFFFFFFFFF
+        rng = torch.Generator().manual_seed(seed)
 
-        trains: dict[int, list[float]] = {}
+        steps = int(round(cfg.stimulus_ms / cfg.dt_ms))
+        channels = torch.randperm(cfg.sensory_size, generator=rng)[
+            : cfg.sensory_channels_per_token
+        ]
+        p = cfg.sensory_rate_hz * cfg.dt_ms / 1000.0
 
-        for channel in channels:
-            times = []
+        raster = torch.zeros(steps, cfg.sensory_size)
+        raster[:, channels] = (
+            torch.rand(steps, len(channels), generator=rng) < p
+        ).float()
 
-            t = rng.uniform(0.0, 1.0 / rate_per_ms)
+        raster = raster.to(self.device)
 
-            while t < self.cfg.language_stimulus_ms:
-                times.append(t)
-                t += rng.expovariate(rate_per_ms)
+        if len(self.cache) > 50_000:
+            self.cache.clear()
 
-            trains[channel] = times
+        self.cache[token] = raster
 
-        return trains
+        return raster
 
 
 # ==================================================================
-# DECODER / READOUT
+# READOUT: состояние зоны -> токен
 # ==================================================================
 
 
 class Readout:
     """
-    Decoder отвечает только на вопрос:
+    «Какому известному слову соответствует это состояние зоны?»
 
-        «Какой известный sensory/token pattern
-         сейчас соответствует этому состоянию мозга?»
-
-    Для каждого токена хранится усреднённый прототип
-    состояния коры, которое возникает, когда мозг этот
-    токен воспринимает. Это статистический readout,
-    а НЕ память: связи между токенами (столица -> франции)
-    здесь не хранятся и храниться не могут.
+    Для каждого токена хранится усреднённый прототип состояния
+    (top-k самых активных нейронов). Это словарь форм,
+    а НЕ память: переходы между словами здесь не хранятся.
     """
 
-    def __init__(self, rate: float, ensemble_size: int):
+    def __init__(self, size: int, top_k: int, rate: float, device):
+        self.size = size
+        self.top_k = top_k
         self.rate = rate
-        self.ensemble_size = ensemble_size
-        self.prototypes: dict[str, State] = {}
-        self.observations: dict[str, int] = {}
+        self.device = device
+
+        self.tokens: list[str] = []
+        self.index: dict[str, int] = {}
+        self.observations: list[int] = []
+
+        self.idx = torch.zeros(0, top_k, dtype=torch.long, device=device)
+        self.val = torch.zeros(0, top_k, device=device)
 
     def __contains__(self, token: str) -> bool:
-        return token in self.prototypes
+        return token in self.index
 
     def __len__(self) -> int:
-        return len(self.prototypes)
+        return len(self.tokens)
 
-    def observe(self, token: str, state: State) -> None:
-        if not state:
+    def _grow(self) -> None:
+        capacity = max(64, self.idx.shape[0] * 2)
+        idx = torch.zeros(capacity, self.top_k, dtype=torch.long, device=self.device)
+        val = torch.zeros(capacity, self.top_k, device=self.device)
+        idx[: len(self.tokens)] = self.idx[: len(self.tokens)]
+        val[: len(self.tokens)] = self.val[: len(self.tokens)]
+        self.idx, self.val = idx, val
+
+    def observe(self, token: str, state: torch.Tensor) -> None:
+        if not bool(state.any()):
             return
 
-        self.observations[token] = (
-            self.observations.get(token, 0) + 1
-        )
+        row = self.index.get(token)
+        dense = torch.zeros(self.size, device=self.device)
 
-        proto = self.prototypes.get(token)
+        if row is None:
+            if len(self.tokens) == self.idx.shape[0]:
+                self._grow()
 
-        if proto is None:
-            self.prototypes[token] = dict(state)
-            return
+            row = len(self.tokens)
+            self.tokens.append(token)
+            self.index[token] = row
+            self.observations.append(0)
+            dense += state
+        else:
+            dense[self.idx[row]] = self.val[row] * (1.0 - self.rate)
+            dense += self.rate * state
 
-        keep = 1.0 - self.rate
+        val, idx = dense.topk(min(self.top_k, self.size))
+        self.idx[row, : len(idx)] = idx
+        self.val[row, : len(val)] = val
+        self.observations[row] += 1
 
-        for gid in set(proto) | set(state):
-            value = (
-                keep * proto.get(gid, 0.0)
-                + self.rate * state.get(gid, 0.0)
-            )
-
-            if value > 1e-3:
-                proto[gid] = value
-            else:
-                proto.pop(gid, None)
+    def prototype(self, token: str) -> torch.Tensor:
+        row = self.index[token]
+        dense = torch.zeros(self.size, device=self.device)
+        dense[self.idx[row]] = self.val[row]
+        return dense
 
     def decode(
         self,
-        state: State,
+        state: torch.Tensor,
         exclude: set[str] | None = None,
+        top: int = 5,
     ) -> list[tuple[str, float]]:
-        exclude = exclude or set()
+        n = len(self.tokens)
 
-        ranked = [
-            (token, _cosine(state, proto))
-            for token, proto in self.prototypes.items()
-            if token not in exclude
+        if not n or not bool(state.any()):
+            return []
+
+        idx, val = self.idx[:n], self.val[:n]
+        dot = (state[idx] * val).sum(1)
+        norm = val.norm(dim=1) * state.norm()
+        scores = dot / norm.clamp(min=1e-9)
+
+        for token in exclude or ():
+            row = self.index.get(token)
+
+            if row is not None:
+                scores[row] = -1.0
+
+        values, rows = scores.topk(min(top, n))
+
+        return [
+            (self.tokens[r], float(v))
+            for r, v in zip(rows.tolist(), values.tolist())
+            if v > 0
         ]
 
-        ranked.sort(key=lambda item: item[1], reverse=True)
+    def assembly(self, token: str, count: int) -> torch.Tensor:
+        row = self.index[token]
+        return self.idx[row, :count]
 
-        return ranked
+    def state_dict(self) -> dict:
+        n = len(self.tokens)
+        return {
+            "tokens": self.tokens,
+            "observations": self.observations,
+            "idx": self.idx[:n].cpu(),
+            "val": self.val[:n].cpu(),
+        }
 
-    def assembly(self, token: str) -> tuple[int, ...]:
-        """Наиболее характерные нейроны токена (только для отладки)."""
-
-        proto = self.prototypes.get(token)
-
-        if not proto:
-            return ()
-
-        ranked = sorted(
-            proto.items(),
-            key=lambda item: item[1],
-            reverse=True,
-        )
-
-        return tuple(
-            gid for gid, _ in ranked[: self.ensemble_size]
-        )
+    def load_state_dict(self, state: dict) -> None:
+        self.tokens = list(state["tokens"])
+        self.observations = list(state["observations"])
+        self.index = {t: i for i, t in enumerate(self.tokens)}
+        self.idx = state["idx"].to(self.device)
+        self.val = state["val"].to(self.device)
 
 
 # ==================================================================
-# INTERFACE
+# ИНТЕРФЕЙС
 # ==================================================================
 
 
@@ -191,11 +209,21 @@ class Step:
     """Один такт восприятия: что пришло, что мозг ожидал, ошибка."""
 
     token: str
-    state: State
     expected: str | None = None
     expected_score: float = 0.0
     error: float | None = None
     dopamine: float = 0.0
+
+
+@dataclass
+class Reply:
+    """Ответ в диалоге + скорость (как у LLM: prompt и генерация)."""
+
+    text: str
+    report: "ReadReport"
+    prompt_seconds: float = 0.0
+    generated: int = 0
+    generate_seconds: float = 0.0
 
 
 @dataclass
@@ -204,60 +232,71 @@ class ReadReport:
     sentences: int = 0
     errors: list[float] = field(default_factory=list)
     hits: int = 0
+    dopamine: float = 0.0
 
-    def mean_error(self, part: slice = slice(None)) -> float:
-        values = self.errors[part]
-        return sum(values) / len(values) if values else 0.0
+    def mean_error(self) -> float:
+        return sum(self.errors) / len(self.errors) if self.errors else 0.0
+
+    def merge(self, other: "ReadReport") -> None:
+        self.tokens += other.tokens
+        self.sentences += other.sentences
+        self.errors += other.errors
+        self.hits += other.hits
+        self.dopamine += other.dopamine
 
 
-class SpikingLanguageInterface:
+TEXT_SUFFIX_SKIP = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".pdf",
+    ".zip", ".gz", ".tar", ".7z", ".rar", ".exe", ".dll", ".so", ".bin",
+    ".pt", ".pth", ".pyc", ".mp3", ".mp4", ".wav", ".avi", ".mov",
+}
+
+
+class LanguageInterface:
     """
-    Языковой интерфейс к BrainNetwork.
+    Ухо и рот мозга.
 
-        text
-          ↓
-        tokenizer
-          ↓
-        SensoryEncoder          (стабильный sensory-код)
-          ↓
-        BrainNetwork            (E/I cortex, STDP + dopamine)
-          ↓
-        current state
-          ├──► recurrent drive  (ожидание следующего состояния,
-          │                      вычисляется из реальных E -> E весов)
-          │          ↓
-          │    prediction error ──► dopamine ──► пластичность
-          ↓
-        Readout                 (state -> token, только чтение)
-          ↓
-        text
+        текст -> tokenizer -> Ear -> auditory -> association ⇄ prefrontal
+                                                    │
+                                 ожидание = выученные синапсы
+                                 (association E->E + prefrontal -> association)
+                                                    │
+                                 prediction error -> dopamine -> закрепление
+                                                    │
+                                            association -> motor -> Mouth -> текст
 
-    Здесь нет question -> answer и нет словаря знаний.
-    Последовательность «столица -> франции -> париж»
-    может храниться только в синапсах коры.
+    Ответов и пар «вопрос -> ответ» нигде нет.
+    Последовательности хранятся только в синапсах.
     """
 
-    def __init__(
-        self,
-        brain: BrainNetwork,
-        cfg,
-    ):
+    def __init__(self, brain: SpikingBrain, cfg):
         self.brain = brain
         self.cfg = cfg
+        self.device = brain.device
 
-        self.encoder = SensoryEncoder(cfg)
+        self.ear = Ear(cfg, self.device)
 
-        self.readout = Readout(
-            rate=cfg.readout_rate,
-            ensemble_size=cfg.language_ensemble_size,
+        self.meaning = self.brain.areas["association"]
+        self.context = self.brain.areas["prefrontal"]
+        self.motor = self.brain.areas["motor"]
+
+        self.semantic = Readout(
+            self.meaning.E.size, cfg.readout_top_k, cfg.readout_rate, self.device
+        )
+        # Рот: какой моторный паттерн произносит какое слово.
+        # Выучивается, пока мозг слушает (моторный резонанс).
+        self.mouth = Readout(
+            self.motor.E.size, cfg.readout_top_k, cfg.readout_rate, self.device
         )
 
-        # Последнее воспринятое состояние — с него
-        # строится ожидание следующего.
-        self.last_state: State = {}
+        self.last_rates: torch.Tensor | None = None
         self.last_token: str | None = None
 
         self.experienced_tokens = 0
+        self.sentences_lived = 0
+        # Наблюдатель (веб-интерфейс): вызывается после каждого слова.
+        self.on_step: Callable[[Step, bool], None] | None = None
+        self.dialog_turns = 0
 
     # ==============================================================
     # TEXT
@@ -279,307 +318,324 @@ class SpikingLanguageInterface:
             if part.strip()
         ]
 
+    def _area(self, rates: torch.Tensor, area) -> torch.Tensor:
+        return rates[area.E.slice]
+
     # ==============================================================
     # PERCEPTION
     # ==============================================================
 
-    def perceive(self, token: str) -> State:
-        """
-        Подать один токен в мозг и вернуть
-        состояние коры во время стимула.
-        """
+    def perceive(self, token: str, learn_forms: bool = True) -> torch.Tensor:
+        """Услышать один токен; вернуть частоты всех нейронов."""
 
-        self.brain.schedule_sensory(
-            self.encoder.encode(token)
+        rates = self.brain.observe(
+            self.cfg.stimulus_ms,
+            self.ear.encode(token),
         )
 
-        state = self.brain.observe(
-            self.cfg.language_stimulus_ms
-        )
+        self.brain.run(self.cfg.gap_ms)
+        self.brain.homeostasis(rates)
 
-        self.brain.simulate(self.cfg.language_gap_ms)
+        if learn_forms:
+            self.semantic.observe(token, self._area(rates, self.meaning))
+            self.mouth.observe(token, self._area(rates, self.motor))
+            self.experienced_tokens += 1
 
-        self.readout.observe(token, state)
-
-        self.experienced_tokens += 1
-
-        return state
+        return rates
 
     def rest(self) -> None:
         """
-        Тишина между фразами: ожидание обнуляется,
-        гомеостаз возвращает синапсы в рабочий диапазон.
+        Тишина между фразами: гомеостаз возвращает синапсы
+        в рабочий диапазон. Рабочая память затухает сама.
         """
 
-        self.brain.simulate(self.cfg.language_rest_ms)
+        self.brain.run(self.cfg.rest_ms)
 
         if self.cfg.synaptic_scaling_enabled:
             self.brain.synaptic_scaling()
 
-        self.last_state = {}
+        self.sentences_lived += 1
+
+        if (
+            self.cfg.structural_plasticity_enabled
+            and self.sentences_lived % self.cfg.rewire_every_sentences == 0
+        ):
+            self.brain.rewire()
+
+        self.last_rates = None
         self.last_token = None
 
     # ==============================================================
     # PREDICTION
     # ==============================================================
 
-    def expectation(self, state: State) -> State:
+    def expectation(self, rates: torch.Tensor) -> torch.Tensor:
         """
-        Ожидаемое следующее состояние.
-
-        Это возбуждение, которое текущий ансамбль
-        отправляет через E -> E синапсы в нейроны,
-        которые сейчас молчат. Сильные выученные связи
-        A -> B дают сильное ожидание B.
+        Ожидаемое следующее состояние ассоциативной коры:
+        возбуждение, которое текущее слово И контекст
+        рабочей памяти посылают через выученные синапсы
+        в нейроны, которые сейчас молчат.
         """
 
-        drive = self.brain.recurrent_drive(
-            state,
-            # Врождённые веса не превышают ee_weight_max:
-            # всё, что выше, — след опыта.
-            baseline=self.cfg.ee_weight_max,
-        )
+        drive = self.brain.learned_drive(rates, "association")
+        active = self._area(rates, self.meaning) > 0
 
-        return {
-            gid: value
-            for gid, value in drive.items()
-            if gid not in state
-        }
+        return drive.masked_fill(active, 0.0)
+
+    def speak(self, expected: torch.Tensor) -> torch.Tensor:
+        """Ожидание смысла -> ожидаемый моторный паттерн (рот)."""
+
+        full = torch.zeros(self.brain.n, device=self.device)
+        full[self.meaning.E.slice] = expected
+        proj = self.brain.projection("association -> motor")
+
+        got = full.index_select(0, proj.pre.flatten()).view_as(proj.weight)
+
+        return (got * proj.weight).sum(1)
 
     def predict(
         self,
-        state: State,
+        rates: torch.Tensor,
         exclude: set[str] | None = None,
+        top: int = 5,
     ) -> list[tuple[str, float]]:
-        return self.readout.decode(
-            self.expectation(state),
-            exclude=exclude,
-        )
+        return self.semantic.decode(self.expectation(rates), exclude, top)
+
+    # ==============================================================
+    # DOPAMINE
+    # ==============================================================
+
+    def surprise_dopamine(self, error: float, hit: bool) -> float:
+        """
+        Сбывшееся предсказание -> 0.
+        Мелкая неожиданность (ниже порога) -> 0.
+        Сильная ошибка -> квадратично больше.
+        """
+
+        if hit:
+            return 0.0
+
+        threshold = self.cfg.surprise_threshold
+        level = max(0.0, error - threshold) / (1.0 - threshold)
+
+        return self.cfg.surprise_dopamine_gain * level * level
 
     # ==============================================================
     # EXPERIENCE
     # ==============================================================
 
-    def _step(
-        self,
-        token: str,
-        surprise_learning: bool,
-    ) -> Step:
-        expected_state: State = {}
-        expected: list[tuple[str, float]] = []
+    def _step(self, token: str, learn: bool) -> Step:
+        expected_state = None
+        step = Step(token=token)
 
-        if self.last_state:
-            expected_state = self.expectation(
-                self.last_state
-            )
-
-            expected = self.readout.decode(
+        if self.last_rates is not None:
+            expected_state = self.expectation(self.last_rates)
+            ranked = self.semantic.decode(
                 expected_state,
-                exclude={self.last_token}
-                if self.last_token
-                else None,
+                exclude={self.last_token} if self.last_token else None,
+                top=1,
             )
 
-        state = self.perceive(token)
+            if ranked:
+                step.expected, step.expected_score = ranked[0]
 
-        step = Step(token=token, state=state)
+        rates = self.perceive(token, learn_forms=learn)
 
-        if expected:
-            step.expected, step.expected_score = expected[0]
-
-        if self.last_state and token in self.readout:
-            # prediction vs actual
+        if expected_state is not None and token in self.semantic:
             step.error = 1.0 - _cosine(
-                expected_state,
-                self.readout.prototypes[token],
+                expected_state, self.semantic.prototype(token)
             )
 
-            if surprise_learning:
-                step.dopamine = (
-                    self.cfg.surprise_dopamine_gain
-                    * step.error
+            if learn:
+                step.dopamine = self.surprise_dopamine(
+                    step.error, hit=step.expected == token
                 )
-
-                # Неожиданный переход закрепляется:
-                # dopamine превращает eligibility traces
-                # только что прошедших пар в изменение весов.
+                # Неожиданный переход закрепляется: dopamine
+                # превращает eligibility traces только что
+                # прошедших пар в изменение весов.
                 self.brain.reward(step.dopamine)
 
-        self.last_state = state
+        self.last_rates = rates
         self.last_token = token
+
+        if self.on_step:
+            self.on_step(step, learn)
 
         return step
 
-    def experience(
-        self,
-        tokens: list[str],
-        surprise_learning: bool = False,
-    ) -> list[Step]:
-        """Мозг проживает последовательность токенов."""
-
-        return [
-            self._step(token, surprise_learning)
-            for token in tokens
-        ]
-
-    def reward(self, amplitude: float | None = None) -> None:
-        """
-        Внешняя «печенька».
-
-        Укрепляет то, что было активно недавно
-        (eligibility traces живут ~tau_c = 1.5 с
-        биологического времени).
-        """
-
-        self.brain.reward(amplitude)
-
-        self.brain.simulate(self.cfg.language_rest_ms)
+    def experience(self, tokens: list[str], learn: bool = True) -> list[Step]:
+        return [self._step(token, learn) for token in tokens]
 
     # ==============================================================
-    # LEARN (учебный интерфейс)
+    # ЧТЕНИЕ ДАННЫХ
     # ==============================================================
 
-    def learn(
+    def read_text(
         self,
         text: str,
-        trials: int | None = None,
-    ) -> list[list[Step]]:
+        progress: Callable[[ReadReport], None] | None = None,
+        stop=None,
+    ) -> ReadReport:
         """
-        /learn столица франции => париж
-
-        Внутри только:
-
-            столица -> франции -> париж -> reward
-
-        повторённое несколько раз. «=>» — просто
-        разделитель для человека, мозг видит один поток.
-        """
-
-        tokens = self.tokenize(text.replace("=>", " "))
-
-        if not tokens:
-            return []
-
-        trials = max(
-            1,
-            trials or self.cfg.language_learning_trials,
-        )
-
-        history = []
-
-        for _ in range(trials):
-            history.append(
-                self.experience(tokens)
-            )
-
-            self.reward()
-
-            self.rest()
-
-        return history
-
-    # ==============================================================
-    # READ (основной способ обучения)
-    # ==============================================================
-
-    def read_text(self, text: str) -> ReadReport:
-        """
-        Мозг просто живёт внутри потока текста.
-
-        Никаких пар «вопрос -> ответ». Пластичность
-        регулируется prediction error: неожиданное
-        закрепляется сильнее, ожидаемое — слабее.
+        Мозг живёт внутри потока текста. Пластичность
+        регулируется prediction error.
         """
 
         report = ReadReport()
 
         for sentence in self.sentences(text):
+            if stop is not None and stop.is_set():
+                break
+
             tokens = self.tokenize(sentence)
 
             if not tokens:
                 continue
 
-            for step in self.experience(
-                tokens,
-                surprise_learning=True,
-            ):
+            for step in self.experience(tokens):
                 report.tokens += 1
+                report.dopamine += step.dopamine
 
                 if step.error is not None:
                     report.errors.append(step.error)
-
-                    if step.expected == step.token:
-                        report.hits += 1
+                    report.hits += step.expected == step.token
 
             report.sentences += 1
-
             self.rest()
+
+            if progress and report.sentences % 20 == 0:
+                progress(report)
 
         return report
 
-    def read_path(
-        self,
-        path: str,
-        passes: int = 1,
-    ) -> list[ReadReport]:
+    @staticmethod
+    def text_files(path: str) -> list[Path]:
         target = Path(path).expanduser()
 
-        if target.is_dir():
-            files = sorted(
-                p
-                for p in target.rglob("*")
-                if p.is_file()
-                and p.suffix.lower() in {".txt", ".md", ".rst"}
-            )
-        else:
-            files = [target]
+        if target.is_file():
+            return [target]
 
-        text = "\n".join(
-            p.read_text(encoding="utf-8", errors="ignore")
-            for p in files
+        return sorted(
+            p
+            for p in target.rglob("*")
+            if p.is_file()
+            and p.suffix.lower() not in TEXT_SUFFIX_SKIP
+            and not any(part.startswith(".") for part in p.relative_to(target).parts)
         )
 
-        return [
-            self.read_text(text)
-            for _ in range(max(1, passes))
-        ]
+    @staticmethod
+    def load_text(path: Path) -> str | None:
+        """Любой текстовый файл; бинарные пропускаются."""
+
+        data = path.read_bytes()
+
+        if b"\x00" in data[:4096]:
+            return None
+
+        return data.decode("utf-8", errors="ignore")
 
     # ==============================================================
-    # GENERATION
+    # ДИАЛОГ: учится, пока разговаривает
     # ==============================================================
 
-    def generate(
-        self,
-        prompt: str,
-        max_tokens: int | None = None,
-    ) -> list[tuple[str, float]]:
+    def feedback(self, text: str) -> float | None:
+        """Врождённый канал поощрения/наказания."""
+
+        words = self.tokenize(text) or [text.strip()]
+
+        if len(words) != 1:
+            return None
+
+        word = words[0]
+
+        if word in self.cfg.praise_words or text.strip() in self.cfg.praise_words:
+            return self.cfg.feedback_dopamine
+
+        if word in self.cfg.blame_words or text.strip() in self.cfg.blame_words:
+            return -self.cfg.feedback_dopamine
+
+        return None
+
+    def converse(self, text: str) -> Reply:
         """
-        prompt -> brain state -> ожидание -> decoder
-               -> token -> снова в мозг -> ...
+        Реплика человека — это опыт: мозг слушает её
+        с обучением от prediction error. Затем отвечает,
+        продолжая собственное состояние.
 
-        Это продолжение состояния, а не поиск ответа.
+        Ответ мозга не обучает сам себя, но оставляет
+        eligibility traces: следующее «+» / «-» человека
+        закрепит или ослабит именно его.
         """
 
-        tokens = self.tokenize(prompt)
+        self.dialog_turns += 1
 
-        if not tokens:
+        amplitude = self.feedback(text)
+
+        if amplitude is not None:
+            self.brain.reward(amplitude)
+            self.brain.run(self.cfg.rest_ms)
+            word = "закрепил" if amplitude > 0 else "ослабил"
+            return Reply(f"[dopamine {amplitude:+.0f}: {word} последний ответ]", ReadReport())
+
+        report = ReadReport()
+        sentences = [s for s in self.sentences(text) if self.tokenize(s)]
+        start = time.perf_counter()
+
+        for i, sentence in enumerate(sentences):
+            for step in self.experience(self.tokenize(sentence)):
+                report.tokens += 1
+                report.dopamine += step.dopamine
+
+                if step.error is not None:
+                    report.errors.append(step.error)
+                    report.hits += step.expected == step.token
+
+            report.sentences += 1
+
+            # Между фразами — пауза, но после последней мозг
+            # сразу продолжает мысль.
+            if i < len(sentences) - 1:
+                self.rest()
+
+        self._sync()
+        prompt_seconds = time.perf_counter() - start
+
+        start = time.perf_counter()
+        produced = self._continue()
+        self._sync()
+
+        return Reply(
+            " ".join(token for token, _ in produced) or "...",
+            report,
+            prompt_seconds=prompt_seconds,
+            generated=len(produced),
+            generate_seconds=time.perf_counter() - start,
+        )
+
+    def _sync(self) -> None:
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+
+    def _continue(self, max_tokens: int | None = None) -> list[tuple[str, float]]:
+        """
+        state -> ожидание -> рот -> слово -> снова в ухо -> ...
+
+        Собственная речь слышна мозгу (обратная связь через ухо),
+        но не даёт surprise-dopamine.
+        """
+
+        if self.last_rates is None:
             return []
 
-        self.rest()
-
-        self.experience(tokens)
-
         produced: list[tuple[str, float]] = []
+        recent = [self.last_token] if self.last_token else []
 
-        recent = list(tokens[-2:])
+        for _ in range(max_tokens or self.cfg.generate_max_tokens):
+            expected = self.expectation(self.last_rates)
 
-        for _ in range(
-            max_tokens or self.cfg.generate_max_tokens
-        ):
-            ranked = self.predict(
-                self.last_state,
-                exclude=set(recent),
-            )
+            # Слово выбирает ассоциативная кора; моторная зона
+            # пока только отражает речь (см. «рот произнёс бы»).
+            ranked = self.semantic.decode(expected, exclude=set(recent), top=1)
 
             if not ranked:
                 break
@@ -590,29 +646,128 @@ class SpikingLanguageInterface:
                 break
 
             produced.append((token, score))
-
-            self.experience([token])
-
-            recent = (recent + [token])[-2:]
-
-        self.rest()
+            self.experience([token], learn=False)
+            recent = (recent + [token])[-3:]
 
         return produced
 
-    def ask(self, text: str) -> str:
-        produced = self.generate(text)
+    def generate(self, prompt: str) -> list[tuple[str, float]]:
+        """Продолжение без следа (read-only)."""
 
-        if not produced:
-            return (
-                "[мозг не сформировал ожидания — "
-                "этот контекст ещё не связан ни с чем]"
+        tokens = self.tokenize(prompt)
+
+        if not tokens:
+            return []
+
+        with self.isolated():
+            self.experience(tokens, learn=False)
+            return self._continue()
+
+    # ==============================================================
+    # READ-ONLY ДИАГНОСТИКА
+    # ==============================================================
+
+    class _Isolated:
+        def __init__(self, interface: "LanguageInterface"):
+            self.interface = interface
+
+        def __enter__(self):
+            i = self.interface
+            self.saved = (i.last_rates, i.last_token, i.experienced_tokens)
+            self.frozen = i.brain.frozen()
+            self.frozen.__enter__()
+            # Чистый контекст: пауза тишины, прошлое затухает само.
+            i.brain.run(i.cfg.probe_pause_ms)
+            i.last_rates, i.last_token = None, None
+            return self
+
+        def __exit__(self, *exc):
+            i = self.interface
+            self.frozen.__exit__(*exc)
+            i.last_rates, i.last_token, i.experienced_tokens = self.saved
+            return False
+
+    def isolated(self) -> "_Isolated":
+        """
+        Наблюдение не является опытом: веса не меняются,
+        readout не обновляется, состояние нейронов
+        после выхода возвращается как было.
+        """
+
+        return self._Isolated(self)
+
+    def probe(self, text: str) -> dict | None:
+        """Состояние мозга после фразы — без следа."""
+
+        tokens = self.tokenize(text)
+
+        if not tokens:
+            return None
+
+        with self.isolated():
+            self.experience(tokens, learn=False)
+            rates = self.last_rates
+            expected = self.expectation(rates)
+
+            return {
+                "tokens": tokens,
+                "rates": rates.clone(),
+                "meaning": self._area(rates, self.meaning).clone(),
+                "context": self._area(rates, self.context).clone(),
+                "expected": expected,
+                "ranked": self.semantic.decode(expected, {tokens[-1]}, top=5),
+                "spoken": self.mouth.decode(self.speak(expected), {tokens[-1]}, top=5),
+            }
+
+    def debug_prediction(self, text: str) -> str:
+        result = self.probe(text)
+
+        if result is None:
+            return "Формат: /predict слово [слово ...]"
+
+        if not result["ranked"]:
+            return "[нет ожидания — контекст ещё ни с чем не связан]"
+
+        lines = [f"после «{' '.join(result['tokens'])}» мозг ожидает:"]
+        lines += [f"  {t:20s} {s:.3f}" for t, s in result["ranked"]]
+
+        if result["spoken"]:
+            lines.append(
+                "рот произнёс бы: "
+                + ", ".join(f"{t} ({s:.2f})" for t, s in result["spoken"][:3])
             )
 
-        return " ".join(token for token, _ in produced)
+        return "\n".join(lines)
 
-    # ==============================================================
-    # DEBUG
-    # ==============================================================
+    def compare(self, first: str, second: str) -> str:
+        """
+        Рабочая память: один и тот же последний токен
+        в разных контекстах должен давать разные состояния.
+
+            /compare открыть файл | закрыть файл
+        """
+
+        a = self.probe(first)
+        b = self.probe(second)
+
+        if a is None or b is None:
+            return "Формат: /compare фраза | фраза"
+
+        def top(r):
+            return ", ".join(f"{t} ({s:.2f})" for t, s in r["ranked"][:3]) or "—"
+
+        return "\n".join(
+            [
+                f"A: {' '.join(a['tokens'])}",
+                f"B: {' '.join(b['tokens'])}",
+                f"сходство смысла (association):      {_cosine(a['meaning'], b['meaning']):.3f}",
+                f"сходство контекста (prefrontal):    {_cosine(a['context'], b['context']):.3f}",
+                f"сходство ожиданий:                  {_cosine(a['expected'], b['expected']):.3f}",
+                f"A ожидает: {top(a)}",
+                f"B ожидает: {top(b)}",
+                "1.000 = мозг не различает контексты; чем ниже, тем лучше память.",
+            ]
+        )
 
     def debug_word(self, word: str) -> str:
         tokens = self.tokenize(word)
@@ -621,78 +776,43 @@ class SpikingLanguageInterface:
             return "Формат: /debug слово"
 
         token = tokens[0]
+        result = self.probe(token)
+        meaning = result["meaning"]
 
-        known = token in self.readout
-        reference = self.readout.assembly(token)
+        lines = [f"токен: {token}"]
 
-        self.rest()
-
-        state = self.perceive(token)
-
-        self.rest()
-
-        if not state:
-            return (
-                f"{token}: кора не ответила "
-                "на sensory pattern"
+        for area in self.brain.areas.values():
+            rates = result["rates"]
+            active = int((rates[area.E.slice] > 0).sum())
+            lines.append(
+                f"  {area.name:12s} активно {active:6d} / {area.E.size} E "
+                f"({active / area.E.size:.1%})"
             )
 
-        current = tuple(
-            gid
-            for gid, _ in sorted(
-                state.items(),
-                key=lambda item: item[1],
-                reverse=True,
-            )[: self.cfg.language_ensemble_size]
-        )
-
-        ranked = self.readout.decode(state)[:3]
-
-        lines = [
-            f"токен: {token}",
-            f"активных E-нейронов: {len(state)} "
-            f"из {len(self.brain.living_excitatory())}",
-            f"current assembly: {' '.join(map(str, current))}",
-        ]
-
-        if known and reference:
-            overlap = len(set(current) & set(reference))
+        if token in self.semantic:
+            size = self.cfg.readout_top_k
+            current = set(meaning.topk(size).indices.tolist())
+            reference = set(self.semantic.assembly(token, size).tolist())
             lines.append(
-                f"совпадение с прошлым опытом: "
-                f"{overlap}/{len(reference)} нейронов"
+                f"совпадение с прошлым опытом: {len(current & reference)}/{size} нейронов"
             )
         else:
             lines.append("токен встречен впервые")
 
         lines.append(
             "decoder: "
-            + ", ".join(f"{t} ({s:.2f})" for t, s in ranked)
+            + ", ".join(f"{t} ({s:.2f})" for t, s in self.semantic.decode(meaning, top=3))
         )
 
         return "\n".join(lines)
 
-    def _weights(self, source, target) -> list[float]:
-        connections = self.brain.recurrent_connections(
-            source=list(source),
-            target=list(target),
-        )
-
-        if connections is None:
-            return []
-
-        return list(connections.get("weight"))
-
     def debug_association(self, first: str, second: str) -> str:
         """
-        Реальные E -> E синапсы между ансамблями двух токенов.
-
-        Сравниваем с обратным направлением и со средним
-        весом по всей коре: ассоциация есть, только если
-        A -> B заметно сильнее фона.
+        Реальные E -> E синапсы ассоциативной коры между
+        ансамблями двух слов, обратное направление и фон.
         """
 
-        a_tokens = self.tokenize(first)
-        b_tokens = self.tokenize(second)
+        a_tokens, b_tokens = self.tokenize(first), self.tokenize(second)
 
         if not a_tokens or not b_tokens:
             return "Формат: /debug_association слово слово"
@@ -700,126 +820,109 @@ class SpikingLanguageInterface:
         a_token, b_token = a_tokens[0], b_tokens[0]
 
         for token in (a_token, b_token):
-            if token not in self.readout:
-                return (
-                    f"Мозг ещё не встречал «{token}» — "
-                    "ансамбля нет"
-                )
+            if token not in self.semantic:
+                return f"Мозг ещё не встречал «{token}» — ансамбля нет"
 
-        a = set(self.readout.assembly(a_token))
-        b = set(self.readout.assembly(b_token))
-
+        size = self.cfg.readout_top_k // 2
+        offset = self.meaning.E.start
+        a = set((self.semantic.assembly(a_token, size) + offset).tolist())
+        b = set((self.semantic.assembly(b_token, size) + offset).tolist())
         shared = a & b
-        a_only = a - shared
-        b_only = b - shared
 
-        forward = self._weights(a_only, b_only)
-        backward = self._weights(b_only, a_only)
+        def ids(s):
+            return torch.tensor(sorted(s), device=self.device, dtype=torch.long)
 
-        all_connections = self.brain.recurrent_connections()
-        background = (
-            list(all_connections.get("weight"))
-            if all_connections is not None
-            else []
-        )
+        proj = self.brain.projection("association: E->E")
+        forward = self.brain.weights_between(proj, ids(a - shared), ids(b - shared))
+        backward = self.brain.weights_between(proj, ids(b - shared), ids(a - shared))
 
-        def describe(weights: list[float]) -> str:
-            if not weights:
+        def describe(w: torch.Tensor) -> str:
+            if not w.numel():
                 return "связей нет"
 
             return (
-                f"{len(weights):4d} синапсов, "
-                f"avg {sum(weights) / len(weights):.4f}, "
-                f"max {max(weights):.4f}, "
-                f"sum {sum(weights):.3f}"
+                f"{w.numel():5d} синапсов, avg {float(w.mean()):.4f}, "
+                f"max {float(w.max()):.4f}"
             )
 
         ranked = self.predict(
-            self.readout.prototypes[a_token],
-            exclude={a_token},
+            self._full(self.semantic.prototype(a_token)), {a_token}, top=50
         )
-
         position = next(
-            (i + 1 for i, (t, _) in enumerate(ranked) if t == b_token),
-            None,
+            (i + 1 for i, (t, _) in enumerate(ranked) if t == b_token), None
         )
 
         lines = [
-            f"ансамбли: {a_token}={len(a)}  {b_token}={len(b)}  "
-            f"общих нейронов={len(shared)}",
+            f"ансамбли: {a_token}={len(a)}  {b_token}={len(b)}  общих={len(shared)}",
             f"{a_token} -> {b_token}: {describe(forward)}",
             f"{b_token} -> {a_token}: {describe(backward)}",
-            f"фон E -> E:       {describe(background)}",
+            f"фон E -> E:  {describe(proj.weight.flatten())}",
         ]
 
         if position is not None:
             lines.append(
-                f"ожидание после «{a_token}»: "
-                f"«{b_token}» на месте {position} из {len(ranked)}"
+                f"ожидание после «{a_token}» (без контекста): "
+                f"«{b_token}» на месте {position}"
             )
 
         return "\n".join(lines)
 
-    def debug_prediction(self, text: str) -> str:
-        tokens = self.tokenize(text)
-
-        if not tokens:
-            return "Формат: /predict слово [слово ...]"
-
-        self.rest()
-
-        self.experience(tokens)
-
-        ranked = self.predict(
-            self.last_state,
-            exclude={self.last_token},
-        )[:5]
-
-        self.rest()
-
-        if not ranked:
-            return "[нет ожидания]"
-
-        return "\n".join(
-            [f"после «{' '.join(tokens)}» мозг ожидает:"]
-            + [f"  {token:20s} {score:.3f}" for token, score in ranked]
-        )
+    def _full(self, meaning: torch.Tensor) -> torch.Tensor:
+        full = torch.zeros(self.brain.n, device=self.device)
+        full[self.meaning.E.slice] = meaning
+        return full
 
     # ==============================================================
-    # STATS
+    # STATS / SAVE
     # ==============================================================
 
     def stats(self) -> str:
+        brain = self.brain
         lines = [
-            f"- известных токенов (readout): {len(self.readout)}",
-            f"- прожито токенов: {self.experienced_tokens}",
-            f"- brain excitatory neurons: "
-            f"{len(self.brain.living_excitatory())}",
-            f"- brain inhibitory neurons: "
-            f"{len(self.brain.living_inhibitory())}",
-            f"- sensory channels: {len(self.brain.sensory)}",
-            f"- biological time: "
-            f"{float(nest.biological_time) / 1000:.1f} s",
+            f"- устройство: {brain.device}",
+            f"- нейронов: {brain.n:,}, синапсов: {brain.synapse_count():,} "
+            f"({brain.memory_bytes() / 2**20:.0f} МБ)",
+            f"- известных слов: {len(self.semantic)}",
+            f"- прожито токенов: {self.experienced_tokens:,}, реплик диалога: {self.dialog_turns}",
+            f"- биологическое время: {brain.time_ms / 1000:.1f} s",
+            f"- контекст: фиксированного окна нет — рабочая память затухает "
+            f"с τ={self.cfg.memory_tau_syn:.0f} мс, это ~"
+            f"{self.cfg.memory_tau_syn / (self.cfg.stimulus_ms + self.cfg.gap_ms):.0f} последних слов",
+            f"- структурная пластичность: выросло новых синапсов {brain.synapses_grown:,} "
+            f"(вместо отмерших)",
+            f"- потеряно спайков (переполнение event-таблицы): {float(brain.dropped):.0f}",
+            "- зоны:",
         ]
 
-        connections = self.brain.recurrent_connections()
-
-        if connections is not None:
-            weights = list(connections.get("weight"))
-            strong = sum(1 for w in weights if w > 0.5)
+        for area in brain.areas.values():
             lines.append(
-                f"- E -> E синапсов: {len(weights)}, "
-                f"avg {sum(weights) / len(weights):.4f}, "
-                f"сильных (>0.5): {strong}"
+                f"    {area.name:12s} {area.E.size + area.I.size:9,d} нейронов  {area.title}"
             )
 
-        if len(self.readout):
-            lines.append("\nТокены (readout, не память):")
+        lines.append("- пластичные пути:")
 
-            for token in sorted(self.readout.prototypes):
-                lines.append(
-                    f"- {token}: "
-                    f"{self.readout.observations[token]} предъявлений"
-                )
+        for proj in brain.plastic:
+            w = proj.weight
+            learned = int((w > proj.innate_max).sum())
+            lines.append(
+                f"    {proj.name:28s} {w.numel():11,d} синапсов, "
+                f"avg {float(w.mean()):.4f}, выучено (> врождённого) {learned:,}"
+            )
 
         return "\n".join(lines)
+
+    def state_dict(self) -> dict:
+        return {
+            "semantic": self.semantic.state_dict(),
+            "mouth": self.mouth.state_dict(),
+            "experienced_tokens": self.experienced_tokens,
+            "sentences_lived": self.sentences_lived,
+            "dialog_turns": self.dialog_turns,
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        self.semantic.load_state_dict(state["semantic"])
+        self.mouth.load_state_dict(state["mouth"])
+        self.experienced_tokens = state["experienced_tokens"]
+        self.dialog_turns = state["dialog_turns"]
+        self.sentences_lived = state.get("sentences_lived", 0)

@@ -1,3 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec python3 -m brain.chat
+cd "$(dirname "$0")"
+
+PYTHON=python3
+[ -x .venv/bin/python ] && PYTHON=.venv/bin/python
+
+exec "$PYTHON" -m brain.chat

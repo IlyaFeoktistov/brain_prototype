@@ -1,0 +1,566 @@
+/* Предметное стекло, окраска H&E, дофамин — коричневый DAB. */
+:root {
+  --glass: #f5f3f7;
+  --paper: #fbfafc;
+  --ink: #241d3d;
+  --ink-soft: #5d5675;
+  --rule: #ddd7e7;
+  --hema: #2c1e78;
+  --hema-soft: #ded8ec;
+  --eosin: #cd2862;
+  --eosin-soft: #f4dee6;
+  --dab: #8a5a2b;
+  --dab-soft: #ead9c6;
+
+  --serif: "Spectral", Georgia, serif;
+  --sans: "Atkinson Hyperlegible", system-ui, sans-serif;
+
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--glass);
+  color: var(--ink);
+  font: 15px/1.5 var(--sans);
+}
+
+button,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--hema);
+  outline-offset: 2px;
+}
+
+.app {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100%;
+}
+
+/* ---- шапка ---- */
+
+.masthead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 28px;
+  padding: 14px 24px 10px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.masthead h1 {
+  margin: 0;
+  font: 600 26px/1.1 var(--serif);
+  letter-spacing: -0.01em;
+}
+
+.vitals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin: 0;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.vitals .device {
+  color: var(--hema);
+}
+
+/* ---- рабочий стол: срез + чат ---- */
+
+.bench {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  min-height: 0;
+}
+
+.stage {
+  display: grid;
+  grid-template-rows: minmax(360px, 1fr) auto auto auto;
+  gap: 14px;
+  padding: 18px 24px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.slide,
+.slide-placeholder {
+  display: grid;
+  grid-template-columns: 1fr 1.7fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 14px;
+  min-height: 360px;
+}
+
+.section {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  margin: 0;
+  min-height: 0;
+}
+
+.section-auditory {
+  grid-column: 1;
+  grid-row: 1 / 3;
+}
+
+.section-association {
+  grid-column: 2;
+  grid-row: 1 / 3;
+}
+
+.section-prefrontal {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.section-motor {
+  grid-column: 3;
+  grid-row: 2;
+}
+
+.section canvas {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border-radius: 46% 54% 50% 50% / 8% 8% 10% 10%;
+  background: var(--paper);
+  box-shadow: inset 0 0 0 1px var(--rule);
+  image-rendering: pixelated;
+}
+
+.section figcaption {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 6px;
+}
+
+.section-title {
+  font: italic 500 14px/1.3 var(--serif);
+}
+
+.section-count {
+  color: var(--ink-soft);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---- схема путей и легенда ---- */
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 28px;
+}
+
+.pathways {
+  width: min(100%, 520px);
+  height: auto;
+}
+
+.path {
+  fill: none;
+  stroke: var(--ink-soft);
+  stroke-width: 1.5;
+  opacity: 0.55;
+}
+
+.path-plastic {
+  stroke: var(--dab);
+  stroke-dasharray: 5 3;
+  opacity: 0.9;
+}
+
+.tip {
+  fill: var(--ink-soft);
+}
+
+.tip-plastic {
+  fill: var(--dab);
+}
+
+.node {
+  fill: var(--hema-soft);
+  stroke: var(--hema);
+  stroke-width: 1.5;
+}
+
+.node-memory {
+  fill: var(--paper);
+  stroke-dasharray: 2 2;
+}
+
+.node-plastic {
+  fill: none;
+  stroke: var(--dab);
+  stroke-width: 1;
+  stroke-dasharray: 3 2;
+}
+
+.node-halo {
+  fill: var(--hema);
+  opacity: 0;
+  transition: opacity 120ms linear, r 120ms linear;
+}
+
+.node-label.node-label-side {
+  text-anchor: start;
+}
+
+.node-label,
+.endpoint {
+  font: 12px var(--sans);
+  fill: var(--ink);
+  text-anchor: middle;
+}
+
+.endpoint {
+  font-style: italic;
+  fill: var(--ink-soft);
+}
+
+.key {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.key div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.key dd {
+  margin: 0;
+}
+
+.swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.swatch-e {
+  background: var(--hema);
+}
+
+.swatch-i {
+  background: var(--eosin);
+}
+
+.swatch-dopamine {
+  border-radius: 1px;
+  background: var(--dab);
+}
+
+/* ---- лента слов ---- */
+
+.timeline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 4px;
+  margin: 0;
+  padding: 10px 0 0;
+  list-style: none;
+  border-top: 1px solid var(--rule);
+}
+
+.timeline-empty {
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--rule);
+  color: var(--ink-soft);
+}
+
+.word {
+  display: grid;
+  grid-template-rows: auto 18px;
+  justify-items: center;
+  padding: 0 3px;
+}
+
+.word-text {
+  font-size: 14px;
+}
+
+.word-guessed .word-text {
+  text-decoration: underline 2px var(--hema);
+  text-underline-offset: 3px;
+}
+
+.word-own .word-text {
+  color: var(--ink-soft);
+  font-style: italic;
+}
+
+.word-dopamine {
+  align-self: start;
+  width: 6px;
+  height: 18px;
+  background: var(--dab);
+  transform-origin: top;
+}
+
+/* ---- как читать карту ---- */
+
+.guide {
+  border-top: 1px solid var(--rule);
+  padding-top: 10px;
+}
+
+.guide summary {
+  cursor: pointer;
+  font: italic 500 15px/1.4 var(--serif);
+  color: var(--hema);
+}
+
+.guide-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 8px 28px;
+  padding-top: 8px;
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+
+.guide h2 {
+  margin: 8px 0 4px;
+  font: 600 15px/1.3 var(--serif);
+  color: var(--ink);
+}
+
+.guide p,
+.guide ul,
+.guide dl {
+  margin: 0 0 8px;
+  max-width: 62ch;
+}
+
+.guide ul {
+  padding-left: 18px;
+}
+
+.guide dt {
+  color: var(--ink);
+}
+
+.guide dd {
+  margin: 0 0 4px;
+}
+
+/* ---- чат ---- */
+
+.chat {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-height: 0;
+  border-left: 1px solid var(--rule);
+  background: var(--paper);
+}
+
+.chat-log {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px 18px 8px;
+  overflow-y: auto;
+}
+
+.chat-empty {
+  margin: 0;
+  color: var(--ink-soft);
+  max-width: 34ch;
+}
+
+.line p {
+  margin: 0;
+}
+
+.line small {
+  display: block;
+  margin-top: 2px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.line-you {
+  align-self: flex-end;
+  max-width: 85%;
+  padding: 6px 10px;
+  border-radius: 12px 12px 2px 12px;
+  background: var(--hema-soft);
+}
+
+.line-brain {
+  max-width: 90%;
+  font: 500 17px/1.4 var(--serif);
+}
+
+.line-brain small {
+  font-family: var(--sans);
+}
+
+.line-info pre {
+  margin: 0;
+  white-space: pre-wrap;
+  font: 13px/1.45 var(--sans);
+  color: var(--ink-soft);
+}
+
+.line-progress {
+  margin: 0;
+  color: var(--dab);
+  font-size: 13px;
+}
+
+.feedback {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.feedback button,
+.chat-actions button {
+  padding: 4px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.feedback button:hover,
+.chat-actions button:hover:not(:disabled) {
+  border-color: var(--hema);
+}
+
+.chat-input {
+  display: grid;
+  gap: 8px;
+  padding: 12px 18px 16px;
+  border-top: 1px solid var(--rule);
+}
+
+.chat-input textarea {
+  width: 100%;
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.chat-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chat-actions button[type="submit"] {
+  background: var(--hema);
+  border-color: var(--hema);
+  color: #fff;
+}
+
+.chat-actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.chat-actions .stop {
+  border-color: var(--dab);
+  color: var(--dab);
+}
+
+/* ---- узкий экран ---- */
+
+@media (max-width: 900px) {
+  .app {
+    height: auto;
+  }
+
+  .bench {
+    grid-template-columns: 1fr;
+  }
+
+  .stage {
+    grid-template-rows: auto;
+    overflow: visible;
+  }
+
+  .section canvas {
+    height: 150px;
+  }
+
+  .chat {
+    border-left: 0;
+    border-top: 1px solid var(--rule);
+    min-height: 60vh;
+  }
+
+  .masthead,
+  .stage {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .slide,
+  .slide-placeholder {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: repeat(3, auto);
+    min-height: 0;
+  }
+
+  .section-title {
+    font-size: 13px;
+  }
+
+  .section-auditory {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .section-association {
+    grid-column: 1 / 3;
+    grid-row: 2;
+  }
+
+  .section-prefrontal {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .section-motor {
+    grid-column: 1 / 3;
+    grid-row: 3;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .node-halo {
+    transition: none;
+  }
+}

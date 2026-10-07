@@ -36,3 +36,11 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+# Сохранённый мозг
+data/
+*.pt
+*.pt.tmp
+
+# Веб-интерфейс
+web/node_modules/
+web/dist/

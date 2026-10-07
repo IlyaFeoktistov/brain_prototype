@@ -74,3 +74,24 @@ def test_feedback_and_emotions(client):
     client.post("/api/emotions", json={"enabled": False})
     assert client.get("/api/state").json()["emotionsEnabled"] is False
     client.post("/api/emotions", json={"enabled": True})
+
+
+def test_background_reading_does_not_block_chat(client):
+    import time
+
+    text = "Столица Франции Париж. Столица Германии Берлин. " * 60
+    queued = client.post("/api/read", json={"name": "длинный", "text": text, "background": True}).json()
+    assert queued["queued"] and queued["sentences"] > 50
+
+    start = time.time()
+    client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "Столица Франции"}]})
+    # Ответ пришёл, пока чтение ещё идёт.
+    assert client.get("/api/state").json()["reading"], "чтение закончилось раньше ответа — тест не проверил главное"
+    assert time.time() - start < 30
+
+    client.post("/api/stop", json={})
+    for _ in range(100):
+        if not client.get("/api/state").json()["reading"]:
+            break
+        time.sleep(0.2)
+    assert not client.get("/api/state").json()["reading"]

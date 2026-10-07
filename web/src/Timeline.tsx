@@ -21,7 +21,11 @@ export function Timeline({ steps }: Props) {
         const guessed = step.expected === step.token;
         const height = Math.min(1, step.dopamine / 6);
         const title =
-          step.expected === null
+          step.dream
+            ? "сон: гиппокамп проигрывает коре"
+            : step.musing
+            ? "мысль в тишине"
+            : step.expected === null
             ? "ожидания не было"
             : `ожидал «${step.expected}»` + (step.error !== null ? `, ошибка ${step.error.toFixed(2)}` : "");
         return (
@@ -31,6 +35,8 @@ export function Timeline({ steps }: Props) {
               "word",
               guessed ? "word-guessed" : "",
               step.learn ? "" : "word-own",
+              step.dream ? "word-dream" : "",
+              step.musing ? "word-musing" : "",
             ].join(" ")}
             title={title}
           >

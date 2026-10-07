@@ -12,6 +12,8 @@ export interface ChatEntry {
   words?: { token: string; confidence: number }[];
   // Человек уже похвалил или поругал этот ответ.
   rated?: boolean;
+  // Мозг заговорил сам; повод — эмоция («любопытство», «скука»…).
+  initiative?: string;
 }
 
 interface Props {
@@ -19,6 +21,7 @@ interface Props {
   entries: ChatEntry[];
   progress: string | null;
   busy: boolean;
+  reading: boolean;
   connected: boolean;
   actions: ChatActions;
 }
@@ -30,6 +33,7 @@ export interface ChatActions {
   upload: (name: string, text: string, size: number) => void;
   feedback: (reward: number) => void;
   stop: () => void;
+  sleep: () => void;
 }
 
 function speed(reply: ReplyEvent): string {
@@ -50,7 +54,7 @@ function averageConfidence(words: { confidence: number }[]): number {
   return words.reduce((sum, w) => sum + w.confidence, 0) / words.length;
 }
 
-export function Chat({ header, entries, progress, busy, connected, actions }: Props) {
+export function Chat({ header, entries, progress, busy, reading, connected, actions }: Props) {
   const [draft, setDraft] = useState("");
   const log = useRef<HTMLDivElement>(null);
   const files = useRef<HTMLInputElement>(null);
@@ -114,7 +118,8 @@ export function Chat({ header, entries, progress, busy, connected, actions }: Pr
               <small>уверен на {percent(averageConfidence(entry.words))}</small>
             ) : null}
             {entry.reply && entry.reply.promptTokens > 0 && <small>{speed(entry.reply)}</small>}
-            {entry === lastBrain && !entry.streaming && !entry.rated && entry.text !== "не знаю" && !busy && (
+            {entry.initiative && <small>заговорил сам: {entry.initiative}</small>}
+            {entry === lastBrain && !entry.streaming && !entry.rated && !entry.initiative && entry.text !== "не знаю" && !busy && (
               <div className="feedback">
                 <button type="button" onClick={() => actions.feedback(1)}>
                   Верно
@@ -156,7 +161,10 @@ export function Chat({ header, entries, progress, busy, connected, actions }: Pr
           <button type="button" onClick={() => files.current?.click()} disabled={!connected}>
             Дать прочитать файл
           </button>
-          {busy && (
+          <button type="button" onClick={actions.sleep} disabled={!connected || busy}>
+            Уснуть
+          </button>
+          {(busy || reading) && (
             <button type="button" className="stop" onClick={actions.stop}>
               Остановить чтение
             </button>

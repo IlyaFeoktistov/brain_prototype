@@ -17,6 +17,10 @@ llama.cpp-совместимые:
     GET  /api/brains                сохранённые мозги
     POST /api/load      {name}      переключиться на другой мозг
     POST /api/emotions  {enabled}   включить / выключить эмоции
+    POST /api/thinking  {enabled}   размышлять перед ответом
+    POST /api/live      {enabled}   живой режим: думает в тишине, сам заговаривает
+    POST /api/initiative {enabled}  заговаривать первым (реплики — WebSocket
+                                    событие "initiative")
     POST /api/stop                  остановить чтение
 
 Живая активность нейронов — WebSocket /ws (см. brain/server.py).
@@ -61,6 +65,8 @@ class TextRequest(BaseModel):
 class ReadRequest(BaseModel):
     name: str = "текст"
     text: str
+    # True — в очередь, мозг читает порциями между сообщениями.
+    background: bool = False
 
 
 class FeedbackRequest(BaseModel):
@@ -72,6 +78,14 @@ class LoadRequest(BaseModel):
 
 
 class EmotionsRequest(BaseModel):
+    enabled: bool
+
+
+class ThinkingRequest(BaseModel):
+    enabled: bool
+
+
+class InitiativeRequest(BaseModel):
     enabled: bool
 
 
@@ -104,6 +118,8 @@ def build_router(host) -> APIRouter:
                 predicted=len(reply.report.errors),
                 prompt_seconds=reply.prompt_seconds,
                 generate_seconds=reply.generate_seconds,
+                thoughts=reply.thoughts,
+                unknown=reply.unknown,
             )
 
         return extra
@@ -306,6 +322,10 @@ def build_router(host) -> APIRouter:
 
     @router.post("/api/read")
     async def read(request: ReadRequest):
+        if request.background:
+            sentences = await call(lambda session: host.enqueue_read(request.name, request.text))
+            return {"queued": True, "sentences": sentences}
+
         def run(session):
             session.stop.clear()
             report = session.read_text(request.name, request.text)
@@ -350,6 +370,30 @@ def build_router(host) -> APIRouter:
         def run(session):
             session.mind.cfg.emotions_enabled = request.enabled
             return brain_extra(session)
+
+        return await call(run)
+
+    @router.post("/api/thinking")
+    async def thinking(request: ThinkingRequest):
+        def run(session):
+            session.mind.cfg.thinking_enabled = request.enabled
+            return {"thinking": request.enabled}
+
+        return await call(run)
+
+    @router.post("/api/initiative")
+    async def initiative(request: InitiativeRequest):
+        def run(session):
+            session.mind.cfg.initiative_enabled = request.enabled
+            return {"initiative": request.enabled}
+
+        return await call(run)
+
+    @router.post("/api/live")
+    async def live(request: InitiativeRequest):
+        def run(session):
+            session.mind.cfg.live_mode = request.enabled
+            return {"live": request.enabled}
 
         return await call(run)
 

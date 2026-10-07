@@ -89,3 +89,31 @@ def test_praise_changes_weights(mind):
     language.converse("+")
 
     assert not (before == mind.brain.net_weight).all()
+
+
+def test_question_mark_does_not_break_learning():
+    mind = make_mind("small")
+    language = mind.language
+
+    for _ in range(6):
+        language.read_text(
+            "Какая столица Франции? Париж. Какая столица Германии? Берлин. "
+            "Какая столица Италии? Рим."
+        )
+
+    assert language.sentences("Какая столица Франции? Париж.") == ["Какая столица Франции? Париж"]
+    assert rank(language, "какая столица франции", "париж") <= 3
+
+
+def test_separate_messages_are_not_glued(mind):
+    language = mind.language
+    language.read_text(FACTS)
+    before = rank(language, "столица германии", "квантовая") if "квантовая" in language.semantic else 999
+
+    for _ in range(5):
+        language.converse("Столица Германии")
+        language.converse("Квантовая хромодинамика")
+
+    # Конец одной реплики не должен предсказывать начало следующей.
+    assert rank(language, "столица германии", "квантовая") > 3
+    assert before >= 3

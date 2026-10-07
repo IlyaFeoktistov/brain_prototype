@@ -43,6 +43,7 @@ export interface EmotionState {
   valence: number;
   arousal: number;
   confusion: number;
+  sleeping: boolean;
 }
 
 export interface EmotionEvent extends EmotionState {
@@ -53,6 +54,14 @@ export interface Status {
   type: "status";
   emotionsEnabled: boolean;
   emotion: EmotionState;
+  sleeping: boolean;
+  sleepPressure: number;
+  episodes: number;
+  thinking: boolean;
+  initiative: boolean;
+  live: boolean;
+  // Очередь фонового чтения.
+  reading: { name: string; done: number; total: number }[];
   busy: boolean;
   words: number;
   tokens: number;
@@ -75,6 +84,10 @@ export interface StepEvent {
   error: number | null;
   dopamine: number;
   learn: boolean;
+  // Слово проигрывается во сне (гиппокамп -> кора).
+  dream: boolean;
+  // Мысль в тишине (живой режим) — не запоминается.
+  musing: boolean;
 }
 
 export interface Out {
@@ -115,6 +128,17 @@ export interface Brains {
   items: BrainFile[];
 }
 
+export interface MusingEvent {
+  type: "musing";
+  text: string;
+}
+
+export interface InitiativeEvent {
+  type: "initiative";
+  reason: string;
+  text: string;
+}
+
 export type ServerMessage =
   | Anatomy
   | Status
@@ -124,7 +148,9 @@ export type ServerMessage =
   | ReplyEvent
   | SpeakEvent
   | Brains
-  | EmotionEvent;
+  | EmotionEvent
+  | InitiativeEvent
+  | MusingEvent;
 
 export type ClientMessage =
   | { type: "line"; text: string }

@@ -310,6 +310,7 @@ textarea {
 
 .mood {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -348,6 +349,49 @@ textarea {
   stroke: var(--ink);
   stroke-width: 3;
   stroke-linecap: round;
+}
+
+.zzz {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  margin-left: -6px;
+  color: var(--hema);
+  font: italic 600 13px/1 var(--serif);
+}
+
+.zzz span {
+  animation: drift 2.4s ease-in-out infinite;
+}
+
+.zzz span:nth-child(2) {
+  font-size: 16px;
+  animation-delay: 0.4s;
+}
+
+.zzz span:nth-child(3) {
+  font-size: 20px;
+  animation-delay: 0.8s;
+}
+
+@keyframes drift {
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.35;
+  }
+  50% {
+    transform: translateY(-6px);
+    opacity: 1;
+  }
+}
+
+.musing {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--hema);
+  font: italic 14px/1.4 var(--serif);
+  opacity: 0.8;
 }
 
 .toggle {
@@ -397,6 +441,18 @@ textarea {
 .word-own .word-text {
   color: var(--ink-soft);
   font-style: italic;
+}
+
+.word-dream .word-text {
+  color: var(--dab);
+  font-style: italic;
+  opacity: 0.75;
+}
+
+.word-musing .word-text {
+  color: var(--hema);
+  font-style: italic;
+  opacity: 0.6;
 }
 
 .word-dopamine {
@@ -664,7 +720,8 @@ textarea {
     transition: none;
   }
 
-  .caret {
+  .caret,
+  .zzz span {
     animation: none;
   }
 }

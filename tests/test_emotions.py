@@ -54,3 +54,16 @@ def test_emotions_persist(mind, tmp_dir):
 
     loaded = Mind.load(path)
     assert loaded.language.emotions.state_dict() == mind.language.emotions.state_dict()
+
+
+def test_habituation_to_steady_surprise():
+    emotions = Emotions()
+    # Чтение: неожиданно почти каждое слово — к этому мозг привыкает.
+    for _ in range(200):
+        emotions.heard(4.0, guessed=False)
+    assert emotions.arousal < 0.5
+
+    # А резкий всплеск сверх привычного снова будоражит.
+    for _ in range(3):
+        emotions.heard(12.0, guessed=False)
+    assert emotions.arousal > 0.5

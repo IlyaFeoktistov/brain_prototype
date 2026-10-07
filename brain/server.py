@@ -14,6 +14,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 import os
+from collections import deque
 from concurrent.futures import Future
 import queue
 import threading
@@ -23,7 +24,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from brain.commands import Session
+from brain.commands import Session, report_line
+from brain.language import ReadReport
 from brain.config import BrainConfig
 from brain.language import Reply, Step
 from brain.mind import Mind
@@ -43,6 +45,13 @@ class BrainHost:
         self.jobs: queue.Queue = queue.Queue()
         self.ready = threading.Event()
         self.busy = False
+        # Спит во время тишины (между порциями сна тоже).
+        self.dozing = False
+        # Очередь фонового чтения: мозг читает порциями между сообщениями.
+        self.reading: deque = deque()
+        # Когда мозг последний раз заговорил сам и думал в тишине.
+        self.spoke_up_at = 0.0
+        self.wandered_at = 0.0
 
         self.mind: Mind | None = None
         self.session: Session | None = None
@@ -94,6 +103,8 @@ class BrainHost:
                 "error": step.error,
                 "dopamine": step.dopamine,
                 "learn": learn,
+                "dream": self.mind.language.sleeping,
+                "musing": self.mind.language.musing,
             }
         )
         self._emit_emotion()
@@ -105,6 +116,11 @@ class BrainHost:
     def _out(self, text: str, kind: str) -> None:
         if kind == "face":
             self._emit_emotion()
+            return
+
+        if kind == "thought":
+            thought, verdict, score = text.split("\t")
+            self.emit({"type": "thought", "thought": thought, "verdict": verdict, "score": float(score)})
             return
 
         if kind == "token":
@@ -196,6 +212,16 @@ class BrainHost:
             "timeMs": brain.time_ms,
             "grown": brain.synapses_grown,
             "emotionsEnabled": self.mind.cfg.emotions_enabled,
+            "sleeping": language.sleeping or self.dozing,
+            "thinking": self.mind.cfg.thinking_enabled,
+            "initiative": self.mind.cfg.initiative_enabled,
+            "live": self.mind.cfg.live_mode,
+            "reading": [
+                {"name": item["name"], "done": item["done"], "total": len(item["sentences"])}
+                for item in self.reading
+            ],
+            "sleepPressure": language.sleep_pressure,
+            "episodes": len(language.hippocampus),
             "emotion": language.emotions.state(),
             "plastic": [
                 {
@@ -229,13 +255,171 @@ class BrainHost:
             "info",
         )
 
+        last_activity = time.time()
+
         while True:
-            job = self.jobs.get()
+            try:
+                # Пока есть что читать — не ждать: читать порцию.
+                job = self.jobs.get(timeout=0.0 if self.reading else 1.0)
+            except queue.Empty:
+                if self.reading:
+                    self._execute(lambda session: self._read_portion(session), Future(), None, quiet=True)
+                    continue
+
+                # В тишине эмоции успокаиваются.
+                if self.mind.cfg.emotions_enabled:
+                    self.mind.language.emotions.relax(1.0)
+
+                # Живой режим: заговорить первым (повод — эмоция)
+                # или подумать про себя.
+                if self._should_speak_up(last_activity):
+                    self._speak_up()
+                elif self._should_wander(last_activity):
+                    self._wander()
+
+                # Если есть невыученные впечатления — спать порциями,
+                # чтобы новое сообщение будило за секунду-две.
+                if self._should_sleep(last_activity):
+                    self._doze(True)
+                    self._execute(
+                        lambda session: session.language.sleep(self.mind.cfg.sleep_batch),
+                        Future(),
+                        None,
+                        quiet=True,
+                    )
+                    # Между порциями сна мозг остаётся спящим.
+                    self.mind.language.emotions.sleeping = True
+                elif self.dozing:
+                    self._doze(False)
+                continue
 
             if job is None:
                 break
 
+            # Сообщение будит мозг.
+            self._doze(False)
+            last_activity = time.time()
             self._execute(*job)
+
+    # ==============================================================
+    # ФОНОВОЕ ЧТЕНИЕ
+    # ==============================================================
+
+    def enqueue_read(self, name: str, text: str) -> int:
+        """Поставить текст в очередь: мозг читает порциями между сообщениями."""
+
+        sentences = [
+            sentence for sentence in self.mind.language.sentences(text)
+            if self.mind.language.tokenize(sentence)
+        ]
+
+        if sentences:
+            self.reading.append(
+                {"name": name, "sentences": sentences, "done": 0,
+                 "report": ReadReport(), "start": time.time()}
+            )
+            self.emit(self.status())
+
+        return len(sentences)
+
+    def _read_portion(self, session) -> None:
+        if session.stop.is_set():
+            self.reading.clear()
+            session.stop.clear()
+            self._out("Чтение остановлено. Прочитанное уже в синапсах.", "info")
+            return
+
+        item = self.reading[0]
+        size = self.mind.cfg.read_portion_sentences
+        portion = item["sentences"][item["done"]: item["done"] + size]
+        item["report"].merge(session.language.read_text("\n".join(portion)))
+        item["done"] += len(portion)
+
+        elapsed = time.time() - item["start"]
+        self._out(f"{item['name']}: {report_line(item['report'], elapsed)}", "progress")
+
+        if item["done"] >= len(item["sentences"]):
+            self.reading.popleft()
+            self._out(f"Прочитал «{item['name']}»: {report_line(item['report'], elapsed)}", "info")
+            session.autosave(force=not self.reading)
+
+    def _doze(self, asleep: bool) -> None:
+        if self.dozing == asleep:
+            return
+
+        self.dozing = asleep
+        self.mind.language.emotions.sleeping = asleep
+        self.emit(self.status())
+        self._emit_emotion()
+
+    def _should_wander(self, last_activity: float) -> bool:
+        cfg = self.mind.cfg
+        now = time.time()
+        return (
+            cfg.live_mode
+            and not self.reading
+            and not self.dozing
+            and now - last_activity >= cfg.wander_every_seconds
+            and now - self.wandered_at >= cfg.wander_every_seconds
+        )
+
+    def _wander(self) -> None:
+        self.wandered_at = time.time()
+        future: Future = Future()
+
+        def run(session):
+            session.language.on_think = lambda step: self._out(
+                f"{step['thought']}\t{step['verdict']}\t{step['score']}", "thought"
+            )
+            try:
+                return session.language.wander()
+            finally:
+                session.language.on_think = None
+
+        self._execute(run, future, None, quiet=True)
+        result = future.result() if future.done() and not future.exception() else None
+
+        if result:
+            self.emit({"type": "musing", "text": result[0]})
+
+    def _should_speak_up(self, last_activity: float) -> bool:
+        cfg = self.mind.cfg
+        if not cfg.live_mode:
+            return False
+        now = time.time()
+        # Сонный мозг сначала попросится спать, а потом заснёт.
+        sleepy = self.mind.language.sleep_pressure >= cfg.sleepy_after_episodes
+        wait = cfg.idle_sleep_seconds if sleepy else cfg.initiative_idle_seconds
+        return (
+            cfg.initiative_enabled
+            and bool(self.clients)
+            and not self.reading
+            and not self.dozing
+            and now - last_activity >= wait
+            and now - self.spoke_up_at >= cfg.initiative_cooldown_seconds
+        )
+
+    def _speak_up(self) -> None:
+        self.spoke_up_at = time.time()
+        future: Future = Future()
+        self._execute(lambda session: session.language.initiative(), future, None, quiet=True)
+        said = future.result() if future.done() and not future.exception() else None
+
+        if said:
+            reason, text = said
+            self.emit({"type": "initiative", "reason": reason, "text": text})
+            self.mind.language.dialog.append({"who": "мозг", "text": text, "initiative": reason})
+            self._emit_emotion()
+
+    def _should_sleep(self, last_activity: float) -> bool:
+        cfg = self.mind.cfg
+        language = self.mind.language
+        return (
+            not self.reading
+            and cfg.sleep_when_idle
+            and time.time() - last_activity >= cfg.idle_sleep_seconds
+            and language.sleep_pressure > 0
+        )
 
     def submit(self, fn, sink=None) -> Future:
         """
@@ -248,8 +432,9 @@ class BrainHost:
 
         return future
 
-    def _execute(self, fn, future: Future, sink) -> None:
-        self.busy = True
+    def _execute(self, fn, future: Future, sink, quiet: bool = False) -> None:
+        # Сон во время тишины не занимает мозг для интерфейса.
+        self.busy = not quiet
         self.emit(self.status())
 
         if sink is not None:
@@ -278,6 +463,9 @@ class BrainHost:
         self.mind.brain.on_chunk = self._on_chunk
         self.mind.language.on_step = self._on_step
         self.session = Session(self.mind, self._out, self._on_reply)
+        # /read в вебе не блокирует мозг: текст встаёт в очередь.
+        self.session.background_read = self.enqueue_read
+        self.reading.clear()
 
     def shutdown(self) -> None:
         self.jobs.put(None)

@@ -85,16 +85,16 @@ export async function chat(
 export const command = (text: string) =>
   post<{ output: { kind: string; text: string }[] }>("/api/command", { text });
 
+// В фон: мозг читает порциями между сообщениями, разговаривать можно.
 export const read = (name: string, text: string) =>
-  post<{ tokens: number; sentences: number; guessed: number; predicted: number; dopamine: number }>(
-    "/api/read",
-    { name, text },
-  );
+  post<{ queued: boolean; sentences: number }>("/api/read", { name, text, background: true });
 
 export const feedback = (reward: number) => post<{ text: string }>("/api/feedback", { reward });
 
 export const load = (name: string) => post<{ brain: string; neurons: number }>("/api/load", { name });
 
 export const setEmotions = (enabled: boolean) => post("/api/emotions", { enabled });
+
+export const setLive = (enabled: boolean) => post("/api/live", { enabled });
 
 export const stop = () => post("/api/stop", {});

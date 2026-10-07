@@ -10,6 +10,7 @@ from typing import Callable
 import torch
 
 from brain.engine import SpikingBrain
+from brain.hippocampus import Hippocampus
 from brain.limbic import Emotions
 
 
@@ -308,6 +309,8 @@ class Reply:
     confidence: list[float] = field(default_factory=list)
     # Слова реплики, которых мозг раньше не слышал.
     unknown: list[str] = field(default_factory=list)
+    # Ход мыслей: [{thought, verdict: ok|no|stop, score}].
+    thoughts: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -375,6 +378,12 @@ class LanguageInterface:
 
         self.confidence = Confidence()
         self.emotions = Emotions()
+        self.hippocampus = Hippocampus(
+            cfg.hippocampus_capacity, cfg.replay_priority, seed=cfg.seed
+        )
+        self.sleeping = False
+        # Блуждание мыслей (живой режим): мысли видны, но не запоминаются.
+        self.musing = False
 
         self.last_rates: torch.Tensor | None = None
         self.last_token: str | None = None
@@ -382,6 +391,8 @@ class LanguageInterface:
         self.heard_in_phrase: list[str] = []
         # Слова, про которые мозг сам спрашивал «что такое…».
         self.asked: set[str] = set()
+        # Незнакомые слова из чтения — повод спросить самому.
+        self.wonder: list[str] = []
 
         self.experienced_tokens = 0
         self.sentences_lived = 0
@@ -389,7 +400,12 @@ class LanguageInterface:
         self.on_step: Callable[[Step, bool], None] | None = None
         # Стрим ответа: вызывается, как только мозг выбрал слово.
         self.on_speak: Callable[[str, float], None] | None = None
+        # Ход мыслей при размышлении: каждая мысль и вердикт проверки.
+        self.on_think: Callable[[dict], None] | None = None
         self.dialog_turns = 0
+        # Журнал переписки: внешняя «записка», которую можно перечитать.
+        # Сам разговор мозг помнит синапсами и гиппокампом, а не журналом.
+        self.dialog: list[dict] = []
 
     # ==============================================================
     # TEXT
@@ -405,9 +421,17 @@ class LanguageInterface:
 
     @staticmethod
     def sentences(text: str) -> list[str]:
+        """
+        Фразы, между которыми мозг делает паузу.
+
+        «?» паузой не считается: «какая столица франции? париж» — одна
+        мысль, и переход «вопрос -> ответ» должен учиться так же, как
+        «франции -> париж». После паузы следующий переход не учится.
+        """
+
         return [
             part
-            for part in re.split(r"[.!?;\n]+(?:\s|$)|\n", text)
+            for part in re.split(r"[.!;\n]+(?:\s|$)|\n", text)
             if part.strip()
         ]
 
@@ -633,15 +657,21 @@ class LanguageInterface:
             if not tokens:
                 continue
 
+            salience = 0.0
+            new_before = [t for t in tokens if not self.familiar(t)]
+
             for step in self.experience(tokens):
                 report.tokens += 1
                 report.dopamine += step.dopamine
+                salience += step.dopamine
 
                 if step.error is not None:
                     report.errors.append(step.error)
                     report.hits += step.expected == step.token
 
             report.sentences += 1
+            self._remember(tokens, salience)
+            self._note_new_words(tokens, new_before)
             self.rest()
 
             if progress and report.sentences % 20 == 0:
@@ -674,6 +704,84 @@ class LanguageInterface:
             return None
 
         return data.decode("utf-8", errors="ignore")
+
+    # ==============================================================
+    # СОН: гиппокамп проигрывает эпизоды коре
+    # ==============================================================
+
+    def _remember(self, tokens: list[str], salience: float) -> None:
+        """Гиппокамп запоминает фразу с одного раза (но не свои сны)."""
+
+        if not self.sleeping:
+            self.hippocampus.store(tokens, salience)
+            self.emotions.sleepy = self.sleep_pressure >= self.cfg.sleepy_after_episodes
+
+    def sleep(
+        self,
+        replays: int,
+        progress: Callable[[ReadReport], None] | None = None,
+        stop=None,
+    ) -> ReadReport:
+        """
+        Сон: гиппокамп проигрывает коре запомненные фразы, чаще —
+        самые неожиданные. Кора учится на них обычным правилом
+        (STDP + дофамин от ошибки предсказания). Выученная фраза почти
+        не даёт дофамина — её важность падает, и гиппокамп её забывает.
+        """
+
+        report = ReadReport()
+        self.sleeping = True
+        self.emotions.sleeping = True
+
+        try:
+            for _ in range(replays):
+                if stop is not None and stop.is_set():
+                    break
+
+                episode = self.hippocampus.sample()
+
+                if episode is None:
+                    break
+
+                salience = 0.0
+
+                for step in self.experience(episode.tokens):
+                    report.tokens += 1
+                    report.dopamine += step.dopamine
+                    salience += step.dopamine
+
+                    if step.error is not None:
+                        report.errors.append(step.error)
+                        report.hits += step.expected == step.token
+
+                episode.salience = salience
+                episode.replays += 1
+                report.sentences += 1
+                self.rest()
+
+                if progress and report.sentences % 20 == 0:
+                    progress(report)
+        finally:
+            self.sleeping = False
+            self.emotions.sleeping = False
+
+        self.hippocampus.forget_consolidated(self.cfg.consolidated_salience)
+        self.emotions.sleepy = self.sleep_pressure >= self.cfg.sleepy_after_episodes
+
+        return report
+
+    @property
+    def sleep_pressure(self) -> int:
+        """Сколько новых впечатлений ещё ни разу не проиграно во сне."""
+
+        return sum(1 for episode in self.hippocampus.episodes if episode.replays == 0)
+
+    def sleep_until_rested(self, stop=None, progress=None) -> ReadReport:
+        """Проспать столько, чтобы каждое новое впечатление проигралось N раз."""
+
+        replays = max(self.cfg.sleep_batch, self.sleep_pressure * self.cfg.replays_per_episode)
+
+        return self.sleep(replays, progress, stop)
 
     # ==============================================================
     # ДИАЛОГ: учится, пока разговаривает
@@ -709,15 +817,22 @@ class LanguageInterface:
         """
 
         self.dialog_turns += 1
+        user_text = text
 
         amplitude = self.feedback(text)
 
         if amplitude is not None:
             self.brain.reward(amplitude)
             self._feel("feedback", amplitude)
+            self._rate_last_turn(amplitude)
             self.brain.run(self.cfg.rest_ms)
             word = "закрепил" if amplitude > 0 else "ослабил"
             return Reply(f"[dopamine {amplitude:+.0f}: {word} последний ответ]", ReadReport())
+
+        # Новая реплика — новая мысль: пауза, иначе мозг выучит переход
+        # от конца прошлой реплики к началу этой («германии -> квантовая»).
+        if self.last_rates is not None:
+            self.rest()
 
         report = ReadReport()
         sentences = [s for s in self.sentences(text) if self.tokenize(s)]
@@ -731,15 +846,19 @@ class LanguageInterface:
         start = time.perf_counter()
 
         for i, sentence in enumerate(sentences):
+            salience = 0.0
+
             for step in self.experience(self.tokenize(sentence)):
                 report.tokens += 1
                 report.dopamine += step.dopamine
+                salience += step.dopamine
 
                 if step.error is not None:
                     report.errors.append(step.error)
                     report.hits += step.expected == step.token
 
             report.sentences += 1
+            self._remember(self.tokenize(sentence), salience)
 
             # Между фразами — пауза, но после последней мозг
             # сразу продолжает мысль.
@@ -752,7 +871,19 @@ class LanguageInterface:
         start = time.perf_counter()
         last = self.last_token
         # Продолжать мысль от незнакомого слова не от чего.
-        produced = [] if last in unknown else self._continue()
+        thoughts: list[dict] = []
+
+        if last in unknown:
+            produced = []
+        elif self.cfg.thinking_enabled:
+            produced, thoughts = self.think()
+
+            # Итог размышления произносится вслух.
+            if self.on_speak:
+                for token, sure in produced:
+                    self.on_speak(token, sure)
+        else:
+            produced = self._continue()
         self._sync()
         self._feel("answered", [sure for _, sure in produced])
 
@@ -777,6 +908,9 @@ class LanguageInterface:
             self._feel("curious")
 
         text = " … ".join(part for part in (answer, question) if part) or "не знаю"
+        self.dialog.append({"who": "человек", "text": user_text})
+        self.dialog.append({"who": "мозг", "text": text, "answer": answer, "rating": 0})
+        del self.dialog[: -self.cfg.dialog_log_turns]
 
         return Reply(
             text,
@@ -786,6 +920,7 @@ class LanguageInterface:
             generate_seconds=time.perf_counter() - start,
             confidence=[sure for _, sure in produced],
             unknown=unknown,
+            thoughts=thoughts,
         )
 
     def familiar(self, token: str) -> bool:
@@ -798,8 +933,136 @@ class LanguageInterface:
     def _feel(self, event: str, *args) -> None:
         """Передать событие лимбической системе, если эмоции включены."""
 
-        if self.cfg.emotions_enabled:
+        # Во сне эмоции не реагируют на проигрываемые фразы.
+        if self.cfg.emotions_enabled and not self.sleeping:
             getattr(self.emotions, event)(*args)
+
+    # ==============================================================
+    # ИНИЦИАТИВА: мозг заговаривает сам
+    # ==============================================================
+
+    def _note_new_words(self, tokens: list[str], new: list[str]) -> None:
+        """Незнакомые содержательные слова из чтения — про них можно спросить."""
+
+        if self.sleeping:
+            return
+
+        for word in new:
+            if len(word) >= self.cfg.ask_min_letters and word not in self.asked:
+                self.wonder.append(word)
+
+        del self.wonder[: -100]
+
+    def initiative(self) -> tuple[str, str] | None:
+        """
+        Что сказать самому, исходя из состояния. Возвращает (повод, текст)
+        или None, если сказать нечего. Повод выбирает эмоция:
+
+            сонливость  — попроситься спать
+            любопытство — спросить про незнакомое слово из чтения
+            грусть      — после ругани спросить, что не так
+            радость     — поделиться выученным (если уверен)
+            скука       — попросить почитать
+        """
+
+        mood = self.emotions.mood.name
+        cfg = self.cfg
+
+        if self.sleep_pressure >= cfg.sleepy_after_episodes:
+            return "сонливость", "я устал, столько нового… можно я посплю?"
+
+        if self.wonder and mood in ("любопытство", "удивление", "спокойствие", "скука", "довольство", "радость"):
+            word = self.wonder.pop()
+            self.asked.add(word)
+            self._feel("curious")
+            return "любопытство", f"я тут читал и не понял: а что такое «{word}»?"
+
+        if mood in ("грусть", "досада"):
+            return "грусть", "я что-то не так ответил? подскажи, как правильно"
+
+        if mood in ("радость", "довольство") and self.hippocampus.episodes:
+            episode = self.hippocampus.random.choice(self.hippocampus.episodes)
+            start = episode.tokens[:2]
+            produced = self.generate(" ".join(start))
+
+            if produced and min(sure for _, sure in produced) >= cfg.initiative_share_confidence:
+                said = " ".join(start + [token for token, _ in produced])
+                return "радость", f"а я знаю: {said}"
+
+        if mood in ("скука", "спокойствие"):
+            return "скука", "мне скучно… дай что-нибудь почитать?"
+
+        return None
+
+    def wander(self) -> tuple[str, list[dict]] | None:
+        """
+        Блуждание мыслей в тишине: взять тему (последнюю реплику
+        человека или пережитую фразу) и подумать про себя. Мысли видны
+        (on_think / on_step), но не запоминаются и не меняют синапсы.
+        """
+
+        topic = next(
+            (turn["text"] for turn in reversed(self.dialog) if turn["who"] == "человек"),
+            None,
+        )
+
+        if (topic is None or self.hippocampus.random.random() < 0.5) and self.hippocampus.episodes:
+            episode = self.hippocampus.random.choice(self.hippocampus.episodes)
+            topic = " ".join(episode.tokens[:3])
+
+        tokens = [t for t in self.tokenize(topic or "") if self.familiar(t)][-3:]
+
+        if not tokens:
+            return None
+
+        self.musing = True
+
+        try:
+            with self.isolated():
+                self.experience(tokens, learn=False)
+                produced, log = self.think()
+        finally:
+            self.musing = False
+
+        return " ".join(tokens + [t for t, _ in produced]), log
+
+    # ==============================================================
+    # ПАМЯТЬ ДИАЛОГА
+    # ==============================================================
+
+    def _rate_last_turn(self, amplitude: float) -> None:
+        """
+        Похвала: вопрос + ответ запоминаются гиппокампом как эпизод
+        и закрепятся во сне. Ругань: ответ помечается, чтобы мозг не
+        перечитывал и не закреплял свою ошибку.
+        """
+
+        turn = next((t for t in reversed(self.dialog) if t["who"] == "мозг"), None)
+
+        if turn is None:
+            return
+
+        turn["rating"] = 1 if amplitude > 0 else -1
+
+        if amplitude > 0 and turn.get("answer"):
+            index = self.dialog.index(turn)
+            question = self.dialog[index - 1]["text"] if index else ""
+            tokens = self.tokenize(question) + self.tokenize(turn["answer"])
+            self.hippocampus.store(tokens, salience=amplitude)
+
+    def reread(self, turns: int, progress=None, stop=None) -> ReadReport:
+        """
+        Перечитать переписку (как человек перечитывает чат, когда забыл).
+        Свои ответы мозг читает как текст; отруганные — пропускает.
+        """
+
+        lines = [
+            turn.get("answer", turn["text"]) if turn["who"] == "мозг" else turn["text"]
+            for turn in self.dialog[-turns:]
+            if turn.get("rating", 0) >= 0
+        ]
+
+        return self.read_text(".\n".join(line for line in lines if line), progress, stop)
 
     def _sync(self) -> None:
         if self.device.type == "cuda":
@@ -856,7 +1119,115 @@ class LanguageInterface:
 
         return produced
 
-    def generate(self, prompt: str) -> list[tuple[str, float]]:
+    # ==============================================================
+    # РАЗМЫШЛЕНИЕ: внутренняя речь + проверяющий
+    # ==============================================================
+
+    def _associations(self, token: str, cache: dict) -> dict[str, int]:
+        """Места всех слов в ожидании после слова token (по выученным синапсам)."""
+
+        if token not in cache:
+            prototype = self.semantic.prototype(token)
+            drive = self.brain.learned_drive(self._full(prototype), "association")
+            drive = drive.masked_fill(prototype > 0, 0.0)
+            ranked = self.semantic.decode(drive, {token}, top=len(self.semantic))
+            cache[token] = {word: place + 1 for place, (word, _) in enumerate(ranked)}
+
+        return cache[token]
+
+    def consistency(self, thought: str, goal: list[str], cache: dict) -> float:
+        """
+        Проверяющий: связана ли мысль с тем, о чём речь?
+        Сила связи в обе стороны (слово цели -> мысль и мысль -> слово
+        цели) по выученным синапсам, среднее двух сильнейших. 1.0 —
+        мысль первая в ожидании, 0 — не связана.
+        """
+
+        links = sorted(
+            (
+                max(
+                    1.0 / self._associations(word, cache).get(thought, 10**6),
+                    1.0 / self._associations(thought, cache).get(word, 10**6),
+                )
+                for word in goal
+                if word != thought and word in self.semantic
+            ),
+            reverse=True,
+        )[:2]
+
+        return sum(links) / len(links) if links else 0.0
+
+    def think(self) -> tuple[list[tuple[str, float]], list[dict]]:
+        """
+        Размышление про себя.
+
+            генератор: ожидание коры -> кандидат
+            проверяющий: связан ли кандидат с целью (вопросом)?
+              ✗ -> в состояние не попадает, генератор берёт следующий
+              ✓ -> звучит про себя (Брока -> слух, без вывода наружу),
+                   меняет состояние, из него рождается следующая мысль
+            остановка: уверенность упала или ветки кончились
+
+        Возвращает итог (слова с уверенностью) и ход мыслей.
+        """
+
+        if self.last_rates is None or self.last_token not in self.semantic:
+            return [], []
+
+        cfg = self.cfg
+        goal = [token for token in self.heard_in_phrase if self.familiar(token)]
+        cache: dict = {}
+        recent = set(self.heard_in_phrase)
+        rejected: set[str] = set()
+        produced: list[tuple[str, float]] = []
+        log: list[dict] = []
+
+        for _ in range(cfg.think_max_steps):
+            ranked = self.semantic.decode(
+                self.expectation(self.last_rates), exclude=recent | rejected, top=20
+            )
+
+            if not ranked:
+                break
+
+            margin = Confidence.margin(ranked)
+            sure = self.confidence(margin)
+            known = self.confidence.experience >= cfg.confidence_min_experience
+
+            if margin < cfg.generate_min_margin or (known and sure < cfg.generate_min_confidence):
+                log.append({"thought": ranked[0][0], "verdict": "stop", "score": round(sure, 3)})
+                break
+
+            accepted = None
+
+            for thought, _ in ranked[: cfg.think_breadth]:
+                score = self.consistency(thought, goal + [t for t, _ in produced], cache)
+                ok = score >= cfg.think_accept
+                log.append({"thought": thought, "verdict": "ok" if ok else "no", "score": round(score, 3)})
+
+                if self.on_think:
+                    self.on_think(log[-1])
+
+                if ok:
+                    accepted = thought
+                    break
+
+                rejected.add(thought)
+
+            if accepted is None:
+                break
+
+            # Мысль звучит про себя: слышна мозгу, наружу не выходит.
+            self.experience([accepted], learn=False)
+            produced.append((accepted, sure))
+            recent.add(accepted)
+
+            if len(produced) >= cfg.generate_max_tokens:
+                break
+
+        return produced, log
+
+    def generate(self, prompt: str, think: bool | None = None) -> list[tuple[str, float]]:
         """Продолжение без следа (read-only)."""
 
         tokens = self.tokenize(prompt)
@@ -868,9 +1239,11 @@ class LanguageInterface:
         if not self.familiar(tokens[-1]):
             return []
 
+        think = self.cfg.thinking_enabled if think is None else think
+
         with self.isolated():
             self.experience(tokens, learn=False)
-            return self._continue()
+            return self.think()[0] if think else self._continue()
 
     # ==============================================================
     # READ-ONLY ДИАГНОСТИКА
@@ -1128,6 +1501,10 @@ class LanguageInterface:
             "sentences_lived": self.sentences_lived,
             "confidence": self.confidence.state_dict(),
             "emotions": self.emotions.state_dict(),
+            "hippocampus": self.hippocampus.state_dict(),
+            "dialog": self.dialog,
+            "wonder": self.wonder,
+            "asked": sorted(self.asked),
             "dialog_turns": self.dialog_turns,
         }
 
@@ -1143,3 +1520,10 @@ class LanguageInterface:
 
         if "emotions" in state:
             self.emotions.load_state_dict(state["emotions"])
+
+        if "hippocampus" in state:
+            self.hippocampus.load_state_dict(state["hippocampus"])
+
+        self.dialog = list(state.get("dialog", []))
+        self.wonder = list(state.get("wonder", []))
+        self.asked = set(state.get("asked", []))

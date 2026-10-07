@@ -78,6 +78,16 @@ FACES = {
   /  > <  \
  |   ###   |
   \_______/"""),
+    "сон": Mood("сон", "спит", r"""
+   .-----.  z
+  /  - -  \ Z
+ |   ...   |  z
+  \_______/"""),
+    "сонливость": Mood("сонливость", "хочет спать", r"""
+   .-----.
+  /  = =  \ z
+ |   ---   |
+  \_______/"""),
     "спокойствие": Mood("спокойствие", "спокоен", r"""
    .-----.
   /  . .  \
@@ -93,6 +103,11 @@ class Emotions:
         self.confusion = 0.0
         # Доля сбывшихся ожиданий за последние слова (для скуки).
         self.predictability = 0.0
+        # Привычный уровень дофамина (к нему мозг привыкает).
+        self.dopamine_habit = 0.0
+        # Выставляет язык: спит ли и накопилось ли «давление сна».
+        self.sleeping = False
+        self.sleepy = False
 
     # ==============================================================
     # СОБЫТИЯ
@@ -101,7 +116,12 @@ class Emotions:
     def heard(self, dopamine: float, guessed: bool | None) -> None:
         """Услышал слово: dopamine от неожиданности, угадал ли."""
 
-        self.arousal = self.arousal * AROUSAL_DECAY + min(1.0, dopamine / 6.0) * 0.35
+        # Привыкание: возбуждает не сам дофамин, а его превышение над
+        # привычным фоном. Иначе при чтении, где неожиданно почти каждое
+        # слово, возбуждение упиралось в 1.0 и не значило ничего.
+        excess = max(0.0, dopamine - self.dopamine_habit)
+        self.dopamine_habit = self.dopamine_habit * 0.95 + dopamine * 0.05
+        self.arousal = self.arousal * AROUSAL_DECAY + min(1.0, excess / 6.0) * 0.35
         self.confusion *= CONFUSION_DECAY
         self.valence *= VALENCE_DECAY
 
@@ -141,6 +161,13 @@ class Emotions:
         self.valence += 0.05
         self._clip()
 
+    def relax(self, seconds: float) -> None:
+        """В тишине возбуждение и растерянность спадают, настроение — медленнее."""
+
+        self.arousal *= 0.97 ** seconds
+        self.confusion *= 0.97 ** seconds
+        self.valence *= 0.995 ** seconds
+
     def _clip(self) -> None:
         self.valence = max(-1.0, min(1.0, self.valence))
         self.arousal = max(0.0, min(1.0, self.arousal))
@@ -154,7 +181,9 @@ class Emotions:
     def mood(self) -> Mood:
         v, a = self.valence, self.arousal
 
-        if self.confusion > 0.5:
+        if self.sleeping:
+            name = "сон"
+        elif self.confusion > 0.5:
             name = "растерянность"
         elif a > 0.65 and abs(v) < 0.3:
             name = "удивление"
@@ -164,6 +193,8 @@ class Emotions:
             name = "досада" if a > 0.4 else "грусть"
         elif a > 0.35:
             name = "любопытство"
+        elif self.sleepy and a < 0.4:
+            name = "сонливость"
         elif a < 0.12 and self.predictability > 0.5:
             name = "скука"
         else:
@@ -181,6 +212,7 @@ class Emotions:
             "valence": round(self.valence, 3),
             "arousal": round(self.arousal, 3),
             "confusion": round(self.confusion, 3),
+            "sleeping": self.sleeping,
         }
 
     def state_dict(self) -> dict:
@@ -189,6 +221,7 @@ class Emotions:
             "arousal": self.arousal,
             "confusion": self.confusion,
             "predictability": self.predictability,
+            "dopamine_habit": self.dopamine_habit,
         }
 
     def load_state_dict(self, state: dict) -> None:

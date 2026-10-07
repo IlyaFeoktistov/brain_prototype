@@ -36,7 +36,12 @@ HELP = """
   /debug_association a b      E -> E синапсы между ансамблями
   /stats                      зоны, синапсы, что выучено
   /mood                       что мозг сейчас чувствует
+  /sleep [фраз]               уснуть: гиппокамп проиграет коре новые впечатления
+  /reread [реплик]            перечитать переписку (по умолчанию 20 последних)
   /emotions on|off            включить / выключить эмоции
+  /think on|off               размышлять про себя перед ответом (ход мыслей виден)
+  /live on|off                живой режим (веб): думает в тишине, сам заговаривает
+  /initiative on|off          в живом режиме — заговаривать первым
 
   /brains                     список сохранённых мозгов
   /save [путь]  /load имя     сохранить / переключиться на другой мозг
@@ -108,6 +113,9 @@ class Session:
         self.on_reply = on_reply
         self.stop = threading.Event()
         self._saved_at = time.time()
+        # Если задано (веб-сервер) — /read ставит текст в фоновую очередь
+        # и сразу возвращается: можно разговаривать, пока мозг читает.
+        self.background_read: Callable[[str, str], int] | None = None
 
     @property
     def language(self):
@@ -116,13 +124,18 @@ class Session:
     # ==============================================================
 
     def say(self, text: str) -> Reply:
-        # Слова ответа уходят наружу сразу, как мозг их выбрал.
+        # Слова ответа уходят наружу сразу, как мозг их выбрал;
+        # мысли — отдельно, как ход размышления.
         self.language.on_speak = lambda token, sure: self.out(f"{token}\t{sure:.2f}", "token")
+        self.language.on_think = lambda step: self.out(
+            f"{step['thought']}\t{step['verdict']}\t{step['score']}", "thought"
+        )
 
         try:
             reply = self.language.converse(text)
         finally:
             self.language.on_speak = None
+            self.language.on_think = None
 
         self.out(reply.text, "brain")
 
@@ -191,6 +204,31 @@ class Session:
                 self.read(payload)
         elif command == "/save":
             out(f"Сохранено: {self.mind.save(payload or None)}")
+        elif command == "/reread":
+            turns = int(payload) if payload.isdigit() else 20
+            start = time.time()
+            report = language.reread(turns, stop=self.stop)
+            out(f"Перечитал переписку: {report_line(report, time.time() - start)}")
+        elif command == "/sleep":
+            self.sleep(int(payload) if payload.isdigit() else None)
+        elif command == "/think":
+            if payload in ("on", "вкл"):
+                self.mind.cfg.thinking_enabled = True
+            elif payload in ("off", "выкл"):
+                self.mind.cfg.thinking_enabled = False
+            out(f"Размышление: {'включено' if self.mind.cfg.thinking_enabled else 'выключено'}")
+        elif command == "/live":
+            if payload in ("on", "вкл"):
+                self.mind.cfg.live_mode = True
+            elif payload in ("off", "выкл"):
+                self.mind.cfg.live_mode = False
+            out(f"Живой режим: {'включён' if self.mind.cfg.live_mode else 'выключен'}")
+        elif command == "/initiative":
+            if payload in ("on", "вкл"):
+                self.mind.cfg.initiative_enabled = True
+            elif payload in ("off", "выкл"):
+                self.mind.cfg.initiative_enabled = False
+            out(f"Заговаривать первым: {'да' if self.mind.cfg.initiative_enabled else 'нет'}")
         elif command == "/emotions":
             if payload in ("on", "вкл"):
                 self.mind.cfg.emotions_enabled = True
@@ -276,6 +314,36 @@ class Session:
 
         return report
 
+    def sleep(self, replays: int | None = None) -> ReadReport:
+        """Сон: проиграть коре новые впечатления (по умолчанию — все по N раз)."""
+
+        language = self.language
+        self.stop.clear()
+        pressure = language.sleep_pressure
+        self.out(f"Засыпаю… новых впечатлений {pressure}, всего в гиппокампе {len(language.hippocampus)}", "info")
+        self.out(language.emotions.state()["face"], "face")
+
+        start = time.time()
+
+        def progress(report: ReadReport) -> None:
+            self.out(f"сон: {report_line(report, time.time() - start)}", "progress")
+
+        if replays is None:
+            report = language.sleep_until_rested(self.stop, progress)
+        else:
+            report = language.sleep(replays, progress, self.stop)
+
+        self.out(
+            f"Проснулся. Проиграно фраз {report.sentences}, "
+            f"новых впечатлений осталось {language.sleep_pressure}, "
+            f"в гиппокампе {len(language.hippocampus)}",
+            "info",
+        )
+        self.out(language.emotions.state()["face"], "face")
+        self.autosave(force=True)
+
+        return report
+
     def autosave(self, force: bool = False) -> None:
         """Сохранить мозг, но не чаще раза в autosave_minutes (большой мозг весит ГБ)."""
 
@@ -290,7 +358,11 @@ class Session:
         self.stop.clear()
 
         if payload.startswith(":"):
-            self.read_text("текст", payload[1:])
+            if self.background_read:
+                count = self.background_read("текст", payload[1:])
+                self.out(f"Читаю в фоне: {count} фраз. Можно разговаривать.", "info")
+            else:
+                self.read_text("текст", payload[1:])
             return
 
         parts = payload.rsplit(" ", 1)
@@ -304,6 +376,17 @@ class Session:
             return
 
         files = self.language.text_files(payload)
+
+        if self.background_read:
+            total = 0
+            for _ in range(max(1, passes)):
+                for path in files:
+                    text = self.language.load_text(path)
+                    if text is not None:
+                        total += self.background_read(path.name, text)
+            self.out(f"Читаю в фоне: {len(files)} файл(ов), {total} фраз. Можно разговаривать.", "info")
+            return
+
         self.out(f"Читаю {len(files)} файл(ов), проходов {passes}.", "info")
 
         for index in range(1, max(1, passes) + 1):

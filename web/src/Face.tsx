@@ -57,6 +57,7 @@ export function Face({ emotion }: Props) {
   });
 
   const { valence: v, arousal: a, confusion: c } = pose;
+  const asleep = emotion?.sleeping ?? false;
   const eyeOpen = 1.5 + a * 5.5;
   const surprised = emotion?.name === "удивление";
   const mouthCurve = v * 14;
@@ -70,11 +71,22 @@ export function Face({ emotion }: Props) {
         {/* брови */}
         <line x1="26" y1={30 - c * 6} x2="42" y2={30 + browInner + c * 4} className="face-line" />
         <line x1="58" y1={30 + browInner - c * 2} x2="74" y2={30 + c * 6} className="face-line" />
-        {/* глаза */}
-        <ellipse cx="34" cy="42" rx="5" ry={eyeOpen} className="face-eye" />
-        <ellipse cx="66" cy="42" rx={5 + c * 1.5} ry={eyeOpen + c * 2} className="face-eye" />
+        {/* глаза: во сне закрыты */}
+        {asleep ? (
+          <>
+            <path d="M28,43 Q34,47 40,43" className="face-line" />
+            <path d="M60,43 Q66,47 72,43" className="face-line" />
+          </>
+        ) : (
+          <>
+            <ellipse cx="34" cy="42" rx="5" ry={eyeOpen} className="face-eye" />
+            <ellipse cx="66" cy="42" rx={5 + c * 1.5} ry={eyeOpen + c * 2} className="face-eye" />
+          </>
+        )}
         {/* рот */}
-        {surprised ? (
+        {asleep ? (
+          <ellipse cx="50" cy="72" rx="4" ry="3" className="face-line" />
+        ) : surprised ? (
           <ellipse cx="50" cy="72" rx="6" ry={4 + a * 4} className="face-eye" />
         ) : (
           <path
@@ -83,6 +95,13 @@ export function Face({ emotion }: Props) {
           />
         )}
       </svg>
+      {asleep && (
+        <span className="zzz" aria-hidden="true">
+          <span>z</span>
+          <span>z</span>
+          <span>Z</span>
+        </span>
+      )}
       <figcaption>{emotion ? emotion.title : "эмоции выключены"}</figcaption>
     </figure>
   );

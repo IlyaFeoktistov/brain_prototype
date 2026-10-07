@@ -44,7 +44,11 @@ _last_face = ""
 def _out(text: str, kind: str) -> None:
     global _streamed, _last_face
 
-    if kind == "token":
+    if kind == "thought":
+        thought, verdict, score = text.split("\t")
+        mark = {"ok": "✓", "no": "✗", "stop": "…"}[verdict]
+        print(f"  [думаю] {thought} {mark} (связь {float(score):.2f})")
+    elif kind == "token":
         token, _, _ = text.partition("\t")
         print(("Мозг: " if not _streamed else " ") + token, end="", flush=True)
         _streamed = True

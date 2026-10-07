@@ -25,6 +25,7 @@ export function App() {
   const [connected, setConnected] = useState(false);
   const [brains, setBrains] = useState<Brains | null>(null);
   const [emotion, setEmotion] = useState<EmotionState | null>(null);
+  const [musing, setMusing] = useState<string | null>(null);
 
   const connection = useRef<Connection | null>(null);
   const nextId = useRef(1);
@@ -67,6 +68,12 @@ export function App() {
         case "emotion":
           setEmotion(message);
           break;
+        case "initiative":
+          addEntry({ who: "brain", text: message.text, initiative: message.reason });
+          break;
+        case "musing":
+          setMusing(message.text);
+          break;
       }
     };
     connection.current = connect(handle, setConnected);
@@ -78,8 +85,8 @@ export function App() {
     [addEntry],
   );
 
-  const actions = useMemo<ChatActions>(
-    () => ({
+  const actions: ChatActions = useMemo<ChatActions>(
+    (): ChatActions => ({
       say: (text) => {
         addEntry({ who: "you", text });
         const id = nextId.current++;
@@ -114,10 +121,7 @@ export function App() {
         api
           .read(name, text)
           .then((r) =>
-            addEntry({
-              who: "info",
-              text: `${name}: ${r.tokens} слов, ${r.sentences} фраз, угадал ${r.guessed} из ${r.predicted}, dopamine ${r.dopamine.toFixed(0)}`,
-            }),
+            addEntry({ who: "info", text: `Читаю «${name}» в фоне: ${r.sentences} фраз. Можно разговаривать.` }),
           )
           .catch(report);
       },
@@ -129,6 +133,7 @@ export function App() {
       stop: () => {
         api.stop().catch(report);
       },
+      sleep: () => actions.command("/sleep"),
     }),
     [addEntry, report],
   );
@@ -170,6 +175,17 @@ export function App() {
                 <span>{status.tokens.toLocaleString("ru")} прожито</span>
                 <span>{bioTime(status.timeMs)} жизни</span>
                 <span>{status.grown.toLocaleString("ru")} новых синапсов выросло</span>
+                {status.reading.length > 0 && (
+                  <span>
+                    читает «{status.reading[0].name}» {status.reading[0].done}/{status.reading[0].total}
+                    {status.reading.length > 1 ? ` и ещё ${status.reading.length - 1}` : ""}
+                  </span>
+                )}
+                <span>
+                  {status.sleeping
+                    ? "спит"
+                    : `${status.sleepPressure.toLocaleString("ru")} новых впечатлений`}
+                </span>
               </>
             )}
             <span className="device">{anatomy.device === "cpu" ? "процессор" : "видеокарта"}</span>
@@ -213,6 +229,23 @@ export function App() {
           header={
             <div className="mood">
               <Face emotion={emotion} />
+              {status?.live && musing && !status.sleeping && (
+                <p className="musing" title="Мысль в тишине: видна, но не запоминается">
+                  думает: {musing}
+                </p>
+              )}
+              <label className="toggle" title="Думает в тишине, иногда заговаривает сам">
+                <input
+                  type="checkbox"
+                  checked={status?.live ?? false}
+                  disabled={!connected}
+                  onChange={(event) => {
+                    api.setLive(event.target.checked).catch(report);
+                    if (!event.target.checked) setMusing(null);
+                  }}
+                />
+                Живой режим
+              </label>
               <label className="toggle">
                 <input
                   type="checkbox"
@@ -227,6 +260,7 @@ export function App() {
           entries={entries}
           progress={progress}
           busy={status?.busy ?? false}
+          reading={(status?.reading.length ?? 0) > 0}
           connected={connected}
           actions={actions}
         />

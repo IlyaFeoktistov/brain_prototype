@@ -26,6 +26,7 @@ def main() -> None:
     parser.add_argument("--size", default=None, help="число нейронов или tiny/small/medium/large")
     parser.add_argument("--save", default=None, help="файл мозга")
     parser.add_argument("--passes", type=int, default=1)
+    parser.add_argument("--sleep", action="store_true", help="после чтения поспать (консолидация)")
     args = parser.parse_args()
 
     cfg = BrainConfig()
@@ -56,6 +57,9 @@ def main() -> None:
 
             if session.stop.is_set():
                 break
+
+        if args.sleep and not session.stop.is_set():
+            session.sleep()
     except KeyboardInterrupt:
         session.stop.set()
     finally:

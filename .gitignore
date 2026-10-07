@@ -44,3 +44,4 @@ data/
 # Веб-интерфейс
 web/node_modules/
 web/dist/
+web/*.tsbuildinfo

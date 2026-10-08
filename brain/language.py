@@ -1136,6 +1136,7 @@ class LanguageInterface:
             turn.get("answer", turn["text"]) if turn["who"] == "мозг" else turn["text"]
             for turn in self.dialog
             if turn.get("rating", 0) >= 0 and not turn.get("initiative")
+            and (self.cfg.recall_own_answers or turn["who"] != "мозг")
         ][-self.cfg.recall_turns:]
 
         if not turns or self.cfg.recall_gain <= 0:

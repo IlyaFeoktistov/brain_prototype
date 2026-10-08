@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { connect, type Anatomy, type Brains, type EmotionState, type Connection, type ServerMessage, type Status, type StepEvent } from "./brain";
 import { Chat, type ChatActions, type ChatEntry } from "./Chat";
 import * as api from "./api";
@@ -7,8 +7,14 @@ import { Guide } from "./Guide";
 import { Face } from "./Face";
 import { Pathways } from "./Pathways";
 import { Timeline } from "./Timeline";
+import { Splitter, useStoredSize } from "./Splitter";
+import { Thoughts, type ThoughtEntry } from "./Thoughts";
 
 const TIMELINE_LENGTH = 60;
+const THOUGHTS_LENGTH = 400;
+// Чат: не уже 300 px и не шире 70% окна — срезу мозга нужно место.
+const CHAT_MIN = 300;
+const chatMax = () => Math.max(CHAT_MIN, window.innerWidth * 0.7);
 
 function bioTime(ms: number): string {
   const s = ms / 1000;
@@ -25,7 +31,8 @@ export function App() {
   const [connected, setConnected] = useState(false);
   const [brains, setBrains] = useState<Brains | null>(null);
   const [emotion, setEmotion] = useState<EmotionState | null>(null);
-  const [musing, setMusing] = useState<string | null>(null);
+  const [thoughts, setThoughts] = useState<ThoughtEntry[]>([]);
+  const [chatWidth, setChatWidth] = useStoredSize("brain.chatWidth", 380);
 
   const connection = useRef<Connection | null>(null);
   const nextId = useRef(1);
@@ -36,6 +43,10 @@ export function App() {
     fluoRef.current = created;
     return created;
   }, [anatomy]);
+
+  const addThought = useCallback((entry: Omit<ThoughtEntry, "id">) => {
+    setThoughts((list) => [...list, { ...entry, id: nextId.current++ }].slice(-THOUGHTS_LENGTH));
+  }, []);
 
   const addEntry = useCallback((entry: Omit<ChatEntry, "id">) => {
     setEntries((list) => [...list, { ...entry, id: nextId.current++ }].slice(-300));
@@ -72,13 +83,16 @@ export function App() {
           addEntry({ who: "brain", text: message.text, initiative: message.reason });
           break;
         case "musing":
-          setMusing(message.text);
+          addThought({ kind: "musing", text: message.text });
+          break;
+        case "thought":
+          addThought({ kind: "step", text: message.thought, verdict: message.verdict, score: message.score });
           break;
       }
     };
     connection.current = connect(handle, setConnected);
     return () => connection.current?.close();
-  }, [addEntry]);
+  }, [addEntry, addThought]);
 
   const report = useCallback(
     (error: unknown) => addEntry({ who: "info", text: `Ошибка: ${(error as Error).message}` }),
@@ -101,7 +115,15 @@ export function App() {
               words: [...(entry.words ?? []), { token, confidence }],
             })),
           )
-          .then(({ text: final, reply }) => update((entry) => ({ ...entry, text: final, streaming: false, reply })))
+          .then(({ text: final, reply }) => {
+            update((entry) => ({ ...entry, text: final, streaming: false, reply }));
+            // Обдумывал ответ (/think on) — цепочку мыслей закрывает сам ответ.
+            setThoughts((list) =>
+              list.length && list[list.length - 1].kind === "step"
+                ? [...list, { id: nextId.current++, kind: "musing", text: final }]
+                : list,
+            );
+          })
           .catch((error) => {
             update((entry) => ({ ...entry, text: "…", streaming: false }));
             report(error);
@@ -137,6 +159,9 @@ export function App() {
     }),
     [addEntry, report],
   );
+
+  const thinking = Boolean(status?.thinking);
+  const live = Boolean(status?.live);
 
   return (
     <div className="app">
@@ -195,7 +220,7 @@ export function App() {
         )}
       </header>
 
-      <main className="bench">
+      <main className="bench" style={{ "--chat-width": `${chatWidth}px` } as CSSProperties}>
         <div className="stage">
           {anatomy ? (
             <>
@@ -225,15 +250,26 @@ export function App() {
           )}
         </div>
 
+        <Splitter
+          axis="x"
+          size={chatWidth}
+          min={CHAT_MIN}
+          max={chatMax}
+          direction={-1}
+          onResize={setChatWidth}
+          label="Ширина чата"
+        />
+
         <Chat
+          thoughts={{
+            count: thoughts.filter((t) => t.kind === "musing").length,
+            active: live || thinking,
+            node: <Thoughts entries={thoughts} live={live} thinking={thinking} />,
+            clear: () => setThoughts([]),
+          }}
           header={
             <div className="mood">
               <Face emotion={emotion} />
-              {status?.live && musing && !status.sleeping && (
-                <p className="musing" title="Мысль в тишине: видна, но не запоминается">
-                  думает: {musing}
-                </p>
-              )}
               <label className="toggle" title="Думает в тишине, иногда заговаривает сам">
                 <input
                   type="checkbox"
@@ -241,7 +277,6 @@ export function App() {
                   disabled={!connected}
                   onChange={(event) => {
                     api.setLive(event.target.checked).catch(report);
-                    if (!event.target.checked) setMusing(null);
                   }}
                 />
                 Живой режим

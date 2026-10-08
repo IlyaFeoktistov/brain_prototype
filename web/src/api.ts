@@ -1,7 +1,7 @@
 // Клиент HTTP API мозга (brain/api.py). Любой другой фронт может
 // говорить с мозгом так же — это обычные OpenAI/llama.cpp-ручки.
 
-import type { ReplyEvent } from "./brain";
+import type { NeuronCard, ReplyEvent } from "./brain";
 
 async function post<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(path, {
@@ -98,3 +98,9 @@ export const setEmotions = (enabled: boolean) => post("/api/emotions", { enabled
 export const setLive = (enabled: boolean) => post("/api/live", { enabled });
 
 export const stop = () => post("/api/stop", {});
+
+export async function neuron(index: number): Promise<NeuronCard> {
+  const response = await fetch(`/api/neuron/${index}`);
+  if (!response.ok) throw new Error(response.statusText);
+  return response.json() as Promise<NeuronCard>;
+}

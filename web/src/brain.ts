@@ -133,6 +133,14 @@ export interface MusingEvent {
   text: string;
 }
 
+// Шаг размышления: слово-кандидат и вердикт проверяющего.
+export interface ThoughtEvent {
+  type: "thought";
+  thought: string;
+  verdict: "ok" | "no" | "stop";
+  score: number;
+}
+
 export interface InitiativeEvent {
   type: "initiative";
   reason: string;
@@ -150,7 +158,8 @@ export type ServerMessage =
   | Brains
   | EmotionEvent
   | InitiativeEvent
-  | MusingEvent;
+  | MusingEvent
+  | ThoughtEvent;
 
 export type ClientMessage =
   | { type: "line"; text: string }
@@ -193,4 +202,30 @@ export function connect(
       socket?.close();
     },
   };
+}
+
+// GET /api/neuron/{index} — карточка нейрона (brain/neuron.py).
+export interface SynapseGroup {
+  population: string; // "association.E"
+  count: number;
+  mean: number;
+  plastic: number;
+  stronger: number;
+  weaker: number;
+}
+
+export interface NeuronCard {
+  index: number;
+  area: string;
+  title: string;
+  type: "E" | "I";
+  local: number;
+  state: { v: number; bias: number; adapt: number; rate: number | null };
+  tuning?: { word: string; share: number }[];
+  tuningWords?: number;
+  feeling?: string | null;
+  predicts: { word: string; score: number }[];
+  wokenBy: { word: string; score: number }[];
+  incoming: SynapseGroup[];
+  outgoing: SynapseGroup[];
 }

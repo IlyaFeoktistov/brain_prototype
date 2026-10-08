@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { ReplyEvent } from "./brain";
+import { Splitter, useStoredSize } from "./Splitter";
 
 export interface ChatEntry {
   id: number;
@@ -18,6 +19,8 @@ export interface ChatEntry {
 
 interface Props {
   header?: ReactNode;
+  // Окошко «Мысли»: ход размышления, отдельно от разговора.
+  thoughts?: { node: ReactNode; count: number; active: boolean; clear: () => void };
   entries: ChatEntry[];
   progress: string | null;
   busy: boolean;
@@ -54,8 +57,29 @@ function averageConfidence(words: { confidence: number }[]): number {
   return words.reduce((sum, w) => sum + w.confidence, 0) / words.length;
 }
 
-export function Chat({ header, entries, progress, busy, reading, connected, actions }: Props) {
+const THOUGHTS_MIN = 60;
+const thoughtsMax = () => Math.max(THOUGHTS_MIN, window.innerHeight * 0.6);
+
+export function Chat({ header, thoughts, entries, progress, busy, reading, connected, actions }: Props) {
   const [draft, setDraft] = useState("");
+  const [thoughtsHeight, setThoughtsHeight] = useStoredSize("brain.thoughtsHeight", 160);
+  const [thoughtsOpen, setThoughtsOpen] = useState(() => {
+    try {
+      return localStorage.getItem("brain.thoughtsOpen") !== "0";
+    } catch {
+      return true;
+    }
+  });
+  const toggleThoughts = () => {
+    setThoughtsOpen((open) => {
+      try {
+        localStorage.setItem("brain.thoughtsOpen", open ? "0" : "1");
+      } catch {
+        // не запомнится — не страшно
+      }
+      return !open;
+    });
+  };
   const log = useRef<HTMLDivElement>(null);
   const files = useRef<HTMLInputElement>(null);
 
@@ -84,6 +108,38 @@ export function Chat({ header, entries, progress, busy, reading, connected, acti
   return (
     <section className="chat" aria-label="Разговор с мозгом">
       {header}
+      {thoughts && (
+        <div className={`thoughts${thoughtsOpen ? "" : " thoughts-closed"}`}>
+          <div className="thoughts-bar">
+            <button type="button" className="thoughts-toggle" onClick={toggleThoughts} aria-expanded={thoughtsOpen}>
+              <span aria-hidden="true">{thoughtsOpen ? "▾" : "▸"}</span> Мысли
+              {thoughts.count > 0 && <span className="thoughts-count">{thoughts.count}</span>}
+              {thoughts.active && <span className="thoughts-live" title="думает: живой режим или /think on" />}
+            </button>
+            {thoughtsOpen && thoughts.count > 0 && (
+              <button type="button" className="thoughts-clear" onClick={thoughts.clear}>
+                очистить
+              </button>
+            )}
+          </div>
+          {thoughtsOpen && (
+            <>
+              <div className="thoughts-body" style={{ height: thoughtsHeight }}>
+                {thoughts.node}
+              </div>
+              <Splitter
+                axis="y"
+                size={thoughtsHeight}
+                min={THOUGHTS_MIN}
+                max={thoughtsMax}
+                direction={1}
+                onResize={setThoughtsHeight}
+                label="Высота окошка мыслей"
+              />
+            </>
+          )}
+        </div>
+      )}
       <div className="chat-log" ref={log} aria-live="polite">
         {entries.length === 0 && (
           <p className="chat-empty">

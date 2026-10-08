@@ -355,6 +355,22 @@ def build_router(host) -> APIRouter:
     async def brains():
         return host.brains() if host.ready.is_set() else {"items": []}
 
+    @router.get("/api/neuron/{index}")
+    async def neuron(index: int):
+        """Карточка нейрона (brain/neuron.py): что он знает. Только чтение."""
+
+        from brain.neuron import describe
+
+        def run(session):
+            card = describe(session.mind, index)
+
+            if card is None:
+                raise HTTPException(404, f"Нет нейрона {index}")
+
+            return card
+
+        return await call(run)
+
     @router.post("/api/load")
     async def load(request: LoadRequest):
         def run(session):

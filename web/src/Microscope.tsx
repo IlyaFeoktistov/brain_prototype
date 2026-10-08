@@ -1,5 +1,7 @@
-import { useEffect, useRef } from "react";
-import type { Anatomy, Area } from "./brain";
+import { type MouseEvent, useCallback, useEffect, useRef, useState } from "react";
+import { neuron } from "./api";
+import type { Anatomy, Area, NeuronCard as Card } from "./brain";
+import { NeuronCard } from "./NeuronCard";
 
 // Флуоресценция каждого нейрона: 1 в момент спайка, затем
 // затухает как кальциевый индикатор (~0.3 с реального времени).
@@ -81,6 +83,7 @@ interface SectionLayout {
   cols: number;
   rows: number;
   cellOf: Int32Array; // локальный индекс нейрона -> клетка сетки
+  neuronAt: Int32Array; // клетка сетки -> локальный индекс (-1 — стекло)
   base: Uint32Array;
   image: ImageData;
   pixels: Uint32Array;
@@ -111,8 +114,10 @@ function layout(area: Area, canvas: HTMLCanvasElement, index: number): SectionLa
   const cellOf = scatter(cols * rows, 7919 * (index + 1)).subarray(0, count);
 
   const base = new Uint32Array(cols * rows).fill(pack(GLASS));
+  const neuronAt = new Int32Array(cols * rows).fill(-1);
   for (let j = 0; j < count; j++) {
     base[cellOf[j]] = j < area.E.size ? HEMA_RAMP[0] : EOSIN_RAMP[0];
+    neuronAt[cellOf[j]] = j;
   }
 
   canvas.width = cols;
@@ -126,6 +131,7 @@ function layout(area: Area, canvas: HTMLCanvasElement, index: number): SectionLa
     cols,
     rows,
     cellOf,
+    neuronAt,
     base,
     image,
     pixels: new Uint32Array(image.data.buffer),
@@ -161,8 +167,107 @@ const PLACES: Record<string, string> = {
   limbic: "limbic",
 };
 
+interface Hover {
+  index: number;
+  area: string;
+  // Рамка вокруг клетки, в долях канваса.
+  box: { left: number; top: number; width: number; height: number };
+  x: number;
+  y: number;
+}
+
+// Клетка под курсором; клетки — по пикселю, поэтому, если попал в
+// стекло, ищем ближайший нейрон в окрестности 2 клеток.
+function hit(section: SectionLayout, canvas: HTMLCanvasElement, clientX: number, clientY: number) {
+  const rect = canvas.getBoundingClientRect();
+  const col = Math.floor(((clientX - rect.left) / rect.width) * section.cols);
+  const row = Math.floor(((clientY - rect.top) / rect.height) * section.rows);
+  for (let radius = 0; radius <= 2; radius++) {
+    for (let dr = -radius; dr <= radius; dr++) {
+      for (let dc = -radius; dc <= radius; dc++) {
+        const r = row + dr;
+        const c = col + dc;
+        if (r < 0 || c < 0 || r >= section.rows || c >= section.cols) continue;
+        const j = section.neuronAt[r * section.cols + c];
+        if (j >= 0) {
+          return {
+            index: section.start + j,
+            box: {
+              left: c / section.cols,
+              top: r / section.rows,
+              width: 1 / section.cols,
+              height: 1 / section.rows,
+            },
+          };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+// Карточки кэшируются ненадолго: веса меняются, пока мозг учится.
+const CARD_TTL_MS = 3000;
+
+function useNeuronCard(index: number | null) {
+  const cache = useRef(new Map<number, { card: Card; at: number }>());
+  const [card, setCard] = useState<Card | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (index === null) return;
+    const cached = cache.current.get(index);
+    if (cached && performance.now() - cached.at < CARD_TTL_MS) {
+      setCard(cached.card);
+      setError(null);
+      return;
+    }
+    setCard(null);
+    setLoading(true);
+    let cancelled = false;
+    // Не дёргать мозг на каждом пикселе, пока мышь едет.
+    const timer = window.setTimeout(() => {
+      neuron(index)
+        .then((fresh) => {
+          cache.current.set(index, { card: fresh, at: performance.now() });
+          if (!cancelled) {
+            setCard(fresh);
+            setError(null);
+          }
+        })
+        .catch(() => !cancelled && setError("мозг занят — попробуй ещё раз"))
+        .finally(() => !cancelled && setLoading(false));
+    }, 120);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [index]);
+
+  return { card, loading, error };
+}
+
 export function Microscope({ anatomy, fluo, onActivity }: Props) {
   const canvases = useRef<Map<string, HTMLCanvasElement>>(new Map());
+  const sectionsRef = useRef<SectionLayout[]>([]);
+  const [hover, setHover] = useState<Hover | null>(null);
+  const [pinned, setPinned] = useState<Hover | null>(null);
+  const shown = pinned ?? hover;
+  const { card, loading, error } = useNeuronCard(shown?.index ?? null);
+
+  const locate = useCallback((area: Area, event: MouseEvent<HTMLCanvasElement>): Hover | null => {
+    const section = sectionsRef.current.find((s) => s.area.name === area.name);
+    if (!section) return null;
+    const found = hit(section, event.currentTarget, event.clientX, event.clientY);
+    return found && { ...found, area: area.name, x: event.clientX, y: event.clientY };
+  }, []);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => event.key === "Escape" && setPinned(null);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   const reduceMotion = useRef(
     typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
   );
@@ -174,6 +279,7 @@ export function Microscope({ anatomy, fluo, onActivity }: Props) {
         const canvas = canvases.current.get(area.name);
         return canvas ? [layout(area, canvas, index)] : [];
       });
+      sectionsRef.current = sections;
     };
     rebuild();
 
@@ -213,14 +319,34 @@ export function Microscope({ anatomy, fluo, onActivity }: Props) {
     <div className="slide">
       {anatomy.areas.map((area) => (
         <figure key={area.name} className={`section section-${PLACES[area.name] ?? "other"}`}>
-          <canvas
-            ref={(node) => {
-              if (node) canvases.current.set(area.name, node);
-              else canvases.current.delete(area.name);
-            }}
-            role="img"
-            aria-label={`${area.title}: активность нейронов`}
-          />
+          <div className="section-glass">
+            <canvas
+              ref={(node) => {
+                if (node) canvases.current.set(area.name, node);
+                else canvases.current.delete(area.name);
+              }}
+              role="img"
+              aria-label={`${area.title}: активность нейронов; наведи на клетку — что она знает`}
+              onPointerMove={(event) => setHover(locate(area, event))}
+              onPointerLeave={() => setHover(null)}
+              onClick={(event) => setPinned(locate(area, event))}
+            />
+            {[hover, pinned].map(
+              (mark, i) =>
+                mark?.area === area.name && (
+                  <span
+                    key={i}
+                    className={`neuron-mark${i ? " neuron-mark-pinned" : ""}`}
+                    style={{
+                      left: `${mark.box.left * 100}%`,
+                      top: `${mark.box.top * 100}%`,
+                      width: `${mark.box.width * 100}%`,
+                      height: `${mark.box.height * 100}%`,
+                    }}
+                  />
+                ),
+            )}
+          </div>
           <figcaption>
             <span className="section-title">{area.title}</span>
             <span className="section-count">
@@ -229,6 +355,18 @@ export function Microscope({ anatomy, fluo, onActivity }: Props) {
           </figcaption>
         </figure>
       ))}
+      {shown && (
+        <NeuronCard
+          anatomy={anatomy}
+          card={card}
+          loading={loading}
+          error={error}
+          x={shown.x}
+          y={shown.y}
+          pinned={pinned !== null}
+          onClose={() => setPinned(null)}
+        />
+      )}
     </div>
   );
 }

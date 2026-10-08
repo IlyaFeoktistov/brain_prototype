@@ -115,3 +115,23 @@ def test_falls_asleep_only_when_tired(client):
         assert not host._should_fall_asleep(last_activity=__import__("time").time())
     finally:
         cfg.sleepy_after_episodes = threshold
+
+
+def test_neuron_card(client):
+    anatomy = client.get("/api/state").json()["anatomy"]
+    meaning = next(a for a in anatomy["areas"] if a["name"] == "association")
+    state = client.get("/api/state").json()["tokens"]
+
+    # Нейрон из ансамбля «париж»: карточка должна знать это слово.
+    cards = [
+        client.get(f"/api/neuron/{meaning['E']['start'] + i}").json()
+        for i in range(0, meaning["E"]["size"], max(1, meaning["E"]["size"] // 200))
+    ]
+    card = cards[0]
+    assert card["area"] == "association" and card["type"] == "E"
+    assert {"tuning", "predicts", "wokenBy", "incoming", "outgoing", "state"} <= card.keys()
+    assert any(entry["word"] == "париж" for c in cards for entry in c["tuning"])
+
+    assert client.get("/api/neuron/999999999").status_code == 404
+    # Карточка — только чтение.
+    assert client.get("/api/state").json()["tokens"] == state

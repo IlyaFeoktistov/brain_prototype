@@ -102,7 +102,8 @@ textarea {
 
 .bench {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 380px;
+  /* --chat-width: граница чата тянется мышью (Splitter). */
+  grid-template-columns: minmax(0, 1fr) auto var(--chat-width, 380px);
   min-height: 0;
 }
 
@@ -156,7 +157,14 @@ textarea {
   grid-row: 2;
 }
 
+.section-glass {
+  position: relative;
+  min-height: 0;
+}
+
 .section canvas {
+  display: block;
+  cursor: crosshair;
   width: 100%;
   height: 100%;
   min-height: 0;
@@ -391,14 +399,6 @@ textarea {
   }
 }
 
-.musing {
-  flex-basis: 100%;
-  margin: 0;
-  color: var(--hema);
-  font: italic 14px/1.4 var(--serif);
-  opacity: 0.8;
-}
-
 .toggle {
   display: flex;
   align-items: center;
@@ -519,9 +519,8 @@ textarea {
 
 .chat {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   min-height: 0;
-  border-left: 1px solid var(--rule);
   background: var(--paper);
 }
 
@@ -667,6 +666,10 @@ textarea {
     grid-template-columns: 1fr;
   }
 
+  .splitter-x {
+    display: none;
+  }
+
   .stage {
     grid-template-rows: auto;
     overflow: visible;
@@ -734,4 +737,361 @@ textarea {
   .zzz span {
     animation: none;
   }
+}
+
+/* ---- карточка нейрона ---- */
+
+.neuron-mark {
+  position: absolute;
+  box-sizing: content-box;
+  min-width: 4px;
+  min-height: 4px;
+  margin: -3px 0 0 -3px;
+  border: 2px solid var(--dab);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.neuron-mark-pinned {
+  border-color: var(--eosin);
+}
+
+.neuron-card {
+  position: fixed;
+  z-index: 20;
+  width: min(340px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  padding: 12px 14px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgb(36 29 61 / 18%);
+  font-size: 13px;
+  pointer-events: none;
+}
+
+.neuron-card-pinned {
+  pointer-events: auto;
+  border-color: var(--eosin);
+}
+
+.neuron-head {
+  position: relative;
+  padding-right: 20px;
+}
+
+.neuron-head strong {
+  font: 600 15px/1.3 var(--serif);
+}
+
+.neuron-type {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.neuron-type-E {
+  background: var(--hema-soft);
+  color: var(--hema);
+}
+
+.neuron-type-I {
+  background: var(--eosin-soft);
+  color: var(--eosin);
+}
+
+.neuron-sub,
+.neuron-hint,
+.neuron-empty {
+  color: var(--ink-soft);
+}
+
+.neuron-hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+
+.neuron-empty {
+  margin: 2px 0;
+  font-style: italic;
+}
+
+.neuron-close {
+  position: absolute;
+  top: -4px;
+  right: -6px;
+  border: 0;
+  background: none;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.neuron-feeling {
+  margin: 6px 0 0;
+}
+
+.neuron-state {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  margin: 8px 0;
+}
+
+.neuron-state dt {
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.neuron-state dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.neuron-card section {
+  margin-top: 8px;
+}
+
+.neuron-card h4 {
+  margin: 0 0 4px;
+  font: italic 500 13px/1.3 var(--serif);
+}
+
+.neuron-card h4 span {
+  color: var(--ink-soft);
+  font-style: normal;
+  font-size: 12px;
+}
+
+.neuron-bars {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.neuron-bars li {
+  display: grid;
+  grid-template-columns: 7.5em 1fr 3em;
+  align-items: center;
+  gap: 6px;
+}
+
+.neuron-word {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.neuron-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--hema);
+  opacity: 0.75;
+}
+
+.neuron-value {
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.neuron-table {
+  width: 100%;
+  margin-top: 8px;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.neuron-table caption {
+  text-align: left;
+  font: italic 500 13px/1.3 var(--serif);
+  padding-bottom: 2px;
+}
+
+.neuron-table th {
+  color: var(--ink-soft);
+  font-weight: 400;
+  text-align: right;
+}
+
+.neuron-table th:first-child,
+.neuron-table td:first-child {
+  text-align: left;
+}
+
+.neuron-table td {
+  text-align: right;
+  border-top: 1px solid var(--rule);
+}
+
+/* ---- границы, которые тянутся ---- */
+
+.splitter {
+  position: relative;
+  background: var(--rule);
+  touch-action: none;
+}
+
+.splitter::after {
+  /* Зона захвата шире видимой линии. */
+  content: "";
+  position: absolute;
+}
+
+.splitter-x {
+  z-index: 2;
+  width: 1px;
+  cursor: col-resize;
+}
+
+.splitter-x::after {
+  inset: 0 -5px;
+}
+
+.splitter-y {
+  height: 1px;
+  cursor: row-resize;
+}
+
+.splitter-y::after {
+  inset: -5px 0;
+}
+
+.splitter:hover,
+.splitter:focus-visible,
+.splitter-active {
+  background: var(--hema);
+  outline: none;
+  box-shadow: 0 0 0 1px var(--hema);
+}
+
+body.resizing-x {
+  cursor: col-resize;
+  user-select: none;
+}
+
+body.resizing-y {
+  cursor: row-resize;
+  user-select: none;
+}
+
+/* ---- окошко «Мысли» ---- */
+
+.thoughts {
+  border-bottom: 1px solid var(--rule);
+}
+
+.thoughts-closed {
+  border-bottom: 1px solid var(--rule);
+}
+
+.thoughts-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 12px;
+}
+
+.thoughts-toggle,
+.thoughts-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: none;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+
+.thoughts-toggle {
+  font: italic 500 14px/1.3 var(--serif);
+}
+
+.thoughts-clear {
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.thoughts-count {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--hema-soft);
+  color: var(--hema);
+  font: 11px/1.6 var(--sans);
+  font-variant-numeric: tabular-nums;
+}
+
+.thoughts-live {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dab);
+}
+
+.thoughts-body {
+  min-height: 0;
+  background: var(--glass);
+}
+
+.thoughts-log {
+  height: 100%;
+  overflow-y: auto;
+  padding: 8px 14px;
+  font-size: 13px;
+}
+
+.thoughts-empty {
+  margin: 0;
+  color: var(--ink-soft);
+  font-style: italic;
+}
+
+.thought-chain {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--rule);
+}
+
+.thought {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--paper);
+  box-shadow: inset 0 0 0 1px var(--rule);
+}
+
+.thought-mark {
+  font-size: 11px;
+}
+
+.thought-ok .thought-mark {
+  color: var(--hema);
+}
+
+.thought-no {
+  color: var(--ink-soft);
+  text-decoration: line-through;
+}
+
+.thought-no .thought-mark {
+  color: var(--eosin);
+}
+
+.thought-stop .thought-mark {
+  color: var(--dab);
+}
+
+.thought-result {
+  flex-basis: 100%;
+  margin: 2px 0 0;
+  color: var(--hema);
+  font: italic 14px/1.4 var(--serif);
 }

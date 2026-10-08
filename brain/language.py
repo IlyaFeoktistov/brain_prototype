@@ -609,8 +609,8 @@ class LanguageInterface:
         self._place = None
 
         if self.cfg.memory_places:
-            self._memory_trace().zero_()
-            self.brain.feel("prefrontal", None, 0.0)
+            self._memory_trace().mul_(self.cfg.memory_rest_decay)
+            self._hold_memory()
 
         if self._growth and self.sentences_lived % self.cfg.grow_every_sentences == 0:
             self.brain.grow(self._growth, self.cfg.grow_synapses)

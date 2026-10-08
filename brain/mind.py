@@ -44,10 +44,12 @@ class Mind:
             # смысл молчит, и гомеостаз зон за ним (рот, память)
             # выкручивает возбудимость под вход, которого не будет.
             language.concepts.get(sound, allocate=True)
+            language.memory.get(sound, allocate=True)
             language.perceive(sound, learn_forms=False)
 
         # Места калибровочных звуков — не знание: стереть.
         language.concepts.reset()
+        language.memory.reset()
 
         # Калибровка — не опыт: веса и следы как при рождении.
         self.brain.net_weight[: self.brain.n_plastic].copy_(plastic_weights)

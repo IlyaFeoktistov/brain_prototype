@@ -415,6 +415,10 @@ class LanguageInterface:
         self.concepts = Concepts(
             self.meaning.E.size, cfg.concept_cells, cfg.seed, self.device
         )
+        # Места слов в рабочей памяти (ПФК).
+        self.memory = Concepts(
+            self.context.E.size, cfg.concept_cells, cfg.seed + 1, self.device
+        )
 
         self.confidence = Confidence()
         self.emotions = Emotions()
@@ -436,8 +440,9 @@ class LanguageInterface:
         self._feelings: dict[str, torch.Tensor] = {}
         # Чувствительность клеток ядер нейромедиаторов.
         self._gains: dict[str, torch.Tensor] = {}
-        # Неожиданные переходы «место A → место B»: здесь вырастут синапсы.
-        self._growth: list[tuple[torch.Tensor, torch.Tensor]] = []
+        # Неожиданные переходы: (проекция, клетки-источник, место B) —
+        # здесь вырастут синапсы.
+        self._growth: list[tuple[str, torch.Tensor, torch.Tensor]] = []
         self._prev_place: torch.Tensor | None = None
         self._place: torch.Tensor | None = None
         # Чувство, зафиксированное на время текущей реплики.
@@ -505,8 +510,20 @@ class LanguageInterface:
             if self.cfg.concepts_enabled else None
         )
 
+        held = (
+            self.memory.get(token, allocate=learn_forms)
+            if self.cfg.memory_places else None
+        )
+
         if place is not None:
             self.brain.feel("association", place, self.cfg.concept_mv)
+
+        if held is not None:
+            # Устойчивая активность ПФК: прошлые места тают, новое — полное.
+            trace = self._memory_trace()
+            trace.mul_(self.cfg.memory_decay)
+            trace[held] = self.cfg.memory_mv
+            self._hold_memory()
 
         rates = self.brain.observe(
             self.cfg.stimulus_ms,
@@ -515,6 +532,7 @@ class LanguageInterface:
 
         if place is not None:
             self.brain.feel("association", None, 0.0)
+
 
         self._prev_place, self._place = self._place, place
 
@@ -530,6 +548,16 @@ class LanguageInterface:
             self.experienced_tokens += 1
 
         return rates
+
+    def _memory_trace(self) -> torch.Tensor:
+        if getattr(self, "_trace", None) is None:
+            self._trace = torch.zeros(self.context.E.size, device=self.device)
+
+        return self._trace
+
+    def _hold_memory(self) -> None:
+        cells = torch.arange(self.context.E.size, device=self.device)
+        self.brain.feel("prefrontal", cells, self._memory_trace())
 
     def _form_path(self):
         return next(
@@ -573,11 +601,16 @@ class LanguageInterface:
         self.brain.forget()
 
         self.sentences_lived += 1
-        # Новая фраза — переход от прошлой не учится (см. converse).
+        # Новая фраза — переход от прошлой не учится (см. converse),
+        # и рабочая память отпускает прошлую фразу.
         self._place = None
 
+        if self.cfg.memory_places:
+            self._memory_trace().zero_()
+            self.brain.feel("prefrontal", None, 0.0)
+
         if self._growth and self.sentences_lived % self.cfg.grow_every_sentences == 0:
-            self.brain.grow("association", self._growth, self.cfg.grow_synapses)
+            self.brain.grow(self._growth, self.cfg.grow_synapses)
             self._growth = []
 
         if (
@@ -746,6 +779,14 @@ class LanguageInterface:
                 step.expected, step.expected_score = ranked[0]
                 step.margin = Confidence.margin(ranked)
 
+        # Контекст до нового слова: активные клетки рабочей памяти.
+        context = None
+
+        if self.last_rates is not None:
+            memory = self._area(self.last_rates, self.context)
+            context = memory.topk(min(self.cfg.context_grow_cells, memory.numel())).indices
+            context = context[memory[context] > 0]
+
         rates = self.perceive(token, learn_forms=learn)
 
         if expected_state is not None and token in self.semantic:
@@ -771,13 +812,13 @@ class LanguageInterface:
                     )
 
                 # Неожиданный переход: связи для него нужны — вырастут.
-                if (
-                    step.dopamine > 0
-                    and self.cfg.grow_on_surprise
-                    and self._prev_place is not None
-                    and self._place is not None
-                ):
-                    self._growth.append((self._prev_place, self._place))
+                # От места прошлого слова и от контекста рабочей памяти.
+                if step.dopamine > 0 and self.cfg.grow_on_surprise and self._place is not None:
+                    if self._prev_place is not None:
+                        self._growth.append(("association: E->E", self._prev_place, self._place))
+
+                    if context is not None and len(context):
+                        self._growth.append(("prefrontal -> association", context, self._place))
 
                 # Неожиданный переход закрепляется: dopamine
                 # превращает eligibility traces только что
@@ -1836,6 +1877,7 @@ class LanguageInterface:
             "semantic": self.semantic.state_dict(),
             "mouth": self.mouth.state_dict(),
             "concepts": self.concepts.state_dict(),
+            "memory_places": self.memory.state_dict(),
             "experienced_tokens": self.experienced_tokens,
             "sentences_lived": self.sentences_lived,
             "confidence": self.confidence.state_dict(),
@@ -1853,6 +1895,9 @@ class LanguageInterface:
 
         if "concepts" in state:
             self.concepts.load_state_dict(state["concepts"])
+
+        if "memory_places" in state:
+            self.memory.load_state_dict(state["memory_places"])
         self.experienced_tokens = state["experienced_tokens"]
         self.dialog_turns = state["dialog_turns"]
         self.sentences_lived = state.get("sentences_lived", 0)

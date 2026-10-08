@@ -362,6 +362,10 @@ class SpikingBrain:
             if cfg.concepts_enabled and (path.src, path.dst) == ("auditory", "association"):
                 path = cfg.form_pathway
 
+            # Память хранит места слов — случайная проводка в неё не нужна.
+            if cfg.memory_places and (path.src, path.dst) == ("association", "prefrontal"):
+                continue
+
             src = self.areas[path.src]
             dst = self.areas[path.dst]
 
@@ -904,8 +908,12 @@ class SpikingBrain:
             if spec.target_activity <= 0:
                 continue
 
-            # С понятиями активность смысла задают сами понятия.
+            # С понятиями активность смысла (и памяти с местами слов)
+            # задают сами места, а не гомеостаз.
             if self.cfg.concepts_enabled and spec.name == "association":
+                continue
+
+            if self.cfg.memory_places and spec.name == "prefrontal":
                 continue
 
             E = self.areas[spec.name].E
@@ -914,27 +922,27 @@ class SpikingBrain:
             step = (self.cfg.homeostasis_rate * error).clamp(-1.0, 1.0)
             self.bias[E.slice] = (self.bias[E.slice] + step).clamp(low, high)
 
-    def grow(self, area: str, links: list[tuple[torch.Tensor, torch.Tensor]], count: int) -> int:
+    def grow(self, links: list[tuple[str, torch.Tensor, torch.Tensor]], count: int) -> int:
         """
-        Вырастить синапсы E->E зоны: для каждой пары (pre, post) —
-        локальные индексы клеток — count синапсов от случайных pre к
-        случайным post, взамен самого слабого входа клетки post.
-        Новый синапс слабый (нижний врождённый вес) и учится как все.
+        Вырастить синапсы: для каждой связи (проекция, pre, post) —
+        pre и post локальные индексы клеток своих зон — count синапсов от
+        случайных pre к случайным post, взамен самого слабого входа клетки
+        post. Новый синапс слабый (нижний врождённый вес) и учится как все.
         """
 
         if not self.plasticity or not links:
             return 0
 
-        proj = next((p for p in self.plastic if p.name == f"{area}: E->E"), None)
-
-        if proj is None:
-            return 0
-
-        low = proj.innate_range[0]
-        start = proj.pre_pop.start
         grown = 0
 
-        for pre, post in links:
+        for name, pre, post in links:
+            proj = next((p for p in self.plastic if p.name == name), None)
+
+            if proj is None or not len(pre) or not len(post):
+                continue
+
+            low = proj.innate_range[0]
+            start = proj.pre_pop.start
             pick = torch.randint(0, len(post), (count,), device=self.device, generator=self.generator)
             rows = post[pick]
             which = torch.randint(0, len(pre), (count,), device=self.device, generator=self.generator)

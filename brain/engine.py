@@ -131,6 +131,44 @@ class EventTable:
         return self.ptr.numel() * 4 + self.perm.numel() * 4
 
 
+class PrefixTable(EventTable):
+    """
+    Начала строк общей таблицы: пластичные синапсы лежат в массиве
+    первыми, и устойчивая сортировка ставит их первыми в строке каждого
+    нейрона — своя перестановка не нужна, только их число.
+    [замер] отдельная перестановка — 4 Б на каждый пластичный синапс.
+    """
+
+    def __init__(self, table: EventTable, keys: torch.Tensor, n_slots: int, pad: int, dummies: int):
+        counts = torch.bincount(keys, minlength=n_slots)
+        width = max(1, int(counts.max())) if len(keys) else 1
+        self.width = -(-width // 64) * 64
+        self.start = table.ptr[:-1]
+        self.count = counts.to(torch.int32)
+        self.perm = table.perm
+        self.pad = pad
+        self.dummies = dummies
+        self.cols = torch.arange(self.width, device=keys.device)
+
+    def rows(self, neurons: torch.Tensor) -> torch.Tensor:
+        start = self.start.index_select(0, neurons).long()
+        count = self.count.index_select(0, neurons).long()
+        position = (start[:, None] + self.cols).clamp(max=len(self.perm) - 1)
+        synapses = self.perm.index_select(0, position.flatten()).view_as(position)
+        dummy = self.pad + (neurons.long()[:, None] * self.width + self.cols) % self.dummies
+
+        return torch.where(self.cols < count[:, None], synapses.long(), dummy)
+
+    def nbytes(self) -> int:
+        return self.count.numel() * 4
+
+
+def exact16(values: torch.Tensor) -> torch.Tensor:
+    """Ближайшие значения, точно представимые в fp16 (тип — исходный)."""
+
+    return values.to(torch.float16).to(values.dtype)
+
+
 def pick_device(name: str) -> torch.device:
     if name == "auto":
         name = "cuda" if torch.cuda.is_available() else "cpu"
@@ -348,9 +386,11 @@ class SpikingBrain:
         return pre
 
     def _uniform(self, shape, low: float, high: float) -> torch.Tensor:
-        return low + (high - low) * torch.rand(
+        # Значения, точные в fp16: вес при рождении хранится в fp16, и
+        # «выученное = вес − вес при рождении» должно считаться без ошибки.
+        return exact16(low + (high - low) * torch.rand(
             shape, device=self.device, generator=self.generator
-        )
+        ))
 
     def _connect(
         self,
@@ -531,10 +571,11 @@ class SpikingBrain:
 
         # Вес каждого пластичного синапса при рождении: выученное —
         # это отклонение от него, а не от общего врождённого максимума.
-        # [замер] в fp16 не годится: выученное = вес − вес при рождении, и
-        # округление сравнимо с мелкими выученными шагами (тест «скука →
-        # скучно» ломался).
-        self.birth_weight = self.net_weight[: self.n_plastic].clone()
+        # fp16 без потерь: веса при рождении создаются точными в fp16
+        # (exact16). [замер] простое округление fp32 → fp16 ломало
+        # «выученное = вес − вес при рождении»: ошибка сравнима с мелкими
+        # выученными шагами (тест «скука → скучно»).
+        self.birth_weight = self.net_weight[: self.n_plastic].to(torch.float16)
 
         # Свежая (ранняя, early-LTP/LTD) часть выученного: входит в вес,
         # но затухает к закреплённому весу, пока сон её не закрепит.
@@ -557,7 +598,7 @@ class SpikingBrain:
         P, S = self.n_plastic, self.n_synapses
         table = lambda keys, pad: EventTable(keys, self.n_slots, pad, self.DUMMY_SYNAPSES)
         self.out_all = table(self.net_pre[:S], S)
-        self.out_plastic = table(self.net_pre[:P], P)
+        self.out_plastic = PrefixTable(self.out_all, self.net_pre[:P], self.n_slots, P, self.DUMMY_SYNAPSES)
         self.in_plastic = table(self.net_post[:P], P)
         # Таблицы — новые тензоры: старые CUDA Graph на них не смотрят.
         self._graphs = {}
@@ -976,10 +1017,10 @@ class SpikingBrain:
 
             low, high = proj.innate_range
             proj.pre[weak] = new_pre
-            proj.weight[weak] = low + (high - low) * torch.rand(
+            proj.weight[weak] = exact16(low + (high - low) * torch.rand(
                 count, device=self.device, generator=self.generator
-            )
-            proj.birth[weak] = proj.weight[weak]
+            ))
+            proj.birth[weak] = proj.weight[weak].to(proj.birth.dtype)
             proj.early[weak] = 0.0
             proj.eligibility[weak] = 0.0
             grown += count
@@ -1057,6 +1098,7 @@ class SpikingBrain:
 
             cols = proj.weight[rows].argmin(1)
             proj.pre[rows, cols] = new_pre.to(proj.pre.dtype)
+            low = float(exact16(torch.tensor(low)))
             proj.weight[rows, cols] = low
 
             if proj.plastic:

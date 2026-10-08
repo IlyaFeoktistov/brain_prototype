@@ -219,6 +219,13 @@ class Emotions:
 
         self._clip()
 
+    def anticipate(self, value: float) -> None:
+        """Миндалина: услышанное предвещает хорошее (+) или плохое (−)."""
+
+        self.valence += value
+        self.arousal += 0.5 * abs(value)
+        self._clip()
+
     def curious(self) -> None:
         """Услышал незнакомое слово и спрашивает о нём."""
 

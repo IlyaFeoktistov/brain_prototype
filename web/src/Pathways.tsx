@@ -19,10 +19,11 @@ const POSITION: Record<string, [number, number]> = {
   // Ядра нейромедиаторов: действуют химически, путей у них нет.
   vta: [36, 136],
   lc: [128, 136],
+  amygdala: [420, 70],
 };
 
 // Подписи сбоку: справа от схемы и у нижнего ряда.
-const SIDE = new Set(["limbic", "vta", "lc"]);
+const SIDE = new Set(["limbic", "vta", "lc", "amygdala"]);
 
 const SHORT: Record<string, string> = {
   auditory: "слух",
@@ -32,6 +33,7 @@ const SHORT: Record<string, string> = {
   limbic: "чувства",
   vta: "дофамин",
   lc: "норадр.",
+  amygdala: "миндалина",
 };
 
 function place(name: string, index: number): [number, number] {
@@ -96,7 +98,7 @@ export function Pathways({ anatomy, status, activity, emotion }: Props) {
           <g key={area.name} transform={`translate(${x},${y})`}>
             <circle r={13 + level * 6} className="node-halo" style={{ opacity: level * 0.3 }} />
             <circle
-              r={area.name === "vta" || area.name === "lc" ? 8 : 13}
+              r={area.name === "vta" || area.name === "lc" || area.name === "amygdala" ? 8 : 13}
               className={area.kind === "memory" ? "node node-memory" : "node"}
             />
             {local && <circle r={16} className="node-plastic" />}

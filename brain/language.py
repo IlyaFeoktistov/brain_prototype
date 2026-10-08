@@ -560,6 +560,13 @@ class LanguageInterface:
         if place is not None:
             self.brain.feel("association", None, 0.0)
 
+            # Миндалина узнаёт слово — предвкушение хорошего или плохого
+            # (наблюдение в замороженном мозге настроение не меняет).
+            value = self.value(rates) if self.brain.plasticity else 0.0
+
+            if value:
+                self._feel("anticipate", self.cfg.value_mood * value)
+
 
         self._prev_place, self._place = self._place, place
 
@@ -648,6 +655,74 @@ class LanguageInterface:
         proj.weight[rows] += delta
         # Как всё выученное — сначала свежее (не поспал — забыл).
         proj.early[rows] += delta
+
+    # ==============================================================
+    # МИНДАЛИНА: какие слова к добру, какие к худу
+    # ==============================================================
+
+    def _value_groups(self) -> tuple[torch.Tensor, torch.Tensor] | None:
+        """Клетки «хорошо» и «плохо» (локальные индексы E миндалины)."""
+
+        area = self.brain.areas.get("amygdala")
+
+        if area is None:
+            return None
+
+        if getattr(self, "_groups", None) is None:
+            order = torch.randperm(area.E.size, generator=torch.Generator().manual_seed(0))
+            half = area.E.size // 2
+            self._groups = (order[:half].to(self.device), order[half:].to(self.device))
+
+        return self._groups
+
+    def _value_path(self):
+        return next((p for p in self.brain.projections if p.name == "association -> amygdala"), None)
+
+    def _learn_value(self, amplitude: float) -> None:
+        """
+        Похвала/ругань: места слов последнего обмена репликами прорастают
+        и крепнут к группе «хорошо»/«плохо» (по совпадению под наградой).
+        """
+
+        groups, path = self._value_groups(), self._value_path()
+
+        if groups is None or path is None or not self.cfg.concepts_enabled:
+            return
+
+        words = [
+            word
+            for turn in self.dialog[-2:]
+            for word in self.tokenize(turn.get("answer", turn["text"]) if turn["who"] == "мозг" else turn["text"])
+        ]
+        places = [p for p in (self.concepts.get(w, allocate=False) for w in dict.fromkeys(words)) if p is not None]
+
+        if not places:
+            return
+
+        group = groups[0] if amplitude > 0 else groups[1]
+        self.brain.grow([("association -> amygdala", place, group) for place in places], self.cfg.value_grow)
+
+        source = self.meaning.E.start + torch.cat(places)
+        hit = torch.isin(path.pre[group], source.to(path.pre.dtype)).float()
+        level = min(1.0, abs(amplitude) / self.cfg.surprise_dopamine_gain)
+        path.weight[group] += self.cfg.value_rate * level * hit * (self.cfg.value_cap - path.weight[group])
+
+    def value(self, rates: torch.Tensor) -> float:
+        """
+        Предвкушение: насколько услышанное к добру (+) или к худу (−) —
+        вход по выученным синапсам в группы «хорошо» и «плохо».
+        """
+
+        groups, path = self._value_groups(), self._value_path()
+
+        if groups is None or path is None:
+            return 0.0
+
+        heard = rates.index_select(0, path.pre.flatten().long()).view_as(path.weight) > 0
+        drive = (heard * path.weight).sum(1)
+        good, bad = drive[groups[0]].mean(), drive[groups[1]].mean()
+
+        return float((good - bad) / self.cfg.value_cap)
 
     def _form_path(self):
         return next(
@@ -1194,6 +1269,7 @@ class LanguageInterface:
         if amplitude is not None:
             self.brain.reward(self._dopamine(amplitude))
             self._feel("feedback", amplitude)
+            self._learn_value(amplitude)
             self._rate_last_turn(amplitude)
             self.brain.run(self.cfg.rest_ms)
             word = "закрепил" if amplitude > 0 else "ослабил"

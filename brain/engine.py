@@ -936,12 +936,12 @@ class SpikingBrain:
         grown = 0
 
         for name, pre, post in links:
-            proj = next((p for p in self.plastic if p.name == name), None)
+            proj = next((p for p in self.projections if p.name == name), None)
 
             if proj is None or not len(pre) or not len(post):
                 continue
 
-            low = proj.innate_range[0]
+            low = proj.innate_range[0] if proj.plastic else 0.0
             start = proj.pre_pop.start
             pick = torch.randint(0, len(post), (count,), device=self.device, generator=self.generator)
             rows = post[pick]
@@ -957,9 +957,12 @@ class SpikingBrain:
             cols = proj.weight[rows].argmin(1)
             proj.pre[rows, cols] = new_pre.to(proj.pre.dtype)
             proj.weight[rows, cols] = low
-            proj.birth[rows, cols] = low
-            proj.early[rows, cols] = 0.0
-            proj.eligibility[rows, cols] = 0.0
+
+            if proj.plastic:
+                proj.birth[rows, cols] = low
+                proj.early[rows, cols] = 0.0
+                proj.eligibility[rows, cols] = 0.0
+
             grown += len(rows)
 
         if grown:

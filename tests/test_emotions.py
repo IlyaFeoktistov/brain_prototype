@@ -200,3 +200,25 @@ def test_praise_bursts_and_blame_pauses_dopamine_cells():
     # Похвала — залп выше фона, ругань — пауза ниже фона.
     assert praise > 1.0
     assert blame < -1.0
+
+
+def test_amygdala_learns_what_leads_to_blame():
+    from tests.conftest import make_mind
+
+    mind = make_mind("small")
+    language = mind.language
+    language.read_text("Компьютер сломался. Кошка спит.")
+
+    def value_of(word):
+        with language.isolated():
+            language.experience([word], learn=False)
+            return language.value(language.last_rates)
+
+    before = value_of("компьютер")
+    # Каждый раз, когда говорили про компьютер, — ругань.
+    for _ in range(3):
+        language.converse("компьютер сломался")
+        language.converse("-")
+
+    assert value_of("компьютер") < before - 0.1
+    assert abs(value_of("кошка")) < 0.05

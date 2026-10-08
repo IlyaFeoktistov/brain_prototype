@@ -167,6 +167,7 @@ const PLACES: Record<string, string> = {
   limbic: "limbic",
   vta: "vta",
   lc: "lc",
+  amygdala: "amygdala",
 };
 
 interface Hover {

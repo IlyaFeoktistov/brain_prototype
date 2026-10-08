@@ -191,7 +191,7 @@ class BrainHost:
                     "src": p.src,
                     "dst": p.dst,
                     "plastic": q.plastic if q else p.plastic,
-                    "synapses": q.weight.numel() if q else 0,
+                    "synapses": (getattr(q, "n_synapses", None) or q.weight.numel()) if q else 0,
                 }
                 for p in self.mind.cfg.pathways
                 for q in [next((q for q in brain.projections if q.name == f"{p.src} -> {p.dst}"), None)]

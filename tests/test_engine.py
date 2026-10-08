@@ -128,3 +128,27 @@ def test_synapses_grow_where_transition_is_learned(mind):
     links = sum(int(pre) in italy for pre in proj.pre[rome].flatten().tolist())
     assert links >= mind.cfg.grow_synapses // 2
     assert brain.synapses_grown > 0
+
+
+def test_procedural_wiring_saves_memory_and_reads():
+    """Врождённые пути с постоянным весом — из хеша: памяти меньше, мозг живёт."""
+
+    stored = make_mind("tiny")
+    procedural = make_mind("tiny", procedural_wiring=True)
+    brain = procedural.brain
+
+    assert brain.procedural
+    assert brain.memory_bytes() < stored.brain.memory_bytes()
+    assert brain.synapse_count() == stored.brain.synapse_count()
+
+    report = procedural.language.read_text(FACTS)
+    assert report.tokens > 0
+
+    # Вычисляемая строка шага = связи пути.
+    neuron = brain.procedural[0].pre_pop.start
+    post, weight = brain.proc_rows.rows(torch.tensor([neuron], device=brain.device))
+    expected = torch.cat([
+        p.outgoing(neuron) for p in brain.procedural
+        if p.pre_pop.start <= neuron < p.pre_pop.stop
+    ])
+    assert sorted(post[0][weight[0] != 0].tolist()) == sorted(expected.tolist())

@@ -1242,8 +1242,11 @@ class LanguageInterface:
         full[self.meaning.E.slice] = expected
         proj = self.brain.projection("association -> motor")
 
-        got = full.index_select(0, proj.pre.flatten()).view_as(proj.weight)
-        motor = (got * proj.weight).sum(1)
+        if hasattr(proj, "drive"):
+            motor = proj.drive(full)
+        else:
+            got = full.index_select(0, proj.pre.flatten()).view_as(proj.weight)
+            motor = (got * proj.weight).sum(1)
 
         return self._winners(motor, self._target("motor")) if sparse else motor
 

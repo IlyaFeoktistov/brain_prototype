@@ -6,6 +6,8 @@ import math
 
 import torch
 
+from brain.wiring import ProceduralProjection, ProceduralRows
+
 
 # ==================================================================
 # GPU-СИМУЛЯТОР СПАЙКОВОЙ СЕТИ
@@ -407,6 +409,18 @@ class SpikingBrain:
         if k <= 0:
             return None
 
+        # Врождённый путь с постоянным весом — не храним, а вычисляем.
+        if self.cfg.procedural_wiring and not plastic and weight[0] == weight[1] != 0:
+            proj = ProceduralProjection(
+                name, pre_pop, post, k, weight[0],
+                seed=self.cfg.seed * 1009 + len(self.projections), device=self.device,
+            )
+            proj.source_kind = next(
+                a.kind for a in self.areas.values() if pre_pop in (a.E, a.I)
+            )
+            self.projections.append(proj)
+            return proj
+
         proj = Projection(
             name,
             "net",
@@ -513,12 +527,17 @@ class SpikingBrain:
         Пустые ячейки указывают на фиктивный синапс.
         """
 
+        self.procedural = [p for p in self.projections if isinstance(p, ProceduralProjection)]
         net = sorted(
-            (p for p in self.projections if p.source == "net"),
+            (p for p in self.projections if p.source == "net" and not isinstance(p, ProceduralProjection)),
             key=lambda p: not p.plastic,
         )
         sensory = [p for p in self.projections if p.source == "sensory"]
-        self.projections = net + sensory
+        self.projections = net + self.procedural + sensory
+        self.proc_rows = (
+            ProceduralRows(self.procedural, self.n, self.n_slots, self.DUMMY_NEURONS, self.device)
+            if self.procedural else None
+        )
         self.plastic = [p for p in net if p.plastic]
 
         def flatten(group, dummy: bool):
@@ -705,6 +724,11 @@ class SpikingBrain:
             weight = weight * ~to_dendrite
 
         drive.index_add_(0, post, weight)
+
+        if self.proc_rows is not None:
+            # Врождённые пути с постоянным весом: получатели — из хеша.
+            proc_post, proc_weight = self.proc_rows.rows(fired_before)
+            drive.index_add_(0, proc_post.flatten(), proc_weight.flatten())
 
         heard = heard_now.index_select(0, self.ear_pre)
         drive.index_add_(0, self.ear_post, heard * self.ear_weight)
@@ -1331,7 +1355,10 @@ class SpikingBrain:
     # ==============================================================
 
     def synapse_count(self) -> int:
-        return self.n_synapses + self.ear_weight.numel()
+        return (
+            self.n_synapses + self.ear_weight.numel()
+            + sum(p.n_synapses for p in self.procedural)
+        )
 
     def memory_bytes(self) -> int:
         return sum(
@@ -1341,4 +1368,6 @@ class SpikingBrain:
                 self.ear_pre, self.ear_post, self.ear_weight,
                 self.eligibility, self.early, self.birth_weight,
             )
-        ) + sum(t.nbytes() for t in (self.out_all, self.out_plastic, self.in_plastic))
+        ) + sum(t.nbytes() for t in (self.out_all, self.out_plastic, self.in_plastic)) + (
+            self.proc_rows.nbytes() if self.proc_rows is not None else 0
+        )

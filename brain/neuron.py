@@ -114,6 +114,18 @@ def describe(mind, index: int, top: int = 10) -> dict | None:
         if proj.source != "net":
             continue
 
+        if hasattr(proj, "outgoing"):
+            # Процедурный путь: связи вычисляются, вес у всех одинаковый.
+            if proj.pre_pop.start <= index < proj.pre_pop.stop:
+                count = len(proj.outgoing(index))
+                _add(outgoing.setdefault(proj.post.name, _blank()),
+                     torch.full((count,), proj.value, device=brain.device), None)
+            if proj.post.start <= index < proj.post.stop:
+                count = len(proj.incoming(index - proj.post.start))
+                _add(incoming.setdefault(proj.pre_pop.name, _blank()),
+                     torch.full((count,), proj.value, device=brain.device), None)
+            continue
+
         learned = _learned(brain, proj) if proj.plastic else None
         out_mask = proj.pre == index
 

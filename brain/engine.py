@@ -87,6 +87,50 @@ class Projection:
         )
 
 
+class EventTable:
+    """
+    Синапсы, сгруппированные по нейрону, без выравнивания (CSR):
+    perm — номера синапсов, отсортированные по нейрону; ptr[i] —
+    начало строки нейрона i в perm. Строку собирают на лету шириной
+    width (наибольшая строка), лишние ячейки — разные фиктивные синапсы.
+
+    [замер] прежняя таблица [нейронов, width] хранила каждую строку
+    выровненной под самый разветвлённый нейрон: medium — ширина 384 при
+    среднем 148, 20.5 Б на синапс из 39.7 (две таблицы).
+    """
+
+    def __init__(self, keys: torch.Tensor, n_slots: int, pad: int, dummies: int):
+        device = keys.device
+        counts = torch.bincount(keys, minlength=n_slots)
+        width = max(1, int(counts.max())) if len(keys) else 1
+        # Ширина — с запасом до кратного 64: рост синапсов редко меняет
+        # форму, и собранный шаг (compile_step) не пересобирается.
+        self.width = -(-width // 64) * 64
+        self.ptr = torch.zeros(n_slots + 1, dtype=torch.int32, device=device)
+        self.ptr[1:] = torch.cumsum(counts, 0).to(torch.int32)
+        del counts
+        perm = torch.argsort(keys, stable=True).to(torch.int32)
+        # Хотя бы одна ячейка: на пустую таблицу тоже смотрят индексы.
+        self.perm = perm if len(perm) else torch.full((1,), pad, dtype=torch.int32, device=device)
+        self.pad = pad
+        self.dummies = dummies
+        self.cols = torch.arange(self.width, device=device)
+
+    def rows(self, neurons: torch.Tensor) -> torch.Tensor:
+        """Номера синапсов строк neurons: [len(neurons), width]."""
+
+        start = self.ptr.index_select(0, neurons).long()
+        count = self.ptr.index_select(0, neurons + 1).long() - start
+        position = (start[:, None] + self.cols).clamp(max=len(self.perm) - 1)
+        synapses = self.perm.index_select(0, position.flatten()).view_as(position)
+        dummy = self.pad + (neurons.long()[:, None] * self.width + self.cols) % self.dummies
+
+        return torch.where(self.cols < count[:, None], synapses.long(), dummy)
+
+    def nbytes(self) -> int:
+        return self.ptr.numel() * 4 + self.perm.numel() * 4
+
+
 def pick_device(name: str) -> torch.device:
     if name == "auto":
         name = "cuda" if torch.cuda.is_available() else "cpu"
@@ -505,9 +549,10 @@ class SpikingBrain:
 
     def _build_tables(self) -> None:
         P, S = self.n_plastic, self.n_synapses
-        self.out_all = self._table(self.net_pre[:S], S)
-        self.out_plastic = self._table(self.net_pre[:P], P)
-        self.in_plastic = self._table(self.net_post[:P], P)
+        table = lambda keys, pad: EventTable(keys, self.n_slots, pad, self.DUMMY_SYNAPSES)
+        self.out_all = table(self.net_pre[:S], S)
+        self.out_plastic = table(self.net_pre[:P], P)
+        self.in_plastic = table(self.net_post[:P], P)
         # Таблицы — новые тензоры: старые CUDA Graph на них не смотрят.
         self._graphs = {}
 
@@ -515,50 +560,6 @@ class SpikingBrain:
         # держит резерв больше видеокарты, и WSL уходит в системную память.
         if self.device.type == "cuda":
             torch.cuda.empty_cache()
-
-    # Сборка таблиц кусками: временные массивы — на кусок, а не на все
-    # синапсы. [замер] large (75 млн синапсов): сборка целиком давала пик
-    # памяти ~3.6 ГБ сверх мозга — не влезал в 6 ГБ.
-    TABLE_CHUNK = 8_000_000
-
-    def _table(self, keys: torch.Tensor, pad: int) -> torch.Tensor:
-        """
-        Синапсы, сгруппированные по нейрону: [n_slots, max_degree].
-        Пустые ячейки -> pad + (разные фиктивные синапсы).
-        """
-
-        counts = torch.bincount(keys, minlength=self.n_slots)
-        width = max(1, int(counts.max())) if len(keys) else 1
-        # Ширина — с запасом до кратного 64: рост синапсов редко меняет
-        # форму таблицы, и собранный шаг (compile_step) не пересобирается.
-        width = -(-width // 64) * 64
-        del counts
-
-        table = (
-            pad
-            + torch.arange(self.n_slots * width, device=self.device)
-            .view(self.n_slots, width) % self.DUMMY_SYNAPSES
-        ).to(torch.int32)
-
-        # Позиция синапса в строке своего нейрона: сколько синапсов этого
-        # нейрона уже разложено (filled) + место внутри куска.
-        filled = torch.zeros(self.n_slots, dtype=torch.int32, device=self.device)
-
-        for start in range(0, len(keys), self.TABLE_CHUNK):
-            chunk = keys[start: start + self.TABLE_CHUNK]
-            order = torch.argsort(chunk, stable=True)
-            sorted_keys = chunk[order].long()
-            del chunk
-            counts = torch.bincount(sorted_keys, minlength=self.n_slots)
-            first = torch.cumsum(counts, 0) - counts
-            rank = torch.arange(len(sorted_keys), device=self.device) - first[sorted_keys]
-            position = filled.long()[sorted_keys] + rank
-            del first, rank
-            table[sorted_keys, position] = (order + start).to(torch.int32)
-            filled += counts.to(torch.int32)
-            del order, sorted_keys, position, counts
-
-        return table
 
     def _init_state(self) -> None:
         cfg = self.cfg
@@ -641,7 +642,7 @@ class SpikingBrain:
         # ---- синаптический вход от спайков прошлого шага ----
         fired_before = self._fired()
 
-        rows = self.out_all.index_select(0, fired_before)
+        rows = self.out_all.rows(fired_before)
         synapses = rows.flatten()
         post = self.net_post.index_select(0, synapses)
         weight = self.net_weight.index_select(0, synapses)
@@ -664,7 +665,7 @@ class SpikingBrain:
         if plastic:
             # LTD: пре пришёл после поста. Нейроны рабочей памяти
             # (ковариационное правило) этой ветки не имеют.
-            rows = self.out_plastic.index_select(0, fired_before)
+            rows = self.out_plastic.rows(fired_before)
             synapses = rows.flatten()
             post = self.net_post.index_select(0, synapses).view_as(rows)
             ltd = self.trace_post.index_select(0, post.flatten()).view_as(rows)
@@ -722,7 +723,7 @@ class SpikingBrain:
         if plastic:
             # LTP: пост выстрелил после пре.
             fired_now = self._fired()
-            synapses = self.in_plastic.index_select(0, fired_now).flatten()
+            synapses = self.in_plastic.rows(fired_now).flatten()
             pre = self.net_pre.index_select(0, synapses)
             self.eligibility.index_add_(
                 0,
@@ -1288,6 +1289,6 @@ class SpikingBrain:
             for t in (
                 self.net_pre, self.net_post, self.net_weight,
                 self.ear_pre, self.ear_post, self.ear_weight,
-                self.eligibility, self.early, self.out_all, self.out_plastic, self.in_plastic,
+                self.eligibility, self.early, self.birth_weight,
             )
-        )
+        ) + sum(t.nbytes() for t in (self.out_all, self.out_plastic, self.in_plastic))

@@ -24,6 +24,7 @@ def test_word_activates_sparse_ensemble():
     # 17 из 40): слишком мало клеток для надёжного ансамбля. На small
     # (20k) — 0 из 10 seed.
     mind = make_mind("small")
+    mind.language.read_text("Столица Франции Париж.")
     probe = mind.language.probe("париж")
 
     for area in mind.brain.areas.values():
@@ -31,12 +32,16 @@ def test_word_activates_sparse_ensemble():
         # Разреженный код: отвечает малая часть зоны, но не ноль.
         assert active < 0.20, f"{area.name}: {active:.1%} — зона взорвалась"
 
+    # Смысл: стреляет место слова (понятие), не меньше половины его клеток.
     meaning = mind.brain.areas["association"].E
-    assert float((probe["rates"][meaning.slice] > 0).float().mean()) > 0.003
+    place = mind.language.concepts.get("париж", allocate=False)
+    assert int((probe["rates"][meaning.start + place] > 0).sum()) >= mind.cfg.concept_cells // 2
 
 
 def test_same_word_same_ensemble(mind):
     language = mind.language
+    # У слова есть место в смысле, только когда мозг его слышал.
+    language.read_text("Берлин и компьютер.")
     a = language.probe("берлин")["meaning"]
     b = language.probe("берлин")["meaning"]
     c = language.probe("компьютер")["meaning"]

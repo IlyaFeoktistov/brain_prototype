@@ -387,6 +387,18 @@ class BrainConfig:
     # [не подбиралось] nucleus_mv 140: при полной неожиданности
     # стреляют все клетки (самой глухой нужно ~35 мВ).
     # False или нет зон — дофамин по формуле, как раньше.
+    # Понятия (brain/concepts.py): у каждого слова свои
+    # concept_cells клеток смысловой коры; слово будит ровно их током
+    # concept_mv на время звучания. Случайный путь «слух → смысл»
+    # выключен, гомеостаза у смысловой коры нет (её активность — понятия).
+    # [не подбиралось] 16 клеток (small: ~470 понятий без пересечений,
+    # дальше клетки делятся с минимальным пересечением), 30 мВ — как
+    # сигнал чувства (выше порога с запасом).
+    # False (и старые сохранения) — слово будит случайный набор клеток.
+    concepts_enabled: bool = True
+    concept_cells: int = 16
+    concept_mv: float = 30.0
+
     nuclei_enabled: bool = True
     nucleus_ms: float = 20.0
     nucleus_mv: float = 200.0
@@ -605,6 +617,8 @@ class BrainConfig:
     @classmethod
     def from_dict(cls, data: dict) -> "BrainConfig":
         data = dict(data)
+        # Сохранения до понятий: проводка «слух → смысл» в них есть.
+        data.setdefault("concepts_enabled", False)
         data["areas"] = [AreaSpec(**a) for a in data.get("areas", [])] or default_areas()
         # Сохранения до появления predictive: путь чувства в них
         # модулирующий, как сейчас (иначе он снова портит ожидания).

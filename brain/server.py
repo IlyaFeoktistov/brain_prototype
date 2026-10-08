@@ -174,12 +174,17 @@ class BrainHost:
                 }
                 for a in brain.areas.values()
             ],
+            # Путь без синапсов (слух -> смысл при понятиях: слово будит
+            # своё место напрямую) остаётся на схеме с нулём синапсов.
             "pathways": [
                 {
                     "src": p.src,
                     "dst": p.dst,
                     "plastic": p.plastic,
-                    "synapses": brain.projection(f"{p.src} -> {p.dst}").weight.numel(),
+                    "synapses": next(
+                        (q.weight.numel() for q in brain.projections if q.name == f"{p.src} -> {p.dst}"),
+                        0,
+                    ),
                 }
                 for p in self.mind.cfg.pathways
             ],

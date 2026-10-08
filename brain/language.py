@@ -9,6 +9,7 @@ from typing import Callable
 
 import torch
 
+from brain.concepts import Concepts
 from brain.engine import SpikingBrain
 from brain.hippocampus import Hippocampus
 from brain.limbic import FACES, Emotions
@@ -379,6 +380,10 @@ class LanguageInterface:
             self.motor.E.size, cfg.readout_top_k, cfg.readout_rate, self.device
         )
 
+        self.concepts = Concepts(
+            self.meaning.E.size, cfg.concept_cells, cfg.seed, self.device
+        )
+
         self.confidence = Confidence()
         self.emotions = Emotions()
         self.hippocampus = Hippocampus(
@@ -457,10 +462,23 @@ class LanguageInterface:
 
         self._feel_inside()
 
+        # Слово будит своё место в смысловой коре (новое — получает
+        # место, пока мозг учится; калибровочные звуки — нет).
+        place = (
+            self.concepts.get(token, allocate=learn_forms)
+            if self.cfg.concepts_enabled else None
+        )
+
+        if place is not None:
+            self.brain.feel("association", place, self.cfg.concept_mv)
+
         rates = self.brain.observe(
             self.cfg.stimulus_ms,
             self.ear.encode(token),
         )
+
+        if place is not None:
+            self.brain.feel("association", None, 0.0)
 
         self.brain.run(self.cfg.gap_ms)
         self.brain.homeostasis(rates)
@@ -1729,6 +1747,7 @@ class LanguageInterface:
         return {
             "semantic": self.semantic.state_dict(),
             "mouth": self.mouth.state_dict(),
+            "concepts": self.concepts.state_dict(),
             "experienced_tokens": self.experienced_tokens,
             "sentences_lived": self.sentences_lived,
             "confidence": self.confidence.state_dict(),
@@ -1743,6 +1762,9 @@ class LanguageInterface:
     def load_state_dict(self, state: dict) -> None:
         self.semantic.load_state_dict(state["semantic"])
         self.mouth.load_state_dict(state["mouth"])
+
+        if "concepts" in state:
+            self.concepts.load_state_dict(state["concepts"])
         self.experienced_tokens = state["experienced_tokens"]
         self.dialog_turns = state["dialog_turns"]
         self.sentences_lived = state.get("sentences_lived", 0)

@@ -356,6 +356,11 @@ class SpikingBrain:
 
         # ---- проводящие пути между зонами ----
         for path in cfg.pathways:
+            # С понятиями слово будит свои клетки смысла напрямую:
+            # случайная проводка «слух → смысл» будила бы посторонние.
+            if cfg.concepts_enabled and (path.src, path.dst) == ("auditory", "association"):
+                continue
+
             src = self.areas[path.src]
             dst = self.areas[path.dst]
 
@@ -896,6 +901,10 @@ class SpikingBrain:
             # target_activity = 0: активность зоны задаёт её вход
             # (лимбическая — само чувство), а не гомеостаз.
             if spec.target_activity <= 0:
+                continue
+
+            # С понятиями активность смысла задают сами понятия.
+            if self.cfg.concepts_enabled and spec.name == "association":
                 continue
 
             E = self.areas[spec.name].E

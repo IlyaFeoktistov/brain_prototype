@@ -40,7 +40,14 @@ class Mind:
 
         for _ in range(self.cfg.calibration_tokens):
             sound = "".join(rng.choice("абвгдежзиклмнопрстуфхцчшыэюя") for _ in range(6))
+            # Звук будит своё место в смысловой коре, как слово: иначе
+            # смысл молчит, и гомеостаз зон за ним (рот, память)
+            # выкручивает возбудимость под вход, которого не будет.
+            language.concepts.get(sound, allocate=True)
             language.perceive(sound, learn_forms=False)
+
+        # Места калибровочных звуков — не знание: стереть.
+        language.concepts.reset()
 
         # Калибровка — не опыт: веса и следы как при рождении.
         self.brain.net_weight[: self.brain.n_plastic].copy_(plastic_weights)

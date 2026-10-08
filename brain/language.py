@@ -394,6 +394,8 @@ class LanguageInterface:
         # Незнакомые слова из чтения — повод спросить самому.
         self.wonder: list[str] = []
         self._feelings: dict[str, torch.Tensor] = {}
+        # Чувствительность клеток ядер нейромедиаторов.
+        self._gains: dict[str, torch.Tensor] = {}
         # Чувство, зафиксированное на время текущей реплики.
         self.held_mood: str | None = None
         # След вспомненного разговора (прайминг ответа).
@@ -583,6 +585,47 @@ class LanguageInterface:
 
         return self.cfg.surprise_dopamine_gain * level * level
 
+    def _has_nuclei(self) -> bool:
+        return self.cfg.nuclei_enabled and "vta" in self.brain.areas and "lc" in self.brain.areas
+
+    def _nucleus_gains(self, area: str) -> torch.Tensor:
+        """Разная чувствительность клеток ядра: low..1, вперемешку."""
+
+        cached = self._gains.get(area)
+
+        if cached is None:
+            size = self.brain.areas[area].E.size
+            rng = torch.Generator().manual_seed(sorted(self.brain.areas).index(area))
+            gains = torch.linspace(self.cfg.nucleus_gain_low, 1.0, size)
+            cached = gains[torch.randperm(size, generator=rng)].to(self.device)
+            self._gains[area] = cached
+
+        return cached
+
+    def _nucleus_burst(self, level: float) -> tuple[float, float]:
+        """
+        Залп ядер на неожиданность level (0..1): VTA -> дофамин,
+        голубое пятно -> норадреналин. Возвращает (дофамин, доля LC).
+        """
+
+        cfg = self.cfg
+        cells = {}
+
+        for area in ("vta", "lc"):
+            E = self.brain.areas[area].E
+            cells[area] = E
+            amplitude = cfg.nucleus_mv * level * self._nucleus_gains(area)
+            self.brain.feel(area, torch.arange(E.size, device=self.device), amplitude)
+
+        rates = self.brain.observe(cfg.nucleus_ms)
+
+        for area in cells:
+            self.brain.feel(area, None, 0.0)
+
+        fired = {area: float((rates[E.slice] > 0).float().mean()) for area, E in cells.items()}
+
+        return cfg.surprise_dopamine_gain * fired["vta"], fired["lc"]
+
     # ==============================================================
     # EXPERIENCE
     # ==============================================================
@@ -618,6 +661,15 @@ class LanguageInterface:
                 step.dopamine = self.surprise_dopamine(
                     step.error, hit=step.expected == token
                 )
+                noradrenaline = None
+
+                # Неожиданность приходит в ядра нейромедиаторов; сколько
+                # их клеток выстрелит — столько дофамина и норадреналина.
+                if step.dopamine > 0 and self._has_nuclei():
+                    step.dopamine, noradrenaline = self._nucleus_burst(
+                        step.dopamine / self.cfg.surprise_dopamine_gain
+                    )
+
                 # Неожиданный переход закрепляется: dopamine
                 # превращает eligibility traces только что
                 # прошедших пар в изменение весов.
@@ -625,6 +677,7 @@ class LanguageInterface:
                 self._feel("heard",
                     step.dopamine,
                     step.expected == token if step.expected is not None else None,
+                    noradrenaline,
                 )
 
         self.last_rates = rates

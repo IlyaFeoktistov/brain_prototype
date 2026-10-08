@@ -120,7 +120,7 @@ textarea {
 .slide-placeholder {
   display: grid;
   grid-template-columns: 1fr 1.7fr 1fr;
-  grid-template-rows: 1fr 1fr 0.7fr;
+  grid-template-rows: 1fr 1fr 0.7fr 0.45fr;
   gap: 14px;
   min-height: 360px;
 }
@@ -139,7 +139,18 @@ textarea {
 
 .section-association {
   grid-column: 2;
-  grid-row: 1 / 4;
+  grid-row: 1 / 5;
+}
+
+/* Ядра нейромедиаторов — крохотные, под слухом и под чувствами. */
+.section-vta {
+  grid-column: 1;
+  grid-row: 4;
+}
+
+.section-lc {
+  grid-column: 3;
+  grid-row: 4;
 }
 
 .section-limbic {
@@ -737,7 +748,7 @@ textarea {
   .slide,
   .slide-placeholder {
     grid-template-columns: 1fr 1fr;
-    grid-template-rows: repeat(3, auto);
+    grid-template-rows: repeat(4, auto);
     min-height: 0;
   }
 
@@ -768,6 +779,16 @@ textarea {
   .section-limbic {
     grid-column: 2;
     grid-row: 3;
+  }
+
+  .section-vta {
+    grid-column: 1;
+    grid-row: 4;
+  }
+
+  .section-lc {
+    grid-column: 2;
+    grid-row: 4;
   }
 }
 

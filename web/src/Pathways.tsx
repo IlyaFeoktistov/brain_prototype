@@ -16,7 +16,13 @@ const POSITION: Record<string, [number, number]> = {
   motor: [360, 112],
   mouth: [470, 136],
   limbic: [250, 136],
+  // Ядра нейромедиаторов: действуют химически, путей у них нет.
+  vta: [36, 136],
+  lc: [128, 136],
 };
+
+// Подписи сбоку: справа от схемы и у нижнего ряда.
+const SIDE = new Set(["limbic", "vta", "lc"]);
 
 const SHORT: Record<string, string> = {
   auditory: "слух",
@@ -24,6 +30,8 @@ const SHORT: Record<string, string> = {
   prefrontal: "раб. память",
   motor: "речь",
   limbic: "чувства",
+  vta: "дофамин",
+  lc: "норадр.",
 };
 
 function place(name: string, index: number): [number, number] {
@@ -87,12 +95,15 @@ export function Pathways({ anatomy, status, activity, emotion }: Props) {
         return (
           <g key={area.name} transform={`translate(${x},${y})`}>
             <circle r={13 + level * 6} className="node-halo" style={{ opacity: level * 0.3 }} />
-            <circle r={13} className={area.kind === "memory" ? "node node-memory" : "node"} />
+            <circle
+              r={area.name === "vta" || area.name === "lc" ? 8 : 13}
+              className={area.kind === "memory" ? "node node-memory" : "node"}
+            />
             {local && <circle r={16} className="node-plastic" />}
             <text
-              x={x >= 350 || area.name === "limbic" ? 26 : 0}
-              y={x >= 350 || area.name === "limbic" ? 4 : 30}
-              className={x >= 350 || area.name === "limbic" ? "node-label node-label-side" : "node-label"}
+              x={x >= 350 || SIDE.has(area.name) ? 20 : 0}
+              y={x >= 350 || SIDE.has(area.name) ? 4 : 30}
+              className={x >= 350 || SIDE.has(area.name) ? "node-label node-label-side" : "node-label"}
             >
               {area.name === "limbic" && emotion ? `чувства: ${emotion.name}` : SHORT[area.name] ?? area.name}
             </text>

@@ -202,6 +202,10 @@ class SpikingBrain:
         self.adapt_b = self._fill(
             {"cortex_E": cfg.e_adapt_b, "memory_E": 0.0, "I": 0.0}
         )
+
+        for spec in cfg.areas:
+            if spec.adapt_b is not None:
+                self.adapt_b[self.areas[spec.name].E.slice] = spec.adapt_b
         self.v_peak = self._fill(
             {"cortex_E": 0.0, "memory_E": cfg.v_threshold, "I": cfg.v_threshold}
         )
@@ -235,7 +239,15 @@ class SpikingBrain:
         self.decay_syn = torch.exp(-dt / self.tau_syn)
         self.decay_slow = math.exp(-dt / cfg.memory_tau_syn)
         self.slow_scale = self.slow_gain * self.tau_m / cfg.memory_tau_syn
-        self.decay_adapt = math.exp(-dt / cfg.e_adapt_tau)
+        # Затухание адаптации: у ядер может быть своё (медленное) время.
+        self.decay_adapt = torch.full(
+            (self.n_slots,), math.exp(-dt / cfg.e_adapt_tau), device=self.device
+        )
+
+        for spec in cfg.areas:
+            if spec.adapt_tau is not None:
+                E = self.areas[spec.name].E
+                self.decay_adapt[E.slice] = math.exp(-dt / spec.adapt_tau)
         self.decay_plus = math.exp(-dt / cfg.stdp_tau_plus)
         # Ядро LTP со сдвигом: exp(-t/τ+) - exp(-t/τrise), нормировано
         # на пик 1. Одновременные спайки (одно слово) почти не
@@ -1029,8 +1041,11 @@ class SpikingBrain:
             self.time_ms = time_ms
             self.plasticity = plasticity
 
-    def feel(self, area: str, neurons: torch.Tensor | None, amplitude: float) -> None:
-        """Подать внутренний сигнал: neurons — индексы E-нейронов зоны (локальные)."""
+    def feel(self, area: str, neurons: torch.Tensor | None, amplitude) -> None:
+        """
+        Подать внутренний сигнал: neurons — индексы E-нейронов зоны
+        (локальные); amplitude — число или тензор (своя сила каждой клетке).
+        """
 
         if area not in self.areas:
             return
@@ -1038,7 +1053,7 @@ class SpikingBrain:
         E = self.areas[area].E
         self.interoception[E.slice] = 0.0
 
-        if neurons is not None and amplitude:
+        if neurons is not None:
             self.interoception[E.start + neurons] = amplitude
 
     def quiet(self, area: str) -> None:

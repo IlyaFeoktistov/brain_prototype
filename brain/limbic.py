@@ -143,15 +143,26 @@ class Emotions:
     # СОБЫТИЯ
     # ==============================================================
 
-    def heard(self, dopamine: float, guessed: bool | None) -> None:
-        """Услышал слово: dopamine от неожиданности, угадал ли."""
+    def heard(
+        self, dopamine: float, guessed: bool | None, noradrenaline: float | None = None
+    ) -> None:
+        """
+        Услышал слово: dopamine от неожиданности, угадал ли.
+        noradrenaline (0..1) — доля выстреливших клеток голубого пятна;
+        если его нет (ядер нет) — возбуждение считается по формуле.
+        """
 
-        # Привыкание: возбуждает не сам дофамин, а его превышение над
-        # привычным фоном. Иначе при чтении, где неожиданно почти каждое
-        # слово, возбуждение упиралось в 1.0 и не значило ничего.
-        excess = max(0.0, dopamine - self.dopamine_habit)
-        self.dopamine_habit = self.dopamine_habit * 0.95 + dopamine * 0.05
-        news = min(1.0, excess / 6.0)
+        if noradrenaline is None:
+            # Привыкание: возбуждает не сам дофамин, а его превышение над
+            # привычным фоном. Иначе при чтении, где неожиданно почти каждое
+            # слово, возбуждение упиралось в 1.0 и не значило ничего.
+            excess = max(0.0, dopamine - self.dopamine_habit)
+            self.dopamine_habit = self.dopamine_habit * 0.95 + dopamine * 0.05
+            news = min(1.0, excess / 6.0)
+        else:
+            # Привыкание — в самих нейронах голубого пятна (адаптация).
+            news = noradrenaline
+
         self.arousal = self.arousal * AROUSAL_DECAY + news * 0.35
         self.confusion *= CONFUSION_DECAY
         self.valence *= VALENCE_DECAY

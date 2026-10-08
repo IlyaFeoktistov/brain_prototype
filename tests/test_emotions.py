@@ -144,3 +144,30 @@ def test_praise_is_sweeter_when_wanted():
     sated.feedback(+6)
     assert lonely.valence > sated.valence
     assert lonely.social_need < 1.0
+
+
+def test_nuclei_make_dopamine_and_locus_coeruleus_habituates():
+    from tests.conftest import make_mind
+
+    mind = make_mind("small")
+    language, brain = mind.language, mind.brain
+    brain.run(500)
+
+    # Сильная неожиданность — больше дофамина, чем слабая.
+    weak, _ = language._nucleus_burst(0.3)
+    brain.run(500)
+    strong, first = language._nucleus_burst(0.9)
+    assert strong > weak > 0
+
+    # Серия неожиданностей: голубое пятно стихает (адаптация клеток)…
+    for _ in range(15):
+        brain.run(60)
+        dopamine, last = language._nucleus_burst(0.9)
+    assert last < first * 0.6
+    # …а дофамин — нет: он падает от предсказания, не от усталости.
+    assert dopamine > strong * 0.7
+
+    # После затишья снова отвечает.
+    brain.run(10_000)
+    _, rested = language._nucleus_burst(0.9)
+    assert rested > last * 1.5

@@ -165,6 +165,8 @@ const PLACES: Record<string, string> = {
   prefrontal: "prefrontal",
   motor: "motor",
   limbic: "limbic",
+  vta: "vta",
+  lc: "lc",
 };
 
 interface Hover {

@@ -448,6 +448,8 @@ class LanguageInterface:
         self.motor = self.brain.areas["motor"]
         # Ворота «говори» (см. experience(answer=True)) и что выстрелило.
         self._gate_open = False
+        # Подготовленность мест в конце последнего слова (neural_surprise).
+        self._prepared: tuple[list[str], torch.Tensor] | None = None
         self._gate_mv = cfg.speak_gate_mv
         self._own_speech = False
         self.choice: tuple[str, float] | None = None
@@ -630,6 +632,9 @@ class LanguageInterface:
             rates = self._listen_and_prepare(sound, place, token)
         else:
             rates = self.brain.observe(self.cfg.stimulus_ms, sound)
+
+        if self.cfg.neural_surprise:
+            self._note_preparation(token)
 
         if place is not None or gate:
             self.brain.feel("association", None, 0.0)
@@ -1369,8 +1374,13 @@ class LanguageInterface:
     def _step(self, token: str, learn: bool) -> Step:
         expected_state = None
         step = Step(token=token)
+        neural = self.cfg.neural_surprise and self._prepared is not None
 
-        if self.last_rates is not None:
+        if neural:
+            # Ожидание — в самих нейронах: насколько места слов были
+            # подготовлены (потенциал) в конце прошлого слова.
+            step.expected, step.error = self._preparedness(token)
+        elif self.last_rates is not None:
             expected_state = self.expectation(self.last_rates)
             exclude = {self.last_token} if self.last_token else None
             ranked = self.semantic.decode(expected_state, exclude=exclude, top=Confidence.TOP)
@@ -1389,12 +1399,13 @@ class LanguageInterface:
 
         rates = self.perceive(token, learn_forms=learn)
 
-        if expected_state is not None and token in self.semantic:
-            step.error = 1.0 - _cosine(
-                expected_state, self.semantic.prototype(token)
-            )
+        if (expected_state is not None or neural) and token in self.semantic:
+            if not neural:
+                step.error = 1.0 - _cosine(
+                    expected_state, self.semantic.prototype(token)
+                )
 
-            if learn and step.expected is not None:
+            if learn and step.expected is not None and not neural:
                 # Мозг сверяет: при такой резкости ожидания сбылось ли?
                 self.confidence.update(step.margin, step.expected == token)
 
@@ -1513,6 +1524,45 @@ class LanguageInterface:
             self.brain.feel("association", None, 0.0)
 
         return self._spoken(rates, "")
+
+    def _note_preparation(self, heard: str) -> None:
+        """
+        Запомнить потенциалы смысловой коры к концу звучащего слова —
+        насколько подготовлено каждое место (это ожидание следующего
+        слова в самих нейронах). Средние по местам — позже, в
+        _preparedness: здесь только копия, без лишней работы на каждом слове.
+        """
+
+        self._prepared = (heard, self.brain.v[self.meaning.E.slice].clone())
+
+    def _preparedness(self, token: str) -> tuple[str | None, float]:
+        """
+        Что мозг ждал (самое подготовленное место) и насколько неожиданно
+        пришедшее слово: 0 — его место было подготовлено сильнее всех,
+        1 — не выше верхних мест (neural_surprise_base) или места нет.
+        """
+
+        heard, potentials = self._prepared
+        tokens, cells = self.concepts.table()
+
+        # Сравнивать не с чем: мест, кроме звучавшего, нет.
+        if len(tokens) < 2:
+            return None, 1.0
+
+        voltage = potentials[cells].mean(1)
+
+        if heard in self.concepts:
+            voltage[tokens.index(heard)] = float("-inf")
+
+        finite = voltage[torch.isfinite(voltage)]
+        base = torch.quantile(finite, self.cfg.neural_surprise_base)
+        best = voltage.argmax()
+        mine = voltage[tokens.index(token)] if token in self.concepts else base
+        prepared = ((mine - base) / (voltage[best] - base).clamp(min=1e-6)).clamp(0.0, 1.0)
+        # Одна синхронизация с видеокартой на слово.
+        best, prepared = torch.stack([best.float(), prepared]).tolist()
+
+        return tokens[int(best)], 1.0 - prepared
 
     def _spoken(self, rates: torch.Tensor, heard: str) -> tuple[str, float] | None:
         """
@@ -2450,6 +2500,7 @@ class LanguageInterface:
         def __enter__(self):
             i = self.interface
             self.saved = (i.last_rates, i.last_token, i.experienced_tokens, i.heard_in_phrase)
+            self.prepared = i._prepared
             # След памяти и прайминг — тоже с чистого листа и обратно.
             self.traces = (i._memory_trace().clone(), i._priming_trace().clone(), i._place)
             self.topic = (i._topic, i._topic_drive, i._sentence_places)
@@ -2468,6 +2519,7 @@ class LanguageInterface:
             i = self.interface
             self.frozen.__exit__(*exc)
             i.last_rates, i.last_token, i.experienced_tokens, i.heard_in_phrase = self.saved
+            i._prepared = self.prepared
             memory, priming, i._place = self.traces
             i._memory_trace().copy_(memory)
             i._priming_trace().copy_(priming)

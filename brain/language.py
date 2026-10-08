@@ -448,6 +448,8 @@ class LanguageInterface:
         self.motor = self.brain.areas["motor"]
         # Ворота «говори» (см. experience(answer=True)) и что выстрелило.
         self._gate_open = False
+        self._gate_mv = cfg.speak_gate_mv
+        self._own_speech = False
         self.choice: tuple[str, float] | None = None
         self._everyone = torch.arange(self.meaning.E.size, device=self.device)
 
@@ -601,14 +603,7 @@ class LanguageInterface:
         self.choice = None
         gate = self._gate_open
 
-        if gate:
-            # Ворота «говори» открыты: всей смысловой коре — ровный ток,
-            # месту звучащего слова — его собственный.
-            amplitude = torch.full((self.meaning.E.size,), self.cfg.speak_gate_mv, device=self.device)
-            if place is not None:
-                amplitude[place] = self.cfg.concept_mv
-            self.brain.feel("association", self._everyone, amplitude)
-        elif place is not None:
+        if place is not None:
             self.brain.feel("association", place, self.cfg.concept_mv)
 
         if place is not None:
@@ -620,18 +615,21 @@ class LanguageInterface:
 
         if held is not None:
             # Устойчивая активность ПФК: прошлые места тают, новое — полное.
+            # Своя речь входит в память ослабленно (own_speech_memory):
+            # слышна приглушённо, вопрос в памяти она не вытесняет.
+            own = self._own_speech
+            strength = self.cfg.own_speech_memory if own else 1.0
             trace = self._memory_trace()
-            trace.mul_(self.cfg.memory_decay)
-            trace[held] = self.cfg.memory_mv
+            trace.mul_(1.0 - strength * (1.0 - self.cfg.memory_decay))
+            trace[held] = torch.maximum(trace[held], torch.tensor(strength * self.cfg.memory_mv, device=self.device))
             self._hold_memory()
 
-        rates = self.brain.observe(
-            self.cfg.stimulus_ms,
-            self.ear.encode(token),
-        )
+        sound = self.ear.encode(token)
 
         if gate:
-            self.choice = self._spoken(rates, token)
+            rates = self._listen_and_prepare(sound, place, token)
+        else:
+            rates = self.brain.observe(self.cfg.stimulus_ms, sound)
 
         if place is not None or gate:
             self.brain.feel("association", None, 0.0)
@@ -1464,6 +1462,9 @@ class LanguageInterface:
 
         steps = []
 
+        if not self._own_speech:
+            self._gate_mv = self.cfg.speak_gate_mv
+
         for i, token in enumerate(tokens):
             self._gate_open = answer and self.cfg.neural_speech and i == len(tokens) - 1
             steps.append(self._step(token, learn))
@@ -1471,6 +1472,25 @@ class LanguageInterface:
         self._gate_open = False
 
         return steps
+
+    def _listen_and_prepare(self, sound: torch.Tensor, place, token: str) -> torch.Tensor:
+        """
+        Последнее слово перед ответом: пока оно звучит, открыты ворота
+        «говори» — всей смысловой коре ровный ток speak_gate_mv, месту
+        слова его собственный. Что выстрелит само, то и ответ
+        (self.choice). Обучение идёт как на любом слове.
+        """
+
+        amplitude = torch.full((self.meaning.E.size,), float(self._gate_mv), device=self.device)
+
+        if place is not None:
+            amplitude[place] = self.cfg.concept_mv
+
+        self.brain.feel("association", self._everyone, amplitude)
+        rates = self.brain.observe(self.cfg.stimulus_ms, sound)
+        self.choice = self._spoken(rates, token)
+
+        return rates
 
     def _spoken(self, rates: torch.Tensor, heard: str) -> tuple[str, float] | None:
         """
@@ -1520,7 +1540,16 @@ class LanguageInterface:
             if self.on_speak:
                 self.on_speak(token, sure)
 
-            self.experience([token], learn=False, answer=True)
+            # Сказал — порыв говорить слабеет, ворота уже: дальше пройдёт
+            # только сильное предсказание, и мысль гаснет сама.
+            self._own_speech = True
+            self._gate_mv = self.cfg.speak_gate_mv * self.cfg.speak_gate_decay ** len(produced)
+            try:
+                self.experience([token], learn=False, answer=True)
+            finally:
+                self._own_speech = False
+
+        self._gate_mv = self.cfg.speak_gate_mv
 
         return produced
 

@@ -215,13 +215,18 @@ def test_amygdala_learns_what_leads_to_blame():
             return language.value(language.last_rates)
 
     before = value_of("компьютер")
+    said = set()
     # Каждый раз, когда говорили про компьютер, — ругань.
     for _ in range(3):
-        language.converse("компьютер сломался")
+        said |= set(language.converse("компьютер сломался").text.split())
         language.converse("-")
 
     assert value_of("компьютер") < before - 0.1
-    assert abs(value_of("кошка")) < 0.05
+    # Ругань задевает и ответ мозга («кошка» — он ждёт её после
+    # «сломался»); слова, которых не было в ссоре, остаются нейтральными.
+    calm = [word for word in ("кошка", "спит") if word not in said]
+    assert calm
+    assert all(abs(value_of(word)) < 0.05 for word in calm)
 
 
 def test_praise_words_are_learned_not_scripted():

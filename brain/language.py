@@ -232,6 +232,11 @@ class Readout:
             if v > 0
         ]
 
+    def candidates(self, exclude: set[str] | None = None) -> int:
+        """Сколько слов decode сравнивает при таком исключении."""
+
+        return len(self.tokens) - sum(token in self.index for token in exclude or ())
+
     def assembly(self, token: str, count: int) -> torch.Tensor:
         row = self.index[token]
         return self.idx[row, :count]
@@ -277,17 +282,30 @@ class Confidence:
     # (резкость не больше 20: лучший из 20 при прочих нулях).
     EDGES = (1.1, 1.2, 1.3, 1.5, 1.8, 2.2, 3.0, 4.5, 6.5, 9.0, 12.0, 14.5, 17.0)
     MIN_SAMPLES = 20
+    # Резкость считается среди стольких лучших кандидатов (decode top).
+    TOP = 20
 
     def __init__(self):
         self.hits = [0] * (len(self.EDGES) + 1)
         self.total = [0] * (len(self.EDGES) + 1)
 
     @staticmethod
-    def margin(ranked: list[tuple[str, float]]) -> float:
+    def margin(ranked: list[tuple[str, float]], candidates: int) -> float:
+        """candidates — сколько слов участвовало в отборе (не исключены)."""
+
         if not ranked:
             return 0.0
 
-        mean = sum(score for _, score in ranked) / len(ranked)
+        # Среднее — по всем лучшим TOP, включая слова с нулевым счётом
+        # (decode их отбрасывает), а не по длине списка: иначе чистое
+        # ожидание (5 кандидатов вместо 20) выглядит вялым. Знает мозг
+        # меньше TOP слов — среднее по тем, что знает.
+        # [замер] 250 тыс. нейронов: «париж является → столицей 0.84,
+        # городом 0.51» — резкость 2.6 по 5 словам, уверенность 0.11 <
+        # 0.15, «не знаю»; чем больше мозг, тем чище ожидание и тем чаще
+        # молчал (small 0%, medium 3%, 250 тыс. 14%, large 33%).
+        pool = max(len(ranked), min(Confidence.TOP, candidates))
+        mean = sum(score for _, score in ranked) / pool
 
         return ranked[0][1] / mean if mean > 0 else 0.0
 
@@ -1332,15 +1350,12 @@ class LanguageInterface:
 
         if self.last_rates is not None:
             expected_state = self.expectation(self.last_rates)
-            ranked = self.semantic.decode(
-                expected_state,
-                exclude={self.last_token} if self.last_token else None,
-                top=20,
-            )
+            exclude = {self.last_token} if self.last_token else None
+            ranked = self.semantic.decode(expected_state, exclude=exclude, top=Confidence.TOP)
 
             if ranked:
                 step.expected, step.expected_score = ranked[0]
-                step.margin = Confidence.margin(ranked)
+                step.margin = Confidence.margin(ranked, self.semantic.candidates(exclude))
 
         # Контекст до нового слова: активные клетки рабочей памяти.
         context = None
@@ -1895,13 +1910,13 @@ class LanguageInterface:
             # Первое слово должно разбудить само чувство (через выученные
             # связи «чувство -> смысл»), а не случайное воспоминание.
             ranked = self.semantic.decode(
-                self.brain.learned_drive(rates, "association", source="limbic"), top=20
+                self.brain.learned_drive(rates, "association", source="limbic"), top=Confidence.TOP
             )
 
             if (
                 ranked
                 and ranked[0][1] >= self.cfg.generate_min_score
-                and Confidence.margin(ranked) >= self.cfg.generate_min_margin
+                and Confidence.margin(ranked, self.semantic.candidates()) >= self.cfg.generate_min_margin
             ):
                 first = [ranked[0][0]]
 
@@ -2101,14 +2116,15 @@ class LanguageInterface:
 
             # Слово выбирает ассоциативная кора; моторная зона
             # пока только отражает речь (см. «рот произнёс бы»).
-            ranked = self.semantic.decode(expected, exclude=recent, top=20)
+            ranked = self.semantic.decode(expected, exclude=recent, top=Confidence.TOP)
+            candidates = self.semantic.candidates(recent)
 
             if not ranked:
                 break
 
             score = ranked[0][1]
             token = self._pick(ranked, sample)
-            margin = Confidence.margin(ranked)
+            margin = Confidence.margin(ranked, candidates)
 
             # Мысль кончилась.
             if token == END:
@@ -2202,14 +2218,15 @@ class LanguageInterface:
         log: list[dict] = []
 
         for _ in range(cfg.think_max_steps):
+            exclude = recent | rejected | {END}
             ranked = self.semantic.decode(
-                self._with_recall(self.expectation(self.last_rates)), exclude=recent | rejected | {END}, top=20
+                self._with_recall(self.expectation(self.last_rates)), exclude=exclude, top=Confidence.TOP
             )
 
             if not ranked:
                 break
 
-            margin = Confidence.margin(ranked)
+            margin = Confidence.margin(ranked, self.semantic.candidates(exclude))
             sure = self.confidence(margin)
             known = self.confidence.experience >= cfg.confidence_min_experience
 

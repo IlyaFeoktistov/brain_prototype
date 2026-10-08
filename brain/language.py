@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 import hashlib
+import random
 import re
 import time
 from typing import Callable
@@ -438,6 +439,8 @@ class LanguageInterface:
         # Незнакомые слова из чтения — повод спросить самому.
         self.wonder: list[str] = []
         self._feelings: dict[str, torch.Tensor] = {}
+        # Выбор слова по вероятности (свой генератор — воспроизводимо).
+        self._random = random.Random(cfg.seed)
         # Чувствительность клеток ядер нейромедиаторов.
         self._gains: dict[str, torch.Tensor] = {}
         # Неожиданные переходы: (проекция, клетки-источник, место B) —
@@ -1126,7 +1129,7 @@ class LanguageInterface:
                 for token, sure in produced:
                     self.on_speak(token, sure)
         else:
-            produced = self._continue()
+            produced = self._continue(sample=True)
         self._sync()
         self._feel("answered", [sure for _, sure in produced])
         self.held_mood = None
@@ -1319,7 +1322,7 @@ class LanguageInterface:
             self.asked.add(first[0])
 
         self.experience(first, learn=False)
-        produced = self._continue()
+        produced = self._continue(sample=True)
 
         return mood, " ".join(first + [token for token, _ in produced])
 
@@ -1447,7 +1450,26 @@ class LanguageInterface:
         if self.device.type == "cuda":
             torch.cuda.synchronize()
 
-    def _continue(self, max_tokens: int | None = None) -> list[tuple[str, float]]:
+    def _pick(self, ranked: list[tuple[str, float]], sample: bool) -> str:
+        """
+        Какое слово сказать. sample=False — самое вероятное (экзамен,
+        пробы). sample=True — по вероятности среди speak_top_k лучших:
+        сильный почти всегда побеждает, близкий второй иногда тоже —
+        мозг не повторяет один и тот же ответ слово в слово.
+        """
+
+        if not sample or self.cfg.speak_temperature <= 0:
+            return ranked[0][0]
+
+        top = ranked[: self.cfg.speak_top_k]
+        best = top[0][1]
+        weights = [2.718281828 ** ((score - best) / self.cfg.speak_temperature) for _, score in top]
+
+        return self._random.choices([token for token, _ in top], weights=weights)[0]
+
+    def _continue(
+        self, max_tokens: int | None = None, sample: bool = False
+    ) -> list[tuple[str, float]]:
         """
         state -> ожидание -> рот -> слово -> снова в ухо -> ...
 
@@ -1474,7 +1496,8 @@ class LanguageInterface:
             if not ranked:
                 break
 
-            token, score = ranked[0]
+            score = ranked[0][1]
+            token = self._pick(ranked, sample)
             margin = Confidence.margin(ranked)
             sure = self.confidence(margin)
 

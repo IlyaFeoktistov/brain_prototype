@@ -133,3 +133,16 @@ def test_answer_to_own_question_is_rewarded_and_remembered(mind):
     assert len(language.hippocampus) > episodes
     assert any(e.tokens[:3] == ["что", "такое", "хромодинамика"] for e in language.hippocampus.episodes)
     assert not (weights == mind.brain.net_weight).all()
+
+
+def test_word_choice_is_probabilistic_in_speech(mind):
+    language = mind.language
+    close = [("париж", 0.50), ("рим", 0.49), ("берлин", 0.10)]
+    clear = [("париж", 0.80), ("рим", 0.10)]
+
+    picks = {language._pick(close, sample=True) for _ in range(200)}
+    # Близкие кандидаты побеждают оба, далёкий — почти никогда.
+    assert {"париж", "рим"} <= picks
+    assert all(language._pick(clear, sample=True) == "париж" for _ in range(50))
+    # Экзамен и пробы — всегда лучший.
+    assert all(language._pick(close, sample=False) == "париж" for _ in range(50))

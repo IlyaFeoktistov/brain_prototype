@@ -100,3 +100,12 @@ def test_neural_speech_answers_from_spikes():
     # дендритах на маленьком мозге и 6 прочтениях слабее формулы.
     said = [token for token, _ in language.generate("столица франции")]
     assert said and said[0] == "париж"
+
+
+def test_sleep_in_web_falls_asleep_wakeably(mind):
+    """В вебе /sleep не держит мозг: засыпает порциями (его будят)."""
+
+    session, output = make_session(mind)
+    session.fall_asleep = lambda: "засыпаю порциями"
+    session.handle("/sleep")
+    assert output[-1][1] == "засыпаю порциями"

@@ -25,6 +25,7 @@ interface Props {
   progress: string | null;
   busy: boolean;
   reading: boolean;
+  sleeping: boolean;
   connected: boolean;
   actions: ChatActions;
 }
@@ -60,7 +61,7 @@ function averageConfidence(words: { confidence: number }[]): number {
 const THOUGHTS_MIN = 60;
 const thoughtsMax = () => Math.max(THOUGHTS_MIN, window.innerHeight * 0.6);
 
-export function Chat({ header, thoughts, entries, progress, busy, reading, connected, actions }: Props) {
+export function Chat({ header, thoughts, entries, progress, busy, reading, sleeping, connected, actions }: Props) {
   const [draft, setDraft] = useState("");
   const [thoughtsHeight, setThoughtsHeight] = useStoredSize("brain.thoughtsHeight", 160);
   const [thoughtsOpen, setThoughtsOpen] = useState(() => {
@@ -222,12 +223,12 @@ export function Chat({ header, thoughts, entries, progress, busy, reading, conne
           <button type="button" onClick={() => files.current?.click()} disabled={!connected}>
             Дать прочитать файл
           </button>
-          <button type="button" onClick={actions.sleep} disabled={!connected || busy}>
+          <button type="button" onClick={actions.sleep} disabled={!connected || busy || sleeping}>
             Уснуть
           </button>
-          {(busy || reading) && (
+          {(busy || reading || sleeping) && (
             <button type="button" className="stop" onClick={actions.stop}>
-              Остановить чтение
+              {sleeping ? "Разбудить" : reading ? "Остановить чтение" : "Остановить"}
             </button>
           )}
           <input

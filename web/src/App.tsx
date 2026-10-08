@@ -322,6 +322,7 @@ export function App() {
           progress={progress}
           busy={status?.busy ?? false}
           reading={(status?.reading.length ?? 0) > 0}
+          sleeping={status?.sleeping ?? false}
           connected={connected}
           actions={actions}
         />

@@ -323,6 +323,18 @@ class BrainHost:
                     )
                     self._doze(True)
 
+                # «Остановить» во сне: проснуться и бросить чтение.
+                if self.dozing and self.session.stop.is_set():
+                    self.session.stop.clear()
+                    self.sleep_left = 0
+                    self._doze(False)
+                    if self.reading:
+                        self.reading.clear()
+                        self._out("Проснулся (разбудили), чтение остановлено", "info")
+                    else:
+                        self._out("Проснулся (разбудили)", "info")
+                    continue
+
                 # Спит порциями, чтобы сообщение будило за секунду-две.
                 if self.dozing:
                     portion = min(self.mind.cfg.sleep_batch, self.sleep_left)
@@ -374,6 +386,25 @@ class BrainHost:
             self.emit(self.status())
 
         return len(sentences)
+
+    def fall_asleep(self) -> str:
+        """
+        /sleep в вебе: заснуть так же, как сам в тишине, — порциями,
+        чтобы сообщение или «Разбудить» будили за секунду-две.
+        """
+
+        if self.dozing:
+            return "Уже сплю."
+
+        language = self.mind.language
+        cfg = self.mind.cfg
+        self.sleep_left = max(cfg.sleep_batch, language.sleep_pressure * cfg.replays_per_episode)
+        self._doze(True)
+
+        return (
+            f"Засыпаю: новых впечатлений {language.sleep_pressure}, "
+            f"сон на {self.sleep_left} проигрываний (разбудить — сообщением или кнопкой)"
+        )
 
     def _read_portion(self, session) -> None:
         if session.stop.is_set():
@@ -525,6 +556,7 @@ class BrainHost:
         self.session = Session(self.mind, self._out, self._on_reply)
         # /read в вебе не блокирует мозг: текст встаёт в очередь.
         self.session.background_read = self.enqueue_read
+        self.session.fall_asleep = self.fall_asleep
         self.reading.clear()
 
     def shutdown(self) -> None:

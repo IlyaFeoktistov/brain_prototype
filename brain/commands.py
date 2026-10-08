@@ -122,6 +122,8 @@ class Session:
         # Если задано (веб-сервер) — /read ставит текст в фоновую очередь
         # и сразу возвращается: можно разговаривать, пока мозг читает.
         self.background_read: Callable[[str, str], int] | None = None
+        # Если задано (веб-сервер) — /sleep засыпает порциями, будится.
+        self.fall_asleep: Callable[[], str] | None = None
 
     @property
     def language(self):
@@ -216,7 +218,10 @@ class Session:
             report = language.reread(turns, stop=self.stop)
             out(f"Перечитал переписку: {report_line(report, time.time() - start)}")
         elif command == "/sleep":
-            self.sleep(int(payload) if payload.isdigit() else None)
+            if self.fall_asleep and not payload:
+                out(self.fall_asleep())
+            else:
+                self.sleep(int(payload) if payload.isdigit() else None)
         elif command == "/think":
             if payload in ("on", "вкл"):
                 self.mind.cfg.thinking_enabled = True

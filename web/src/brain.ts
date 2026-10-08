@@ -11,6 +11,8 @@ export interface Area {
   kind: "cortex" | "memory";
   E: Population;
   I: Population;
+  // Зона-карта (места слов): E лежат сеткой в столько столбцов.
+  grid?: number | null;
 }
 
 export interface Pathway {

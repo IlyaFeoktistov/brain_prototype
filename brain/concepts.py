@@ -21,11 +21,20 @@
 
 from __future__ import annotations
 
+import math
+
 import torch
 
 
 class Concepts:
-    """Слово -> клетки смысловой коры (локальные индексы E)."""
+    """
+    Слово -> клетки смысловой коры (локальные индексы E).
+
+    Зона — карта: клетки лежат сеткой cols × rows, место слова —
+    компактное пятно. Новое слово ставится вокруг места слова, после
+    которого прозвучало (ближайшие свободные клетки), — слова,
+    встречающиеся вместе, собираются по соседству.
+    """
 
     def __init__(self, size: int, cells: int, seed: int, device):
         self.size = size
@@ -35,6 +44,9 @@ class Concepts:
         self.places: dict[str, torch.Tensor] = {}
         # Сколько понятий уже живёт в каждой клетке.
         self.usage = torch.zeros(size)
+        self.cols = max(1, math.ceil(math.sqrt(size)))
+        index = torch.arange(size)
+        self.xy = torch.stack([index % self.cols, index // self.cols], 1).float()
 
     def __contains__(self, token: str) -> bool:
         return token in self.places
@@ -42,11 +54,13 @@ class Concepts:
     def __len__(self) -> int:
         return len(self.places)
 
-    def get(self, token: str, allocate: bool) -> torch.Tensor | None:
+    def get(self, token: str, allocate: bool, near: torch.Tensor | None = None) -> torch.Tensor | None:
+        """near — место слова, после которого это прозвучало (новое встанет рядом)."""
+
         place = self.places.get(token)
 
         if place is None and allocate:
-            place = self._allocate()
+            place = self._allocate(near)
             self.places[token] = place
 
         return place
@@ -55,11 +69,24 @@ class Concepts:
         self.places.clear()
         self.usage.zero_()
 
-    def _allocate(self) -> torch.Tensor:
-        """Наименее занятые клетки; среди равных — случайные."""
+    def _allocate(self, near: torch.Tensor | None) -> torch.Tensor:
+        """
+        Ближайшие к якорю наименее занятые клетки: сначала свободные
+        (занятость весит больше любого расстояния), среди них — ближние.
+        Якорь — центр места соседнего слова или случайная свободная клетка.
+        """
 
+        if near is not None and len(near):
+            anchor = self.xy[near.cpu()].mean(0)
+        else:
+            free = (self.usage == self.usage.min()).nonzero().flatten()
+            pick = free[torch.randint(len(free), (1,), generator=self.generator)]
+            anchor = self.xy[pick[0]]
+
+        distance = (self.xy - anchor).norm(dim=1)
         jitter = torch.rand(self.size, generator=self.generator) * 0.5
-        chosen = torch.topk(-(self.usage + jitter), self.cells).indices
+        score = self.usage * (2 * self.cols) + distance + jitter
+        chosen = torch.topk(-score, self.cells).indices
         self.usage[chosen] += 1
 
         return chosen.to(self.device)

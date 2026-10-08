@@ -105,13 +105,25 @@ function scatter(count: number, seed: number): Int32Array {
   return order;
 }
 
+// Зона-карта: срез ровно в grid столбцов, E-клетка j — точно на своём
+// месте сетки мозга (места слов компактны); тормозные — в оставшиеся
+// клетки нижней полосы.
+function mapCells(area: Area, cols: number, rows: number, index: number): Int32Array {
+  const cellOf = new Int32Array(area.E.size + area.I.size);
+  for (let j = 0; j < area.E.size; j++) cellOf[j] = j;
+  const spare = cols * rows - area.E.size;
+  const order = scatter(spare, 7919 * (index + 1));
+  for (let k = 0; k < area.I.size; k++) cellOf[area.E.size + k] = area.E.size + order[k % spare];
+  return cellOf;
+}
+
 function layout(area: Area, canvas: HTMLCanvasElement, index: number): SectionLayout {
   const start = area.E.start;
   const count = area.E.size + area.I.size;
   const aspect = canvas.clientWidth / Math.max(1, canvas.clientHeight);
-  const cols = Math.max(1, Math.ceil(Math.sqrt(count * aspect)));
+  const cols = area.grid ? area.grid : Math.max(1, Math.ceil(Math.sqrt(count * aspect)));
   const rows = Math.max(1, Math.ceil(count / cols));
-  const cellOf = scatter(cols * rows, 7919 * (index + 1)).subarray(0, count);
+  const cellOf = area.grid ? mapCells(area, cols, rows, index) : scatter(cols * rows, 7919 * (index + 1)).subarray(0, count);
 
   const base = new Uint32Array(cols * rows).fill(pack(GLASS));
   const neuronAt = new Int32Array(cols * rows).fill(-1);

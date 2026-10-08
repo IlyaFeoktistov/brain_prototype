@@ -470,6 +470,7 @@ class LanguageInterface:
         self._growth: list[tuple[str, torch.Tensor, torch.Tensor]] = []
         self._prev_place: torch.Tensor | None = None
         self._place: torch.Tensor | None = None
+        self._held: torch.Tensor | None = None
         # Чувство, зафиксированное на время текущей реплики.
         self.held_mood: str | None = None
         # След вспомненного разговора (прайминг ответа).
@@ -534,16 +535,18 @@ class LanguageInterface:
         self._feel_inside()
 
         # Слово будит своё место в смысловой коре (новое — получает
-        # место, пока мозг учится; калибровочные звуки — нет).
+        # место, пока мозг учится; калибровочные звуки — нет). Новое
+        # встаёт на карте рядом со словом, после которого прозвучало.
         place = (
-            self.concepts.get(token, allocate=learn_forms)
+            self.concepts.get(token, allocate=learn_forms, near=self._place)
             if self.cfg.concepts_enabled else None
         )
 
         held = (
-            self.memory.get(token, allocate=learn_forms)
+            self.memory.get(token, allocate=learn_forms, near=self._held)
             if self.cfg.memory_places else None
         )
+        self._held = held
 
         if place is not None:
             self.brain.feel("association", place, self.cfg.concept_mv)

@@ -159,6 +159,15 @@ class BrainHost:
         def pop(p):
             return {"start": p.start, "size": p.size}
 
+        language = self.mind.language
+        grids = {}
+
+        if self.mind.cfg.concepts_enabled:
+            grids["association"] = language.concepts.cols
+
+        if self.mind.cfg.memory_places:
+            grids["prefrontal"] = language.memory.cols
+
         return {
             "type": "anatomy",
             "device": str(brain.device),
@@ -171,6 +180,8 @@ class BrainHost:
                     "kind": a.kind,
                     "E": pop(a.E),
                     "I": pop(a.I),
+                    # Зона-карта (места слов): E лежат сеткой в столько столбцов.
+                    "grid": grids.get(a.name),
                 }
                 for a in brain.areas.values()
             ],

@@ -674,7 +674,10 @@ class LanguageInterface:
             # Начало мысли: предлагает одна тема.
             return self._topic_drive.clone()
 
-        return drive + self.cfg.topic_gain * drive.norm() * self._topic_drive
+        if self.cfg.topic_everywhere:
+            return drive + self.cfg.topic_gain * drive.norm() * self._topic_drive
+
+        return drive
 
     def _priming_trace(self) -> torch.Tensor:
         if getattr(self, "_priming", None) is None:

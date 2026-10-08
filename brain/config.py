@@ -718,10 +718,15 @@ class BrainConfig:
     # Блуждание мыслей: раз в столько секунд тишины. [не подбиралось]
     wander_every_seconds: float = 8.0
 
-    # Инициатива (часть живого режима). [не подбиралось]
+    # Инициатива (часть живого режима): заговорить, когда порыв (из
+    # потребностей, Emotions.urge) дорос до initiative_urge — а не по
+    # таймеру. Не перебивает (initiative_idle_seconds тишины) и не чаще
+    # раза в initiative_cooldown_seconds (рефрактерность). Раньше было
+    # правило: 45 с тишины и 2 мин между репликами. [не подбиралось]
     initiative_enabled: bool = True
-    initiative_idle_seconds: float = 45.0
-    initiative_cooldown_seconds: float = 120.0
+    initiative_urge: float = 0.8
+    initiative_idle_seconds: float = 10.0
+    initiative_cooldown_seconds: float = 20.0
 
     # Вспоминание разговора перед ответом: последние N реплик
     # подталкивают ответ; вес реплики падает в recall_decay раз с каждой

@@ -116,6 +116,7 @@ const DRIVES = [
   { key: "novelty", label: "хочет нового", title: "растёт в тишине и монотонности → скука" },
   { key: "social", label: "хочет одобрения", title: "похвала радует сильнее, когда её ждёт" },
   { key: "frustration", label: "фрустрация", title: "был уверен — а отругали → злость" },
+  { key: "urge", label: "хочет заговорить", title: "порыв из потребностей; дорос до порога — заговорит сам (живой режим)" },
 ] as const;
 
 function Drives({ drives }: { drives: NonNullable<EmotionState["drives"]> }) {
@@ -124,11 +125,12 @@ function Drives({ drives }: { drives: NonNullable<EmotionState["drives"]> }) {
       {DRIVES.map((drive) => (
         <div key={drive.key} title={drive.title}>
           <dt>{drive.label}</dt>
-          <dd className="drive-track" role="meter" aria-valuemin={0} aria-valuemax={1} aria-valuenow={drives[drive.key]} aria-label={drive.label}>
-            <span className={`drive-fill drive-${drive.key}`} style={{ width: `${drives[drive.key] * 100}%` }} />
+          <dd className="drive-track" role="meter" aria-valuemin={0} aria-valuemax={1} aria-valuenow={drives[drive.key] ?? 0} aria-label={drive.label}>
+            <span className={`drive-fill drive-${drive.key}`} style={{ width: `${Math.min(1, drives[drive.key] ?? 0) * 100}%` }} />
           </dd>
         </div>
       ))}
+      {drives.awaiting && <div className="drives-awaiting">ждёт ответа…</div>}
     </dl>
   );
 }

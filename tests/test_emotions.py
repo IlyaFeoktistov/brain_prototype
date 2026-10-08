@@ -244,3 +244,18 @@ def test_praise_words_are_learned_not_scripted():
     # Теперь «молодец» — условная награда: дофамин без кнопки.
     language.converse("Столица Франции")
     assert language.converse("молодец").praised > 0
+
+
+def test_unanswered_question_builds_urge_to_speak():
+    calm, ignored = Emotions(), Emotions()
+    ignored.spoke()
+
+    for emotions in (calm, ignored):
+        emotions.relax(40)
+
+    # Не ответили — ожидание не сбылось: досада и порыв заговорить снова.
+    assert ignored.frustration > calm.frustration
+    assert ignored.urge > calm.urge
+
+    ignored.replied()
+    assert not ignored.awaiting

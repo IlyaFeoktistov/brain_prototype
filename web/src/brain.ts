@@ -47,7 +47,7 @@ export interface EmotionState {
   confusion: number;
   sleeping: boolean;
   // Потребности 0..1 (brain/limbic.py): голод по новому, одобрение, фрустрация.
-  drives?: { novelty: number; social: number; frustration: number };
+  drives?: { novelty: number; social: number; frustration: number; urge?: number; awaiting?: boolean };
 }
 
 export interface EmotionEvent extends EmotionState {

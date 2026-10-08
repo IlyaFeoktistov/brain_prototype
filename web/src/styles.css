@@ -409,6 +409,15 @@ textarea {
   background: var(--eosin);
 }
 
+.drive-urge {
+  background: var(--dab);
+}
+
+.drives-awaiting {
+  font-style: italic;
+  color: var(--dab);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .drive-fill {
     transition: none;

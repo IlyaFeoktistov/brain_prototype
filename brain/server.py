@@ -436,15 +436,15 @@ class BrainHost:
         if not cfg.live_mode:
             return False
         now = time.time()
-        # Сонный мозг сначала попросится спать, а потом заснёт.
-        sleepy = self.mind.language.sleep_pressure >= cfg.sleepy_after_episodes
-        wait = cfg.idle_sleep_seconds if sleepy else cfg.initiative_idle_seconds
+        # Порыв из потребностей, а не таймер; таймеры — лишь «не перебивать»
+        # и рефрактерность.
         return (
             cfg.initiative_enabled
             and bool(self.clients)
             and not self.reading
             and not self.dozing
-            and now - last_activity >= wait
+            and self.mind.language.emotions.urge >= cfg.initiative_urge
+            and now - last_activity >= cfg.initiative_idle_seconds
             and now - self.spoke_up_at >= cfg.initiative_cooldown_seconds
         )
 

@@ -474,6 +474,8 @@ class LanguageInterface:
         self._feelings: dict[str, torch.Tensor] = {}
         # Выбор слова по вероятности (свой генератор — воспроизводимо).
         self._random = random.Random(cfg.seed)
+        # С чего начал последнюю реплику «от себя» (для переспроса).
+        self._last_initiative: str | None = None
         # Сумма предвкушения миндалины по словам текущей реплики.
         self._message_value = 0.0
         # Чувствительность клеток ядер нейромедиаторов.
@@ -1588,6 +1590,8 @@ class LanguageInterface:
 
         self.dialog_turns += 1
         user_text = text
+        # Человек ответил — ожидание сбылось.
+        self._feel("replied")
 
         amplitude = self.feedback(text)
 
@@ -1845,11 +1849,16 @@ class LanguageInterface:
 
         first = None
 
+        # Спрашивал и не дождался ответа — вернуться к тому же (переспрос
+        # из состояния: фрустрация и желание одобрения, без заготовки).
+        if self.emotions.unanswered and self._last_initiative:
+            first = [self._last_initiative]
+
         # [замер] раньше в скуке незнакомое слово шло первым: после любого
         # чтения в wonder до 100 слов, и выученное «мне скучно» не
         # звучало никогда (тест проходил лишь потому, что чувство
         # просачивалось в ожидание каждого слова — см. predictive).
-        if not (self.wonder and mood in ("любопытство", "удивление")):
+        if first is None and not (self.wonder and mood in ("любопытство", "удивление")):
             # Первое слово должно разбудить само чувство (через выученные
             # связи «чувство -> смысл»), а не случайное воспоминание.
             ranked = self.semantic.decode(
@@ -1864,7 +1873,7 @@ class LanguageInterface:
                 first = [ranked[0][0]]
 
         if first is None:
-            if not (self.wonder and mood in ("любопытство", "удивление", "спокойствие", "скука")):
+            if not (self.wonder and mood in ("любопытство", "удивление", "спокойствие", "скука", "досада", "грусть")):
                 return None
 
             # Вспомнить слово, о котором хочется спросить.
@@ -1873,6 +1882,8 @@ class LanguageInterface:
 
         self.experience(first, learn=False)
         produced = self._continue(sample=True)
+        self._last_initiative = first[0]
+        self._feel("spoke")
 
         return mood, " ".join(first + [token for token, _ in produced])
 

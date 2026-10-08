@@ -45,6 +45,11 @@ NOVELTY_PER_SECOND = 0.004
 NOVELTY_SATED_BY_SURPRISE = 0.3
 SOCIAL_PER_SECOND = 0.002
 FRUSTRATION_DECAY = 0.95
+# Ожидание ответа: спросил — ждёт реплику; дольше REPLY_PATIENCE секунд
+# тишины — несбывшееся ожидание: растут желание одобрения и фрустрация.
+# [не подбиралось] 20 с; +0.01 одобрения и +0.01 фрустрации в секунду.
+REPLY_PATIENCE = 20.0
+UNANSWERED_PER_SECOND = 0.01
 
 
 @dataclass
@@ -138,6 +143,9 @@ class Emotions:
         self.frustration = 0.0
         # Насколько был уверен в последнем ответе (для фрустрации).
         self.last_sure = 0.0
+        # Ждёт ответа на свою реплику; сколько секунд ждёт.
+        self.awaiting = False
+        self.waited = 0.0
 
     # ==============================================================
     # СОБЫТИЯ
@@ -245,7 +253,45 @@ class Emotions:
         # В тишине потребности растут: хочется нового и внимания.
         self.novelty_hunger += NOVELTY_PER_SECOND * seconds
         self.social_need += SOCIAL_PER_SECOND * seconds
+
+        # Спросил — а ему не отвечают: ожидание не сбывается.
+        if self.awaiting:
+            self.waited += seconds
+
+            if self.waited > REPLY_PATIENCE:
+                self.social_need += UNANSWERED_PER_SECOND * seconds
+                self.frustration += UNANSWERED_PER_SECOND * seconds
+
         self._clip()
+
+    def spoke(self) -> None:
+        """Заговорил сам — попытка контакта: порыв частично утолён, ждёт ответа."""
+
+        self.social_need *= 0.6
+        self.novelty_hunger *= 0.8
+        self.awaiting = True
+        self.waited = 0.0
+
+    def replied(self) -> None:
+        """Человек ответил — ожидание сбылось."""
+
+        self.awaiting = False
+        self.waited = 0.0
+
+    @property
+    def unanswered(self) -> bool:
+        """Спросил, и дольше терпения не отвечают."""
+
+        return self.awaiting and self.waited > REPLY_PATIENCE
+
+    @property
+    def urge(self) -> float:
+        """
+        Порыв заговорить — из потребностей (выбор действия, как в базальных
+        ганглиях): хочется внимания или нового; без ответа — ещё и досада.
+        """
+
+        return max(self.social_need, self.novelty_hunger) + (self.frustration if self.awaiting else 0.0)
 
     def _clip(self) -> None:
         self.valence = max(-1.0, min(1.0, self.valence))
@@ -301,6 +347,8 @@ class Emotions:
                 "novelty": round(self.novelty_hunger, 3),
                 "social": round(self.social_need, 3),
                 "frustration": round(self.frustration, 3),
+                "urge": round(self.urge, 3),
+                "awaiting": self.awaiting,
             },
         }
 
@@ -315,6 +363,8 @@ class Emotions:
             "social_need": self.social_need,
             "frustration": self.frustration,
             "last_sure": self.last_sure,
+            "awaiting": self.awaiting,
+            "waited": self.waited,
         }
 
     def load_state_dict(self, state: dict) -> None:

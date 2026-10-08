@@ -498,31 +498,52 @@ class SpikingBrain:
         # Таблицы — новые тензоры: старые CUDA Graph на них не смотрят.
         self._graphs = {}
 
+        # Отдать кэш освобождённых временных массивов: иначе аллокатор
+        # держит резерв больше видеокарты, и WSL уходит в системную память.
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    # Сборка таблиц кусками: временные массивы — на кусок, а не на все
+    # синапсы. [замер] large (75 млн синапсов): сборка целиком давала пик
+    # памяти ~3.6 ГБ сверх мозга — не влезал в 6 ГБ.
+    TABLE_CHUNK = 8_000_000
+
     def _table(self, keys: torch.Tensor, pad: int) -> torch.Tensor:
         """
         Синапсы, сгруппированные по нейрону: [n_slots, max_degree].
         Пустые ячейки -> pad + (разные фиктивные синапсы).
         """
 
-        keys = keys.long()
-        ids = torch.arange(len(keys), device=self.device)
-        order = torch.argsort(keys, stable=True)
-        keys, ids = keys[order], ids[order]
-
         counts = torch.bincount(keys, minlength=self.n_slots)
-        starts = torch.cumsum(counts, 0) - counts
-        position = torch.arange(len(keys), device=self.device) - starts[keys]
-
         width = max(1, int(counts.max())) if len(keys) else 1
         # Ширина — с запасом до кратного 64: рост синапсов редко меняет
         # форму таблицы, и собранный шаг (compile_step) не пересобирается.
         width = -(-width // 64) * 64
+        del counts
+
         table = (
             pad
             + torch.arange(self.n_slots * width, device=self.device)
             .view(self.n_slots, width) % self.DUMMY_SYNAPSES
         ).to(torch.int32)
-        table[keys, position] = ids.to(torch.int32)
+
+        # Позиция синапса в строке своего нейрона: сколько синапсов этого
+        # нейрона уже разложено (filled) + место внутри куска.
+        filled = torch.zeros(self.n_slots, dtype=torch.int32, device=self.device)
+
+        for start in range(0, len(keys), self.TABLE_CHUNK):
+            chunk = keys[start: start + self.TABLE_CHUNK]
+            order = torch.argsort(chunk, stable=True)
+            sorted_keys = chunk[order].long()
+            del chunk
+            counts = torch.bincount(sorted_keys, minlength=self.n_slots)
+            first = torch.cumsum(counts, 0) - counts
+            rank = torch.arange(len(sorted_keys), device=self.device) - first[sorted_keys]
+            position = filled.long()[sorted_keys] + rank
+            del first, rank
+            table[sorted_keys, position] = (order + start).to(torch.int32)
+            filled += counts.to(torch.int32)
+            del order, sorted_keys, position, counts
 
         return table
 

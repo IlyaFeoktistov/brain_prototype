@@ -10,7 +10,6 @@ from typing import Callable
 
 import torch
 
-from brain.categories import Categories
 from brain.concepts import Concepts
 from brain.engine import SpikingBrain
 from brain.hippocampus import Hippocampus
@@ -439,8 +438,14 @@ class LanguageInterface:
         self.concepts = Concepts(
             self.meaning.E.size, cfg.concept_cells, cfg.seed, self.device
         )
-        # Категории: обобщение по ролям слов (brain/categories.py).
-        self.categories = Categories(cfg.category_rate)
+        # Категории (зона «category»): сколько раз занята каждая категория,
+        # и какие решения уже приняты (место слова -> категории, категория
+        # -> места слов, которые она предсказывает), пока синапсы растут.
+        self._category_usage: torch.Tensor | None = None
+        self._category_member: dict[int, list[int]] = {}
+        self._category_predicts: dict[int, list[int]] = {}
+        self._category_predicted_by: dict[int, list[int]] = {}
+        self._category_size: dict[int, int] = {}
         # Места слов в рабочей памяти (ПФК).
         self.memory = Concepts(
             self.context.E.size, cfg.concept_cells, cfg.seed + 1, self.device
@@ -473,6 +478,8 @@ class LanguageInterface:
         self._growth: list[tuple[str, torch.Tensor, torch.Tensor]] = []
         # Укрепление, причитающееся ещё не выросшим синапсам контекста.
         self._owed: list[tuple[torch.Tensor, torch.Tensor, float]] = []
+        # То же для категорий: связь -> (путь, клетки-источник, клетки-цель).
+        self._owed_links: dict[tuple, tuple[str, torch.Tensor, torch.Tensor]] = {}
         self._prev_place: torch.Tensor | None = None
         self._place: torch.Tensor | None = None
         self._held: torch.Tensor | None = None
@@ -640,29 +647,141 @@ class LanguageInterface:
 
         return rates
 
+    # ==============================================================
+    # КАТЕГОРИИ: обобщение по ролям слов (зона-хаб, височный полюс)
+    # ==============================================================
+
+    def _category_paths(self):
+        found = [
+            next((p for p in self.brain.projections if p.name == name), None)
+            for name in ("association -> category", "category -> association")
+        ]
+        return None if None in found else found
+
+    def _category_activity(self, place: torch.Tensor) -> torch.Tensor:
+        """Вход в клетки категорий от места слова (по выученным синапсам)."""
+
+        into, _ = self._category_paths()
+        source = (place + self.meaning.E.start).to(into.pre.dtype)
+
+        return (into.weight * torch.isin(into.pre, source)).sum(1)
+
+    def _category_suggestion(self, activity: torch.Tensor) -> torch.Tensor:
+        """Куда активные категории толкают места слов."""
+
+        _, out = self._category_paths()
+        start = self.brain.areas["category"].E.start
+        gathered = activity[(out.pre.long() - start).clamp(min=0, max=activity.numel() - 1)]
+
+        return (out.weight * gathered).sum(1)
+
+    def _units(self, cells: torch.Tensor) -> torch.Tensor:
+        """Клетки -> категории (подряд по category_cells)."""
+
+        size = self.cfg.category_cells
+        units = cells.numel() // size
+
+        return cells[: units * size].view(units, size).mean(1)
+
+    def _unit_cells(self, unit: int) -> torch.Tensor:
+        size = self.cfg.category_cells
+        return torch.arange(unit * size, (unit + 1) * size, device=self.device)
+
+    def _learn_categories(self, a: torch.Tensor, b: torch.Tensor) -> None:
+        """
+        Переход A → B: категории A начинают предсказывать B; A вступает в
+        категорию, которая уже предсказывает B; нет таких — новая.
+        Синапсы растут пачкой и сразу крепнут (см. _owed_links); какие
+        категории за кем закреплены, помнится сразу (как места слов) —
+        иначе до роста каждое решение заводило бы новую категорию.
+        """
+
+        if self._category_paths() is None:
+            return
+
+        units = self.brain.areas["category"].E.size // self.cfg.category_cells
+
+        if not units:
+            return
+
+        key_a, key_b = int(a[0]), int(b[0])
+        mine = self._category_member.setdefault(key_a, [])
+        predicted_by = self._category_predicted_by.setdefault(key_b, [])
+        grow, strengthen = [], []
+
+        for unit in mine:
+            link = ("category -> association", self._unit_cells(unit), b)
+            strengthen.append(((link[0], unit, key_b), link))
+
+            if unit not in predicted_by:
+                self._category_predicts.setdefault(unit, []).append(key_b)
+                predicted_by.append(unit)
+                grow.append(link)
+
+        # Категория, которая уже предсказывает B (с большим числом членов).
+        candidates = [unit for unit in predicted_by if unit not in mine]
+
+        if candidates:
+            unit = max(candidates, key=lambda u: self._category_size.get(u, 0))
+            mine.append(unit)
+            self._category_size[unit] = self._category_size.get(unit, 0) + 1
+            link = ("association -> category", a, self._unit_cells(unit))
+            grow.append(link)
+            strengthen.append(((link[0], key_a, unit), link))
+        elif not mine:
+            usage = self._category_usage_of(units)
+            unit = int(usage.argmin())
+            usage[unit] += 1
+            mine.append(unit)
+            self._category_size[unit] = 1
+            self._category_predicts[unit] = [key_b]
+            predicted_by.append(unit)
+            cells = self._unit_cells(unit)
+            for link in (("association -> category", a, cells), ("category -> association", cells, b)):
+                grow.append(link)
+                strengthen.append(((link[0], key_a if link[0].startswith("association") else unit,
+                                    unit if link[0].startswith("association") else key_b), link))
+
+        self._growth.extend(grow)
+        # Укрепление — раз за пачку на связь (без дублей).
+        for key, link in strengthen:
+            self._owed_links.setdefault(key, link)
+
+    def _category_usage_of(self, units: int) -> torch.Tensor:
+        if self._category_usage is None or self._category_usage.numel() != units:
+            self._category_usage = torch.zeros(units)
+
+        return self._category_usage
+
+    def _strengthen(self, name: str, pre: torch.Tensor, post: torch.Tensor) -> None:
+        """Связи pre -> post (локальные индексы) крепнут по совпадению."""
+
+        proj = next((p for p in self.brain.projections if p.name == name), None)
+
+        if proj is None:
+            return
+
+        source = (pre + proj.pre_pop.start).to(proj.pre.dtype)
+        hit = torch.isin(proj.pre[post], source).float()
+        cap = self.cfg.category_cap
+        proj.weight[post] += self.cfg.category_rate * hit * (cap - proj.weight[post])
+
     def _with_categories(self, drive: torch.Tensor) -> torch.Tensor:
         """
         Обобщение: что предсказывают категории текущего слова — добавка
-        category_gain силы ожидания на места этих слов («корова» в
-        категории «кошка, собака» → ждёт и «ест», хотя не слышала).
+        category_gain силы ожидания («корова» в категории «кошка,
+        собака» → ждёт и «ест», хотя не слышала).
         """
 
-        if self.cfg.category_gain <= 0 or self.last_token is None:
+        if self.cfg.category_gain <= 0 or self.last_token is None or self._category_paths() is None:
             return drive
 
-        guess = self.categories.expect(self.last_token)
+        place = self.concepts.get(self.last_token, allocate=False)
 
-        if not guess:
+        if place is None:
             return drive
 
-        suggestion = torch.zeros_like(drive)
-
-        for word, weight in guess.items():
-            place = self.concepts.get(word, allocate=False)
-
-            if place is not None:
-                suggestion[place] += weight
-
+        suggestion = self._category_suggestion(self._category_activity(place))
         norm = suggestion.norm()
 
         if norm == 0:
@@ -942,8 +1061,11 @@ class LanguageInterface:
             for held, place, dopamine in self._owed:
                 self._learn_context(held, place, dopamine)
 
-        if len(self._owed) and not self._growth:
-            self._owed = []
+            for name, pre, post in self._owed_links.values():
+                self._strengthen(name, pre, post)
+
+            self._owed, self._owed_links = [], {}
+
 
         if (
             self.cfg.synaptic_scaling_enabled
@@ -1222,8 +1344,11 @@ class LanguageInterface:
                 )
 
         # Категории учатся на каждом переходе внутри фразы.
-        if learn and self.last_token is not None and self.cfg.category_gain > 0:
-            self.categories.learn(self.last_token, token)
+        if (
+            learn and self.cfg.category_gain > 0
+            and self._prev_place is not None and self._place is not None
+        ):
+            self._learn_categories(self._prev_place, self._place)
 
         self.last_rates = rates
         self.last_token = token
@@ -2331,7 +2456,11 @@ class LanguageInterface:
             "semantic": self.semantic.state_dict(),
             "mouth": self.mouth.state_dict(),
             "concepts": self.concepts.state_dict(),
-            "categories": self.categories.state_dict(),
+            "category_usage": self._category_usage,
+            "category_member": self._category_member,
+            "category_predicts": self._category_predicts,
+            "category_predicted_by": self._category_predicted_by,
+            "category_size": self._category_size,
             "memory_places": self.memory.state_dict(),
             "experienced_tokens": self.experienced_tokens,
             "sentences_lived": self.sentences_lived,
@@ -2351,8 +2480,11 @@ class LanguageInterface:
         if "concepts" in state:
             self.concepts.load_state_dict(state["concepts"])
 
-        if "categories" in state:
-            self.categories.load_state_dict(state["categories"])
+        self._category_usage = state.get("category_usage")
+        self._category_member = dict(state.get("category_member", {}))
+        self._category_predicts = dict(state.get("category_predicts", {}))
+        self._category_predicted_by = dict(state.get("category_predicted_by", {}))
+        self._category_size = dict(state.get("category_size", {}))
 
         if "memory_places" in state:
             self.memory.load_state_dict(state["memory_places"])

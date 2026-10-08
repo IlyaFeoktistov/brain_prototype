@@ -193,6 +193,7 @@ const PLACES: Record<string, string> = {
   vta: "vta",
   lc: "lc",
   amygdala: "amygdala",
+  category: "category",
 };
 
 interface Hover {

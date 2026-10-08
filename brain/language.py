@@ -591,6 +591,27 @@ class LanguageInterface:
 
         return self._trace
 
+    def _without_current(self, rates: torch.Tensor) -> torch.Tensor:
+        """
+        Контекст — то, что было ДО текущего слова: место текущего слова в
+        рабочей памяти не участвует (за него уже отвечает прямая связь
+        слово → слово). Иначе частое слово («является») своими связями из
+        памяти повторяет то же, что говорит само.
+        """
+
+        if not self.cfg.memory_places or self.last_token is None:
+            return rates
+
+        held = self.memory.get(self.last_token, allocate=False)
+
+        if held is None:
+            return rates
+
+        rates = rates.clone()
+        rates[self.context.E.start + held] = 0.0
+
+        return rates
+
     def _priming_trace(self) -> torch.Tensor:
         if getattr(self, "_priming", None) is None:
             self._priming = torch.zeros(self.meaning.E.size, device=self.device)
@@ -685,7 +706,7 @@ class LanguageInterface:
         в нейроны, которые сейчас молчат.
         """
 
-        drive = self.brain.learned_drive(rates, "association")
+        drive = self.brain.learned_drive(self._without_current(rates), "association")
         active = self._area(rates, self.meaning) > 0
         drive = drive.masked_fill(active, 0.0)
 
@@ -832,7 +853,7 @@ class LanguageInterface:
         context = None
 
         if self.last_rates is not None:
-            memory = self._area(self.last_rates, self.context)
+            memory = self._area(self._without_current(self.last_rates), self.context)
             context = memory.topk(min(self.cfg.context_grow_cells, memory.numel())).indices
             context = context[memory[context] > 0]
 

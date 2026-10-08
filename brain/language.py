@@ -1030,9 +1030,10 @@ class LanguageInterface:
 
         Мозг «прислушивается к себе»: текущее чувство возбуждает
         лимбическую зону, через выученные связи будит слова, и из этого
-        состояния рождается фраза (как обычный ответ). Если про чувство он
-        ещё ничего не выучил — молчит. Любопытство сначала вспоминает
-        незнакомое слово из чтения.
+        состояния рождается фраза (как обычный ответ). Любопытство сначала
+        вспоминает незнакомое слово из чтения; в скуке и спокойствии
+        незнакомое слово — запасной повод, если чувство ничего не будит.
+        Нет ни того, ни другого — молчит.
 
         Заготовок нет: «мне скучно» он скажет, только если слышал эти
         слова, когда ему было скучно.
@@ -1046,12 +1047,6 @@ class LanguageInterface:
         if self.last_rates is not None:
             self.rest()
 
-        topic = None
-
-        if self.wonder and mood in ("любопытство", "удивление", "спокойствие", "скука"):
-            topic = self.wonder.pop()
-            self.asked.add(topic)
-
         self._feel_inside()
         # Дать чувству установиться: клетки прошлого чувства ещё
         # несколько миллисекунд досрабатывают по инерции.
@@ -1059,30 +1054,35 @@ class LanguageInterface:
         rates = self.brain.observe(self.cfg.feel_ms)
         self.last_rates, self.last_token = rates, None
 
-        if topic is not None:
-            # Вспомнить слово, о котором хочется спросить.
-            self.experience([topic], learn=False)
-            first = [topic]
-        else:
+        first = None
+
+        # [замер] раньше в скуке незнакомое слово шло первым: после любого
+        # чтения в wonder до 100 слов, и выученное «мне скучно» не
+        # звучало никогда (тест проходил лишь потому, что чувство
+        # просачивалось в ожидание каждого слова — см. predictive).
+        if not (self.wonder and mood in ("любопытство", "удивление")):
             # Первое слово должно разбудить само чувство (через выученные
             # связи «чувство -> смысл»), а не случайное воспоминание.
-            limbic = self.brain.areas["limbic"].E
-            felt = torch.zeros_like(rates)
-            felt[limbic.slice] = rates[limbic.slice]
             ranked = self.semantic.decode(
-                self.brain.learned_drive(felt, "association"), top=20
+                self.brain.learned_drive(rates, "association", source="limbic"), top=20
             )
 
             if (
-                not ranked
-                or ranked[0][1] < self.cfg.generate_min_score
-                or Confidence.margin(ranked) < self.cfg.generate_min_margin
+                ranked
+                and ranked[0][1] >= self.cfg.generate_min_score
+                and Confidence.margin(ranked) >= self.cfg.generate_min_margin
             ):
+                first = [ranked[0][0]]
+
+        if first is None:
+            if not (self.wonder and mood in ("любопытство", "удивление", "спокойствие", "скука")):
                 return None
 
-            first = [ranked[0][0]]
-            self.experience(first, learn=False)
+            # Вспомнить слово, о котором хочется спросить.
+            first = [self.wonder.pop()]
+            self.asked.add(first[0])
 
+        self.experience(first, learn=False)
         produced = self._continue()
 
         return mood, " ".join(first + [token for token, _ in produced])

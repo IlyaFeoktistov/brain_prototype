@@ -342,10 +342,13 @@ class SpikingBrain:
             src = self.areas[path.src]
             dst = self.areas[path.dst]
 
-            self._connect(
+            proj = self._connect(
                 f"{path.src} -> {path.dst}", src.E, dst.E, path.k,
                 path.weight, plastic=path.plastic, cap=path.cap,
             )
+
+            if proj is not None:
+                proj.predictive = path.predictive
             self._connect(
                 f"{path.src} -> {path.dst}.I", src.E, dst.I, path.k_inhibitory,
                 (path.inhibitory_weight, path.inhibitory_weight),
@@ -873,7 +876,9 @@ class SpikingBrain:
     # ЧТЕНИЕ СОСТОЯНИЯ
     # ==============================================================
 
-    def learned_drive(self, rates: torch.Tensor, area: str) -> torch.Tensor:
+    def learned_drive(
+        self, rates: torch.Tensor, area: str, source: str | None = None
+    ) -> torch.Tensor:
         """
         Куда текущее состояние толкает E-нейроны зоны через
         ВЫУЧЕННЫЕ синапсы (вес выше, чем был при рождении):
@@ -885,6 +890,10 @@ class SpikingBrain:
         складывается (context_mode="add"), либо умножает отклик
         на текущее слово (context_mode="gain": контекст выбирает
         среди кандидатов, которых предлагает текущее слово).
+
+        Модулирующие пути (predictive=False, например чувство -> смысл)
+        в ожидание не входят; source="limbic" читает только путь из
+        этой зоны — куда толкает само чувство.
         """
 
         target = self.areas[area].E
@@ -893,6 +902,12 @@ class SpikingBrain:
 
         for proj in self.plastic:
             if proj.post is not target:
+                continue
+
+            if source is not None:
+                if proj.pre_pop is not self.areas[source].E:
+                    continue
+            elif not getattr(proj, "predictive", True):
                 continue
 
             reference = proj.birth if self.cfg.learned_from_birth else proj.innate_max

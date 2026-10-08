@@ -5,7 +5,7 @@ import os
 import torch
 
 from brain.mind import Mind
-from tests.conftest import FACTS
+from tests.conftest import FACTS, make_mind
 
 
 def test_no_nan_and_no_lost_spikes(mind):
@@ -18,7 +18,12 @@ def test_no_nan_and_no_lost_spikes(mind):
     assert float(brain.dropped) == 0
 
 
-def test_word_activates_sparse_ensemble(mind):
+def test_word_activates_sparse_ensemble():
+    # [замер] на tiny (2k) смысловая зона молчит хотя бы на одно из слов
+    # «париж/берлин/компьютер» в 19 из 40 seed (с лимбической зоной —
+    # 17 из 40): слишком мало клеток для надёжного ансамбля. На small
+    # (20k) — 0 из 10 seed.
+    mind = make_mind("small")
     probe = mind.language.probe("париж")
 
     for area in mind.brain.areas.values():

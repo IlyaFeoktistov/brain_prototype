@@ -74,6 +74,10 @@ class PathwaySpec:
     # [замер] без него зоны срывались в синхронные залпы.
     k_inhibitory: int = 50
     inhibitory_weight: float = 1.5
+    # Участвует ли выученное по пути в ожидании следующего слова.
+    # False — путь модулирующий: учится и подаёт ток, но в предсказание
+    # не входит (его читают отдельно, как «чувство -> слова о нём»).
+    predictive: bool = True
 
 
 def default_areas() -> list[AreaSpec]:
@@ -133,8 +137,12 @@ def default_pathways() -> list[PathwaySpec]:
         PathwaySpec("prefrontal", "association", k=20, weight=(0.02, 0.10),
                     plastic=True, cap=2.0, k_inhibitory=0),
         # Чувство -> слова о нём. Учится, как и контекст.
+        # [замер] predictive=False: чувство держится всю реплику, и его
+        # выученный вклад добавлялся к ожиданию после КАЖДОГО слова —
+        # «париж» после «столица франции» падал с 1-го места на 8-13-е.
+        # Без этого пути в ожидании — снова 1-е (docs/DESIGN.md).
         PathwaySpec("limbic", "association", k=30, weight=(0.02, 0.10),
-                    plastic=True, cap=2.0, k_inhibitory=0),
+                    plastic=True, cap=2.0, k_inhibitory=0, predictive=False),
         # Смысл -> артикуляция (рот).
         # [замер] вес 6: моторный ансамбль слова 0.33-0.45 сходства между
         # повторами (4 -> 0.26). k=300 хуже: 44-83 из 224 слов «рот»
@@ -513,7 +521,12 @@ class BrainConfig:
     def from_dict(cls, data: dict) -> "BrainConfig":
         data = dict(data)
         data["areas"] = [AreaSpec(**a) for a in data.get("areas", [])] or default_areas()
-        data["pathways"] = [PathwaySpec(**p) for p in data.get("pathways", [])] or default_pathways()
+        # Сохранения до появления predictive: путь чувства в них
+        # модулирующий, как сейчас (иначе он снова портит ожидания).
+        pathways = [
+            {"predictive": p["src"] != "limbic", **p} for p in data.get("pathways", [])
+        ]
+        data["pathways"] = [PathwaySpec(**p) for p in pathways] or default_pathways()
 
         for key in ("praise_words", "blame_words", "homeostasis_bias_range"):
             if key in data:

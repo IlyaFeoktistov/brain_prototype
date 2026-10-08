@@ -476,6 +476,8 @@ class LanguageInterface:
         self._random = random.Random(cfg.seed)
         # С чего начал последнюю реплику «от себя» (для переспроса).
         self._last_initiative: str | None = None
+        # Сколько раз уже прорастали связи узнавания к месту слова.
+        self._form_grown: dict[str, int] = {}
         # Миндалина уже что-то выучила (иначе предвкушение не считается).
         self._value_learned = False
         # Сумма предвкушения миндалины по словам текущей реплики.
@@ -613,6 +615,7 @@ class LanguageInterface:
 
         if learn_forms and place is not None:
             self._learn_form(rates)
+            self._grow_form(token, rates, place)
 
         if learn_forms:
             meaning = self._area(rates, self.meaning)
@@ -1039,6 +1042,28 @@ class LanguageInterface:
         heard = (rates.index_select(0, path.pre.flatten().long()).view_as(path.weight) > 0).float()
         active = (rates[path.post.slice] > 0).float()[:, None]
         path.weight.add_(self.cfg.form_rate * active * (self.cfg.form_cap * heard - path.weight))
+
+    def _grow_form(self, token: str, rates: torch.Tensor, place: torch.Tensor) -> None:
+        """
+        Связи узнавания растут там, где нужны: от слуховых клеток, активных
+        при звучании слова, к его месту (первые form_grow_times встреч) —
+        случайных входов у клетки смысла мало (k=20), на звучание слова их
+        почти не приходится.
+        """
+
+        times = self._form_grown.get(token, 0)
+
+        if times >= self.cfg.form_grow_times:
+            return
+
+        self._form_grown[token] = times + 1
+        ear = self.brain.areas["auditory"].E
+        heard = rates[ear.slice]
+        active = heard.topk(min(64, heard.numel())).indices
+        active = active[heard[active] > 0]
+
+        if len(active):
+            self._growth.append(("auditory -> association", active, place))
 
     def recognize(self, rates: torch.Tensor) -> torch.Tensor:
         """Куда звучание (активность слуха) толкает смысл по выученному пути."""
@@ -2505,6 +2530,7 @@ class LanguageInterface:
             "concepts": self.concepts.state_dict(),
             "category_usage": self._category_usage,
             "value_learned": self._value_learned,
+            "form_grown": self._form_grown,
             "category_member": self._category_member,
             "category_predicts": self._category_predicts,
             "category_predicted_by": self._category_predicted_by,
@@ -2530,6 +2556,7 @@ class LanguageInterface:
 
         self._category_usage = state.get("category_usage")
         self._value_learned = state.get("value_learned", True)
+        self._form_grown = dict(state.get("form_grown", {}))
         self._category_member = dict(state.get("category_member", {}))
         self._category_predicts = dict(state.get("category_predicts", {}))
         self._category_predicted_by = dict(state.get("category_predicted_by", {}))

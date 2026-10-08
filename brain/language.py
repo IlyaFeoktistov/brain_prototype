@@ -841,20 +841,29 @@ class LanguageInterface:
 
         return cached
 
-    def _nucleus_burst(self, level: float) -> tuple[float, float]:
+    def _nucleus_burst(self, level: float, lc: bool = True) -> tuple[float, float]:
         """
-        Залп ядер на неожиданность level (0..1): VTA -> дофамин,
-        голубое пятно -> норадреналин. Возвращает (дофамин, доля LC).
+        Залп ядер на событие силы level: VTA -> дофамин, голубое пятно ->
+        норадреналин. Возвращает (дофамин, доля LC).
+
+        У VTA тонический фон: часть клеток стреляет и без событий.
+        Дофамин — отклонение от фона: награда/неожиданность (level > 0) —
+        залп выше фона, ругань (level < 0) — пауза ниже фона (торможение).
+        LC отвечает только на значимое (level > 0) и только если lc.
         """
 
         cfg = self.cfg
-        cells = {}
+        cells = {"vta": self.brain.areas["vta"].E}
+        base = self._vta_base()
 
-        for area in ("vta", "lc"):
-            E = self.brain.areas[area].E
-            cells[area] = E
-            amplitude = cfg.nucleus_mv * level * self._nucleus_gains(area)
-            self.brain.feel(area, torch.arange(E.size, device=self.device), amplitude)
+        gains = self._nucleus_gains("vta")
+        drive = (cfg.vta_tonic_mv + cfg.nucleus_mv * level) * gains
+        self.brain.feel("vta", torch.arange(cells["vta"].size, device=self.device), drive)
+
+        if lc and level > 0:
+            E = cells["lc"] = self.brain.areas["lc"].E
+            amplitude = cfg.nucleus_mv * level * self._nucleus_gains("lc")
+            self.brain.feel("lc", torch.arange(E.size, device=self.device), amplitude)
 
         rates = self.brain.observe(cfg.nucleus_ms)
 
@@ -862,8 +871,37 @@ class LanguageInterface:
             self.brain.feel(area, None, 0.0)
 
         fired = {area: float((rates[E.slice] > 0).float().mean()) for area, E in cells.items()}
+        delta = fired["vta"] - base
+        # Отклонение в долях возможного: все клетки — +1, тишина — −1.
+        scale = (1.0 - base) if delta >= 0 else base
 
-        return cfg.surprise_dopamine_gain * fired["vta"], fired["lc"]
+        return cfg.surprise_dopamine_gain * delta / max(scale, 1e-3), fired.get("lc", 0.0)
+
+    def _vta_base(self) -> float:
+        """Доля клеток VTA, стреляющих на одном тоническом фоне (замер один раз)."""
+
+        if getattr(self, "_base", None) is None:
+            self._base = 0.0
+
+            if self.cfg.vta_tonic_mv > 0:
+                E = self.brain.areas["vta"].E
+                drive = self.cfg.vta_tonic_mv * self._nucleus_gains("vta")
+                self.brain.feel("vta", torch.arange(E.size, device=self.device), drive)
+                rates = self.brain.observe(self.cfg.nucleus_ms)
+                self.brain.feel("vta", None, 0.0)
+                self._base = float((rates[E.slice] > 0).float().mean())
+
+        return self._base
+
+    def _dopamine(self, amplitude: float) -> float:
+        """Внешняя награда (похвала, ругань, любопытство) — через VTA, если оно есть."""
+
+        if not self._has_nuclei():
+            return amplitude
+
+        dopamine, _ = self._nucleus_burst(amplitude / self.cfg.surprise_dopamine_gain, lc=False)
+
+        return dopamine
 
     # ==============================================================
     # EXPERIENCE
@@ -1154,7 +1192,7 @@ class LanguageInterface:
         amplitude = self.feedback(text)
 
         if amplitude is not None:
-            self.brain.reward(amplitude)
+            self.brain.reward(self._dopamine(amplitude))
             self._feel("feedback", amplitude)
             self._rate_last_turn(amplitude)
             self.brain.run(self.cfg.rest_ms)
@@ -1216,7 +1254,7 @@ class LanguageInterface:
         explained = [word for word in dict.fromkeys(heard) if word in self.asked]
 
         for word in explained:
-            self.brain.reward(self.cfg.curiosity_reward)
+            self.brain.reward(self._dopamine(self.cfg.curiosity_reward))
             self.hippocampus.store(
                 ["что", "такое", word] + heard[: self.cfg.explanation_max_words],
                 salience=self.cfg.curiosity_reward,

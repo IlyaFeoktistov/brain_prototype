@@ -183,3 +183,20 @@ def test_joy_of_guessing_habituates():
     # …и ругань его действительно огорчает.
     emotions.feedback(-6)
     assert emotions.valence < 0
+
+
+def test_praise_bursts_and_blame_pauses_dopamine_cells():
+    from tests.conftest import make_mind
+
+    mind = make_mind("small")
+    language, brain = mind.language, mind.brain
+    assert 0.1 < language._vta_base() < 0.7
+
+    brain.run(300)
+    praise = language._dopamine(+6.0)
+    brain.run(300)
+    blame = language._dopamine(-6.0)
+
+    # Похвала — залп выше фона, ругань — пауза ниже фона.
+    assert praise > 1.0
+    assert blame < -1.0

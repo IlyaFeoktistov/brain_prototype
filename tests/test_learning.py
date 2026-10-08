@@ -10,8 +10,11 @@ from tests.conftest import FACTS, make_mind
 
 
 def rank(language, prompt: str, target: str) -> int:
+    from brain.language import END
+
     probe = language.probe(prompt)
-    ranked = language.semantic.decode(probe["expected"], {prompt.split()[-1]}, top=200)
+    # «Конец фразы» — не слово-ответ, в рангах не участвует.
+    ranked = language.semantic.decode(probe["expected"], {prompt.split()[-1], END}, top=200)
     return next((i + 1 for i, (token, _) in enumerate(ranked) if token == target), 999)
 
 
@@ -114,8 +117,11 @@ def test_separate_messages_are_not_glued(mind):
         language.converse("Столица Германии")
         language.converse("Квантовая хромодинамика")
 
-    # Конец одной реплики не должен предсказывать начало следующей.
-    assert rank(language, "столица германии", "квантовая") > 3
+    # Конец одной реплики не должен предсказывать начало следующей:
+    # сила «квантовая» — шум рядом с настоящим ответом (в словаре из двух
+    # десятков слов почти нулевой кандидат легко встаёт вторым по рангу).
+    ranked = dict(language.semantic.decode(language.probe("столица германии")["expected"], {"германии"}, top=50))
+    assert ranked.get("квантовая", 0.0) < 0.1 * max(ranked.values())
     assert before >= 3
 
 
@@ -146,3 +152,16 @@ def test_word_choice_is_probabilistic_in_speech(mind):
     assert all(language._pick(clear, sample=True) == "париж" for _ in range(50))
     # Экзамен и пробы — всегда лучший.
     assert all(language._pick(close, sample=False) == "париж" for _ in range(50))
+
+
+def test_categories_generalize_to_unheard_pair():
+    mind = make_mind("small")
+    language = mind.language
+
+    for _ in range(4):
+        language.read_text("Кошка спит. Собака спит. Лошадь спит. Кошка ест. Собака ест. Лошадь ест. Корова спит.")
+
+    # «Корова ест» мозг не слышал, но корова — в одной категории с
+    # кошкой, собакой и лошадью.
+    ranked = dict(language.semantic.decode(language.probe("корова")["expected"], {"корова"}, top=10))
+    assert ranked.get("ест", 0.0) > 0.1

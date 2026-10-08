@@ -10,6 +10,7 @@ from typing import Callable
 
 import torch
 
+from brain.categories import Categories
 from brain.concepts import Concepts
 from brain.engine import SpikingBrain
 from brain.hippocampus import Hippocampus
@@ -438,6 +439,8 @@ class LanguageInterface:
         self.concepts = Concepts(
             self.meaning.E.size, cfg.concept_cells, cfg.seed, self.device
         )
+        # Категории: обобщение по ролям слов (brain/categories.py).
+        self.categories = Categories(cfg.category_rate)
         # Места слов в рабочей памяти (ПФК).
         self.memory = Concepts(
             self.context.E.size, cfg.concept_cells, cfg.seed + 1, self.device
@@ -636,6 +639,39 @@ class LanguageInterface:
         rates[self.context.E.start + held] = 0.0
 
         return rates
+
+    def _with_categories(self, drive: torch.Tensor) -> torch.Tensor:
+        """
+        Обобщение: что предсказывают категории текущего слова — добавка
+        category_gain силы ожидания на места этих слов («корова» в
+        категории «кошка, собака» → ждёт и «ест», хотя не слышала).
+        """
+
+        if self.cfg.category_gain <= 0 or self.last_token is None:
+            return drive
+
+        guess = self.categories.expect(self.last_token)
+
+        if not guess:
+            return drive
+
+        suggestion = torch.zeros_like(drive)
+
+        for word, weight in guess.items():
+            place = self.concepts.get(word, allocate=False)
+
+            if place is not None:
+                suggestion[place] += weight
+
+        norm = suggestion.norm()
+
+        if norm == 0:
+            return drive
+
+        if not drive.any():
+            return suggestion
+
+        return drive + self.cfg.category_gain * drive.norm() * suggestion / norm
 
     def _with_closure(self, drive: torch.Tensor, rates: torch.Tensor) -> torch.Tensor:
         """
@@ -949,6 +985,7 @@ class LanguageInterface:
             drive = drive * (1.0 + self.cfg.priming_gain * self._priming_trace())
 
         drive = self._with_topic(drive)
+        drive = self._with_categories(drive)
         drive = self._with_closure(drive, rates)
 
         # Выстрелили бы только самые возбуждённые: торможение зоны
@@ -1183,6 +1220,10 @@ class LanguageInterface:
                     step.expected == token if step.expected is not None else None,
                     noradrenaline,
                 )
+
+        # Категории учатся на каждом переходе внутри фразы.
+        if learn and self.last_token is not None and self.cfg.category_gain > 0:
+            self.categories.learn(self.last_token, token)
 
         self.last_rates = rates
         self.last_token = token
@@ -2290,6 +2331,7 @@ class LanguageInterface:
             "semantic": self.semantic.state_dict(),
             "mouth": self.mouth.state_dict(),
             "concepts": self.concepts.state_dict(),
+            "categories": self.categories.state_dict(),
             "memory_places": self.memory.state_dict(),
             "experienced_tokens": self.experienced_tokens,
             "sentences_lived": self.sentences_lived,
@@ -2308,6 +2350,9 @@ class LanguageInterface:
 
         if "concepts" in state:
             self.concepts.load_state_dict(state["concepts"])
+
+        if "categories" in state:
+            self.categories.load_state_dict(state["categories"])
 
         if "memory_places" in state:
             self.memory.load_state_dict(state["memory_places"])

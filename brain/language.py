@@ -468,6 +468,8 @@ class LanguageInterface:
         # Неожиданные переходы: (проекция, клетки-источник, место B) —
         # здесь вырастут синапсы.
         self._growth: list[tuple[str, torch.Tensor, torch.Tensor]] = []
+        # Укрепление, причитающееся ещё не выросшим синапсам контекста.
+        self._owed: list[tuple[torch.Tensor, torch.Tensor, float]] = []
         self._prev_place: torch.Tensor | None = None
         self._place: torch.Tensor | None = None
         self._held: torch.Tensor | None = None
@@ -872,6 +874,17 @@ class LanguageInterface:
             self.brain.grow(self._growth, self.cfg.grow_synapses)
             self._growth = []
 
+            # Выросшие синапсы контекста сразу получают укрепление, которое
+            # им причиталось в момент неожиданности: иначе при следующей
+            # встрече неожиданности уже нет, слабые новые синапсы сжимает
+            # масштабирование, и перестройка их убивает («мадрид → испании»
+            # оставался с 0 синапсов).
+            for held, place, dopamine in self._owed:
+                self._learn_context(held, place, dopamine)
+
+        if len(self._owed) and not self._growth:
+            self._owed = []
+
         if (
             self.cfg.synaptic_scaling_enabled
             and self.sentences_lived % self.cfg.synaptic_scaling_every == 0
@@ -1124,7 +1137,16 @@ class LanguageInterface:
                         self._growth.append(("association: E->E", self._prev_place, self._place))
 
                     if context is not None and len(context):
-                        self._growth.append(("prefrontal -> association", context, self._place))
+                        # Рост — от каждого слова контекста своими синапсами:
+                        # из общего пула клеток конкретному слову («мадрид»)
+                        # могло не достаться ни одного.
+                        for word in dict.fromkeys(self.heard_in_phrase[:-1]):
+                            held = self.memory.get(word, allocate=False)
+
+                            if held is not None and bool(torch.isin(held, context).any()):
+                                self._growth.append(("prefrontal -> association", held, self._place))
+                                self._owed.append((held, self._place, step.dopamine))
+
                         self._learn_context(context, self._place, step.dopamine)
 
                 # Неожиданный переход закрепляется: dopamine

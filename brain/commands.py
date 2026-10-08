@@ -63,6 +63,9 @@ def report_line(report: ReadReport, elapsed: float | None = None) -> str:
     if elapsed:
         line += f", {report.tokens / elapsed:.0f} ток/с"
 
+    if report.naps:
+        line += f", поспал {report.naps} раз(а)"
+
     return line
 
 

@@ -320,6 +320,8 @@ class ReadReport:
     errors: list[float] = field(default_factory=list)
     hits: int = 0
     dopamine: float = 0.0
+    # Сколько раз засыпал посреди чтения.
+    naps: int = 0
 
     def mean_error(self) -> float:
         return sum(self.errors) / len(self.errors) if self.errors else 0.0
@@ -330,6 +332,7 @@ class ReadReport:
         self.errors += other.errors
         self.hits += other.hits
         self.dopamine += other.dopamine
+        self.naps += other.naps
 
 
 TEXT_SUFFIX_SKIP = {
@@ -701,10 +704,12 @@ class LanguageInterface:
         text: str,
         progress: Callable[[ReadReport], None] | None = None,
         stop=None,
+        nap: bool = True,
     ) -> ReadReport:
         """
         Мозг живёт внутри потока текста. Пластичность
-        регулируется prediction error.
+        регулируется prediction error. nap=False — не засыпать
+        посреди текста (сервер спит сам между порциями, чтобы будиться).
         """
 
         report = ReadReport()
@@ -739,6 +744,11 @@ class LanguageInterface:
 
             if progress and report.sentences % 20 == 0:
                 progress(report)
+
+            # Устал читать — поспать и продолжить (см. nap_while_reading).
+            if nap and self.cfg.nap_while_reading and self.sleep_pressure >= self.cfg.nap_after_episodes:
+                self.sleep_until_rested(stop)
+                report.naps += 1
 
         return report
 

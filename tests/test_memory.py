@@ -178,3 +178,15 @@ def test_forgetting_can_be_switched_off(mind):
     brain.forget()
 
     assert (brain.net_weight == weights).all()
+
+
+def test_long_reading_naps_to_keep_memory(mind):
+    language = mind.language
+    mind.cfg.nap_after_episodes = 8
+    text = " ".join(f"Слово{i} идёт за словом{i + 1}." for i in range(20))
+
+    report = language.read_text(text)
+
+    assert report.naps >= 2
+    # Проспал — новых непроигранных впечатлений меньше порога.
+    assert language.sleep_pressure < mind.cfg.nap_after_episodes

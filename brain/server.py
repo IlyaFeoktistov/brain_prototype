@@ -264,9 +264,24 @@ class BrainHost:
                 # Пока есть что читать — не ждать: читать порцию.
                 job = self.jobs.get(timeout=0.0 if self.reading else 1.0)
             except queue.Empty:
-                if self.reading:
-                    self._execute(lambda session: self._read_portion(session), Future(), None, quiet=True)
-                    continue
+                if self.reading and not self.dozing:
+                    # Устал читать — уснуть (порциями, будится сообщением),
+                    # выспаться и читать дальше. Внутри порции не спит,
+                    # иначе чат ждал бы минуты сна.
+                    language = self.mind.language
+                    cfg = self.mind.cfg
+
+                    if cfg.nap_while_reading and language.sleep_pressure >= cfg.nap_after_episodes:
+                        self.sleep_left = language.sleep_pressure * cfg.replays_per_episode
+                        self._out(
+                            f"Устал читать: новых впечатлений {language.sleep_pressure}, "
+                            f"посплю ({self.sleep_left} проигрываний) и продолжу",
+                            "info",
+                        )
+                        self._doze(True)
+                    else:
+                        self._execute(lambda session: self._read_portion(session), Future(), None, quiet=True)
+                        continue
 
                 # В тишине эмоции успокаиваются.
                 if self.mind.cfg.emotions_enabled:
@@ -353,7 +368,7 @@ class BrainHost:
         item = self.reading[0]
         size = self.mind.cfg.read_portion_sentences
         portion = item["sentences"][item["done"]: item["done"] + size]
-        item["report"].merge(session.language.read_text("\n".join(portion)))
+        item["report"].merge(session.language.read_text("\n".join(portion), nap=False))
         item["done"] += len(portion)
 
         elapsed = time.time() - item["start"]

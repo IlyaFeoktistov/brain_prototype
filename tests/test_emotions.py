@@ -171,3 +171,15 @@ def test_nuclei_make_dopamine_and_locus_coeruleus_habituates():
     brain.run(10_000)
     _, rested = language._nucleus_burst(0.9)
     assert rested > last * 1.5
+
+
+def test_joy_of_guessing_habituates():
+    emotions = Emotions()
+    for _ in range(200):
+        emotions.heard(0.0, guessed=True)
+
+    # Привык к угадыванию — радость не упирается в потолок…
+    assert emotions.valence < 0.5
+    # …и ругань его действительно огорчает.
+    emotions.feedback(-6)
+    assert emotions.valence < 0

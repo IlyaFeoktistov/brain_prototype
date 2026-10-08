@@ -81,3 +81,22 @@ def test_dendritic_context_switches_on_the_fly(mind):
 def test_quit_returns_false(mind):
     session, _ = make_session(mind)
     assert session.handle("/quit") is False
+
+
+def test_neural_speech_answers_from_spikes():
+    """Ответ нейронами: слово — место, выстрелившее при открытых воротах."""
+
+    from tests.conftest import make_mind
+
+    mind = make_mind("small")
+    mind.set_feature("dendritic_context", True)
+    mind.set_feature("neural_speech", True)
+    language = mind.language
+
+    for _ in range(6):
+        language.read_text("Столица Франции Париж. Столица Италии Рим.")
+
+    # [замер] «столица италии» здесь пока тоже → «париж»: контекст на
+    # дендритах на маленьком мозге и 6 прочтениях слабее формулы.
+    said = [token for token, _ in language.generate("столица франции")]
+    assert said and said[0] == "париж"

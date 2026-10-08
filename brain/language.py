@@ -446,6 +446,10 @@ class LanguageInterface:
         self.meaning = self.brain.areas["association"]
         self.context = self.brain.areas["prefrontal"]
         self.motor = self.brain.areas["motor"]
+        # Ворота «говори» (см. experience(answer=True)) и что выстрелило.
+        self._gate_open = False
+        self.choice: tuple[str, float] | None = None
+        self._everyone = torch.arange(self.meaning.E.size, device=self.device)
 
         self.semantic = Readout(
             self.meaning.E.size, cfg.readout_top_k, cfg.readout_rate, self.device
@@ -594,8 +598,20 @@ class LanguageInterface:
         )
         self._held = held
 
-        if place is not None:
+        self.choice = None
+        gate = self._gate_open
+
+        if gate:
+            # Ворота «говори» открыты: всей смысловой коре — ровный ток,
+            # месту звучащего слова — его собственный.
+            amplitude = torch.full((self.meaning.E.size,), self.cfg.speak_gate_mv, device=self.device)
+            if place is not None:
+                amplitude[place] = self.cfg.concept_mv
+            self.brain.feel("association", self._everyone, amplitude)
+        elif place is not None:
             self.brain.feel("association", place, self.cfg.concept_mv)
+
+        if place is not None:
 
             if self.brain.plasticity:
                 self._sentence_places.append(place)
@@ -614,8 +630,13 @@ class LanguageInterface:
             self.ear.encode(token),
         )
 
-        if place is not None:
+        if gate:
+            self.choice = self._spoken(rates, token)
+
+        if place is not None or gate:
             self.brain.feel("association", None, 0.0)
+
+        if place is not None:
 
             # Миндалина узнаёт слово — предвкушение хорошего или плохого
             # (наблюдение в замороженном мозге настроение не меняет).
@@ -1434,8 +1455,74 @@ class LanguageInterface:
 
         return step
 
-    def experience(self, tokens: list[str], learn: bool = True) -> list[Step]:
-        return [self._step(token, learn) for token in tokens]
+    def experience(self, tokens: list[str], learn: bool = True, answer: bool = False) -> list[Step]:
+        """
+        answer — после этих слов мозг отвечает: на последнем слове
+        открыты ворота «говори» (neural_speech), и в self.choice — место,
+        которое выстрелило само.
+        """
+
+        steps = []
+
+        for i, token in enumerate(tokens):
+            self._gate_open = answer and self.cfg.neural_speech and i == len(tokens) - 1
+            steps.append(self._step(token, learn))
+
+        self._gate_open = False
+
+        return steps
+
+    def _spoken(self, rates: torch.Tensor, heard: str) -> tuple[str, float] | None:
+        """
+        Что выстрелило само при открытых воротах: место с наибольшим
+        числом спайков, кроме места звучащего слова. Никто — молчание.
+        Уверенность — доля его спайков среди всех мест.
+        """
+
+        tokens, cells = self.concepts.table()
+
+        if not tokens:
+            return None
+
+        counts = self._area(rates, self.meaning)[cells].sum(1)
+
+        if heard in self.concepts:
+            counts[tokens.index(heard)] = 0.0
+
+        best = int(counts.argmax())
+        total = float(counts.sum())
+
+        if total <= 0:
+            return None
+
+        return tokens[best], float(counts[best]) / total
+
+    def _speak(self, max_tokens: int | None = None) -> list[tuple[str, float]]:
+        """
+        Ответ нейронами: слово — место, выстрелившее при открытых воротах;
+        оно звучит (мозг слышит себя), ворота снова открыты — следующее.
+        Никто не выстрелил или выстрелил конец фразы — мысль кончилась.
+        """
+
+        produced: list[tuple[str, float]] = []
+
+        for _ in range(max_tokens or self.cfg.generate_max_tokens):
+            if self.choice is None:
+                break
+
+            token, sure = self.choice
+
+            if token == END:
+                break
+
+            produced.append((token, sure))
+
+            if self.on_speak:
+                self.on_speak(token, sure)
+
+            self.experience([token], learn=False, answer=True)
+
+        return produced
 
     # ==============================================================
     # ЧТЕНИЕ ДАННЫХ
@@ -1677,7 +1764,7 @@ class LanguageInterface:
             tokens = self.tokenize(sentence)
             last = i == len(sentences) - 1
 
-            for step in self.experience(tokens if last else self._ended(tokens)):
+            for step in self.experience(tokens if last else self._ended(tokens), answer=last):
                 report.tokens += step.token != END
                 report.dopamine += step.dopamine
                 salience += step.dopamine
@@ -1729,6 +1816,8 @@ class LanguageInterface:
             if self.on_speak:
                 for token, sure in produced:
                     self.on_speak(token, sure)
+        elif self.cfg.neural_speech:
+            produced = self._speak()
         else:
             produced = self._continue(sample=True)
         self._sync()
@@ -1928,8 +2017,8 @@ class LanguageInterface:
             first = [self.wonder.pop()]
             self.asked.add(first[0])
 
-        self.experience(first, learn=False)
-        produced = self._continue(sample=True)
+        self.experience(first, learn=False, answer=True)
+        produced = self._speak() if self.cfg.neural_speech else self._continue(sample=True)
         self._last_initiative = first[0]
         self._feel("spoke")
 
@@ -1960,8 +2049,15 @@ class LanguageInterface:
 
         try:
             with self.isolated():
-                self.experience(tokens, learn=False)
-                produced, log = self.think()
+                if self.cfg.neural_speech:
+                    # Мысль течёт сама: каждое место, выстрелившее при
+                    # открытых воротах, — следующее слово мысли.
+                    self.experience(tokens, learn=False, answer=True)
+                    produced = self._speak()
+                    log = [{"thought": t, "verdict": "ok", "score": round(sure, 3)} for t, sure in produced]
+                else:
+                    self.experience(tokens, learn=False)
+                    produced, log = self.think()
         finally:
             self.musing = False
 
@@ -2278,8 +2374,12 @@ class LanguageInterface:
         think = self.cfg.thinking_enabled if think is None else think
 
         with self.isolated():
-            self.experience(tokens, learn=False)
-            return self.think()[0] if think else self._continue()
+            self.experience(tokens, learn=False, answer=True)
+
+            if think:
+                return self.think()[0]
+
+            return self._speak() if self.cfg.neural_speech else self._continue()
 
     # ==============================================================
     # READ-ONLY ДИАГНОСТИКА

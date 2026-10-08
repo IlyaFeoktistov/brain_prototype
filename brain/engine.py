@@ -239,6 +239,10 @@ class SpikingBrain:
         self.decay_syn = torch.exp(-dt / self.tau_syn)
         self.decay_slow = math.exp(-dt / cfg.memory_tau_syn)
         self.decay_dend = math.exp(-dt / cfg.dendrite_tau_ms)
+        self.decay_pool = math.exp(-dt / cfg.pool_inhibition_tau_ms)
+        self.pool_mask = torch.zeros(self.n_slots, device=self.device)
+        if "association" in self.areas:
+            self.pool_mask[self.areas["association"].E.slice] = 1.0
         # Дендритный вход: от E рабочей памяти к E смысловой коры.
         self.dendrite_pre = torch.zeros(self.n_slots, dtype=torch.bool, device=self.device)
         self.dendrite_post = torch.zeros(self.n_slots, dtype=torch.bool, device=self.device)
@@ -565,6 +569,8 @@ class SpikingBrain:
         self.i_slow = z()
         # Дендритный ток (контекст из рабочей памяти, см. dendritic_context).
         self.i_dend = z()
+        # Пул торможения смысловой коры: отфильтрованное число её спайков.
+        self.pool = torch.zeros(1, device=self.device)
         self.adapt = z()
         self.refractory = z()
         self.spikes = z()
@@ -690,6 +696,9 @@ class SpikingBrain:
             plateau = self.i_dend / (self.i_dend + cfg.dendrite_half_mv)
             synaptic = synaptic + cfg.dendrite_gain * plateau * synaptic.clamp(min=0.0)
 
+        if cfg.pool_inhibition_mv > 0:
+            synaptic = synaptic - cfg.pool_inhibition_mv * self.pool * self.pool_mask
+
         dv = (
             cfg.v_rest - self.v + exp_term - self.adapt
             + synaptic + self.bias + self.interoception
@@ -703,6 +712,9 @@ class SpikingBrain:
         self.v.copy_(torch.where(fired, cfg.v_reset, v))
         self.refractory.copy_(torch.where(fired, cfg.refractory_ms, self.refractory))
         self.adapt.mul_(self.decay_adapt).add_(self.adapt_b * self.spikes)
+
+        if cfg.pool_inhibition_mv > 0:
+            self.pool.mul_(self.decay_pool).add_((self.spikes * self.pool_mask).sum())
         self.counts.add_(self.spikes)
         self.dropped.add_((self.spikes.sum() - self.max_spikes).clamp(min=0.0))
 
@@ -1160,7 +1172,7 @@ class SpikingBrain:
     # читает и пишет по фиксированным адресам. Поэтому их
     # всегда восстанавливают через copy_, а не присваиванием.
     _DYNAMIC = (
-        "v", "i_syn", "i_slow", "i_dend", "adapt", "refractory", "spikes",
+        "v", "i_syn", "i_slow", "i_dend", "pool", "adapt", "refractory", "spikes",
         "trace_pre", "trace_pre_rise", "ltp_kernel", "trace_post", "counts", "eligibility",
         "eligibility_scale", "dropped", "bias", "interoception",
     )

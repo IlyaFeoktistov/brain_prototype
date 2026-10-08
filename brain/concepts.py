@@ -65,8 +65,22 @@ class Concepts:
 
         return place
 
+    def table(self) -> tuple[list[str], torch.Tensor]:
+        """Все места разом: слова и клетки [слов, cells] (для чтения спайков)."""
+
+        if getattr(self, "_table", None) is None or len(self._table[0]) != len(self.places):
+            tokens = list(self.places)
+            cells = (
+                torch.stack([self.places[t] for t in tokens])
+                if tokens else torch.zeros(0, self.cells, dtype=torch.long, device=self.device)
+            )
+            self._table = (tokens, cells)
+
+        return self._table
+
     def reset(self) -> None:
         self.places.clear()
+        self._table = None
         self.usage.zero_()
 
     def _allocate(self, near: torch.Tensor | None) -> torch.Tensor:
@@ -98,5 +112,6 @@ class Concepts:
         }
 
     def load_state_dict(self, state: dict) -> None:
+        self._table = None
         self.places = {key: place.to(self.device) for key, place in state["places"].items()}
         self.usage = state["usage"].clone()

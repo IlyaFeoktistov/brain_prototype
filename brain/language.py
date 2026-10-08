@@ -520,6 +520,8 @@ class LanguageInterface:
 
         if place is not None:
             self.brain.feel("association", place, self.cfg.concept_mv)
+            # Прайминг: недавно звучавшее слово легче всплывает снова.
+            self._priming_trace()[place] = 1.0
 
         if held is not None:
             # Устойчивая активность ПФК: прошлые места тают, новое — полное.
@@ -557,6 +559,12 @@ class LanguageInterface:
             self._trace = torch.zeros(self.context.E.size, device=self.device)
 
         return self._trace
+
+    def _priming_trace(self) -> torch.Tensor:
+        if getattr(self, "_priming", None) is None:
+            self._priming = torch.zeros(self.meaning.E.size, device=self.device)
+
+        return self._priming
 
     def _hold_memory(self) -> None:
         cells = torch.arange(self.context.E.size, device=self.device)
@@ -612,6 +620,8 @@ class LanguageInterface:
             self._memory_trace().mul_(self.cfg.memory_rest_decay)
             self._hold_memory()
 
+        self._priming_trace().mul_(self.cfg.priming_decay)
+
         if self._growth and self.sentences_lived % self.cfg.grow_every_sentences == 0:
             self.brain.grow(self._growth, self.cfg.grow_synapses)
             self._growth = []
@@ -647,6 +657,11 @@ class LanguageInterface:
         drive = self.brain.learned_drive(rates, "association")
         active = self._area(rates, self.meaning) > 0
         drive = drive.masked_fill(active, 0.0)
+
+        # Прайминг темы: умножает, а не добавляет — тема побеждает среди
+        # кандидатов текущего слова, но не вставляет слова из ниоткуда.
+        if self.cfg.priming_gain > 0:
+            drive = drive * (1.0 + self.cfg.priming_gain * self._priming_trace())
 
         # Выстрелили бы только самые возбуждённые: торможение зоны
         # оставляет ~target_activity нейронов (k-WTA).
@@ -1658,6 +1673,11 @@ class LanguageInterface:
         def __enter__(self):
             i = self.interface
             self.saved = (i.last_rates, i.last_token, i.experienced_tokens, i.heard_in_phrase)
+            # След памяти и прайминг — тоже с чистого листа и обратно.
+            self.traces = (i._memory_trace().clone(), i._priming_trace().clone(), i._place)
+            i._memory_trace().zero_()
+            i._priming_trace().zero_()
+            i._place = None
             self.frozen = i.brain.frozen()
             self.frozen.__enter__()
             # Чистый контекст: пауза тишины, прошлое затухает само.
@@ -1669,6 +1689,9 @@ class LanguageInterface:
             i = self.interface
             self.frozen.__exit__(*exc)
             i.last_rates, i.last_token, i.experienced_tokens, i.heard_in_phrase = self.saved
+            memory, priming, i._place = self.traces
+            i._memory_trace().copy_(memory)
+            i._priming_trace().copy_(priming)
             return False
 
     def isolated(self) -> "_Isolated":

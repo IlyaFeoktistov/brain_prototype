@@ -67,3 +67,42 @@ def test_habituation_to_steady_surprise():
     for _ in range(3):
         emotions.heard(12.0, guessed=False)
     assert emotions.arousal > 0.5
+
+
+def test_arousal_strengthens_learning(mind):
+    language = mind.language
+    brain = mind.brain
+    language.read_text("Столица Франции Париж.")
+    eligibility = brain.eligibility.clone()
+
+    def change(arousal):
+        language.emotions.arousal = arousal
+        language._feel("relax", 0.0)
+        before = brain.net_weight.clone()
+        brain.eligibility.copy_(eligibility)
+        brain.reward(1.0)
+        delta = (brain.net_weight - before).abs().sum()
+        brain.net_weight.copy_(before)
+        return float(delta)
+
+    calm, excited = change(0.0), change(1.0)
+    assert excited > calm * 1.5
+
+
+def test_mood_changes_boldness(mind):
+    language = mind.language
+    language.emotions.valence = 1.0
+    bold = language._min_confidence()
+    language.emotions.valence = -1.0
+    careful = language._min_confidence()
+    assert bold < mind.cfg.generate_min_confidence < careful
+
+
+def test_emotional_episode_is_more_salient(mind):
+    language = mind.language
+    language.emotions.arousal = 0.0
+    language._remember(["спокойная", "фраза"], 1.0)
+    language.emotions.arousal = 1.0
+    language._remember(["важная", "фраза"], 1.0)
+    calm, excited = language.hippocampus.episodes[-2:]
+    assert excited.salience > calm.salience

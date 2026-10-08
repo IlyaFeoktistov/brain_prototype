@@ -124,6 +124,9 @@ class SpikingBrain:
 
         self.time_ms = 0.0
         self.plasticity = True
+        # Норадреналин: множитель пластичности от возбуждения (1 — спокойно).
+        # Выставляет язык по эмоциям, во сне — 1.
+        self.modulation = 1.0
         # Наблюдатель (веб-интерфейс): нейроны, выстрелившие за CHUNK.
         self.on_chunk = None
 
@@ -753,13 +756,14 @@ class SpikingBrain:
             Δw = lr * dopamine * C
 
         Отрицательный dopamine (провал ниже фона) ослабляет
-        то, что было активно недавно.
+        то, что было активно недавно. modulation (норадреналин)
+        усиливает изменение: пережитое в возбуждении запоминается крепче.
         """
 
         if not self.plasticity or amplitude == 0:
             return
 
-        gain = self.cfg.dopamine_learning_rate * amplitude
+        gain = self.cfg.dopamine_learning_rate * amplitude * self.modulation
 
         plastic = self.net_weight[: self.n_plastic]
         plastic.add_(self.eligibility[: self.n_plastic], alpha=gain)

@@ -722,6 +722,8 @@ class LanguageInterface:
         """Гиппокамп запоминает фразу с одного раза (но не свои сны)."""
 
         if not self.sleeping:
+            if self.cfg.emotions_enabled:
+                salience *= 1.0 + self.cfg.arousal_salience * self.emotions.arousal
             self.hippocampus.store(tokens, salience)
             self.emotions.sleepy = self.sleep_pressure >= self.cfg.sleepy_after_episodes
 
@@ -741,6 +743,7 @@ class LanguageInterface:
         report = ReadReport()
         self.sleeping = True
         self.emotions.sleeping = True
+        self.brain.modulation = 1.0
 
         try:
             for _ in range(replays):
@@ -965,6 +968,26 @@ class LanguageInterface:
         # Во сне эмоции не реагируют на проигрываемые фразы.
         if self.cfg.emotions_enabled and not self.sleeping:
             getattr(self.emotions, event)(*args)
+
+        self.brain.modulation = self._arousal_gain()
+
+    def _arousal_gain(self) -> float:
+        """Норадреналин: во сне и без эмоций — 1."""
+
+        if not self.cfg.emotions_enabled or self.sleeping:
+            return 1.0
+
+        return 1.0 + self.cfg.arousal_plasticity * self.emotions.arousal
+
+    def _min_confidence(self) -> float:
+        """Порог уверенности ответа: настроение делает смелее или осторожнее."""
+
+        base = self.cfg.generate_min_confidence
+
+        if not self.cfg.emotions_enabled:
+            return base
+
+        return base * (1.0 - self.cfg.valence_boldness * self.emotions.valence)
 
     # ==============================================================
     # ИНИЦИАТИВА: мозг заговаривает сам
@@ -1249,7 +1272,7 @@ class LanguageInterface:
             # если почти наверняка ошибётся.
             if (
                 self.confidence.experience >= self.cfg.confidence_min_experience
-                and sure < self.cfg.generate_min_confidence
+                and sure < self._min_confidence()
             ):
                 break
 
@@ -1337,7 +1360,7 @@ class LanguageInterface:
             sure = self.confidence(margin)
             known = self.confidence.experience >= cfg.confidence_min_experience
 
-            if margin < cfg.generate_min_margin or (known and sure < cfg.generate_min_confidence):
+            if margin < cfg.generate_min_margin or (known and sure < self._min_confidence()):
                 log.append({"thought": ranked[0][0], "verdict": "stop", "score": round(sure, 3)})
                 break
 

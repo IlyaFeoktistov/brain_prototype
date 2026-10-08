@@ -1803,10 +1803,13 @@ class LanguageInterface:
             return []
 
         produced: list[tuple[str, float]] = []
-        # Привыкание: уже прозвучавшие в этой фразе слова (реплика
-        # человека и собственный ответ) мозг не повторяет — иначе
-        # ответ ходит по кругу «париж столица франции париж…».
-        recent = set(self.heard_in_phrase)
+        # Привыкание: прозвучавшие в этой фразе слова (реплика человека
+        # и свой ответ) мозг не повторяет — иначе ответ ходит по кругу.
+        # repeat_prompt_words — разрешить слова вопроса (см. config).
+        recent = (
+            {self.last_token} if self.cfg.repeat_prompt_words and self.last_token
+            else set(self.heard_in_phrase)
+        )
 
         for _ in range(max_tokens or self.cfg.generate_max_tokens):
             expected = self._with_recall(self.expectation(self.last_rates))

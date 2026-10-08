@@ -476,6 +476,8 @@ class LanguageInterface:
         self._random = random.Random(cfg.seed)
         # С чего начал последнюю реплику «от себя» (для переспроса).
         self._last_initiative: str | None = None
+        # Миндалина уже что-то выучила (иначе предвкушение не считается).
+        self._value_learned = False
         # Сумма предвкушения миндалины по словам текущей реплики.
         self._message_value = 0.0
         # Чувствительность клеток ядер нейромедиаторов.
@@ -997,6 +999,7 @@ class LanguageInterface:
         hit = torch.isin(path.pre[group], source.to(path.pre.dtype)).float()
         level = min(1.0, abs(amplitude) / self.cfg.surprise_dopamine_gain)
         path.weight[group] += self.cfg.value_rate * level * hit * (self.cfg.value_cap - path.weight[group])
+        self._value_learned = True
 
     def value(self, rates: torch.Tensor) -> float:
         """
@@ -1006,7 +1009,9 @@ class LanguageInterface:
 
         groups, path = self._value_groups(), self._value_path()
 
-        if groups is None or path is None:
+        # Пока миндалина ничему не научилась — нечего и считать (и не
+        # ждать видеокарту на каждом слове).
+        if groups is None or path is None or not self._value_learned:
             return 0.0
 
         heard = rates.index_select(0, path.pre.flatten().long()).view_as(path.weight) > 0
@@ -1276,6 +1281,9 @@ class LanguageInterface:
                 rates = self.brain.observe(self.cfg.nucleus_ms)
                 self.brain.feel("vta", None, 0.0)
                 self._base = float((rates[E.slice] > 0).float().mean())
+                # Клетки, выстрелившие на замере, восстанавливаются — иначе
+                # следующий залп сразу за ним был бы ниже фона.
+                self.brain.run(200.0)
 
         return self._base
 
@@ -2496,6 +2504,7 @@ class LanguageInterface:
             "mouth": self.mouth.state_dict(),
             "concepts": self.concepts.state_dict(),
             "category_usage": self._category_usage,
+            "value_learned": self._value_learned,
             "category_member": self._category_member,
             "category_predicts": self._category_predicts,
             "category_predicted_by": self._category_predicted_by,
@@ -2520,6 +2529,7 @@ class LanguageInterface:
             self.concepts.load_state_dict(state["concepts"])
 
         self._category_usage = state.get("category_usage")
+        self._value_learned = state.get("value_learned", True)
         self._category_member = dict(state.get("category_member", {}))
         self._category_predicts = dict(state.get("category_predicts", {}))
         self._category_predicted_by = dict(state.get("category_predicted_by", {}))

@@ -211,6 +211,9 @@ class BrainConfig:
     # Железо
     # ------------------------------------------------------------------
     device: str = os.environ.get("BRAIN_DEVICE", "auto")  # auto | cuda | cpu
+    # Собрать шаг симуляции torch.compile (слить мелкие ядра). Первый
+    # запуск дольше (компиляция). [замер — см. DESIGN «Скорость шага»]
+    compile_step: bool = os.environ.get("BRAIN_COMPILE", "1") == "1"
     seed: int = 42
     # [не подбиралось] 1 мс: стандарт для LIF/AdEx с Эйлером.
     dt_ms: float = 1.0

@@ -514,6 +514,9 @@ class SpikingBrain:
         position = torch.arange(len(keys), device=self.device) - starts[keys]
 
         width = max(1, int(counts.max())) if len(keys) else 1
+        # Ширина — с запасом до кратного 64: рост синапсов редко меняет
+        # форму таблицы, и собранный шаг (compile_step) не пересобирается.
+        width = -(-width // 64) * 64
         table = (
             pad
             + torch.arange(self.n_slots * width, device=self.device)
@@ -691,8 +694,29 @@ class SpikingBrain:
         return torch.where(fired == self.n, self.dummy_rows, fired)
 
     def _chunk(self, plastic: bool) -> None:
+        step = self._compiled_step()
+
         for t in range(self.CHUNK):
-            self._step(self.ear_input[t], plastic)
+            step(self.ear_input[t], plastic)
+
+    def _compiled_step(self):
+        """
+        Шаг, собранный torch.compile: десятки мелких операций шага
+        сливаются в несколько ядер (время шага — запуск ядер, а не счёт).
+        """
+
+        if not self.cfg.compile_step or self.device.type != "cuda":
+            return self._step
+
+        if getattr(self, "_compiled", None) is None:
+            # Пересборка — при новой форме таблиц и для каждого мозга
+            # (тесты создают десятки); по умолчанию лимит 8, дальше молча
+            # медленный режим.
+            torch._dynamo.config.cache_size_limit = 256
+            torch._dynamo.config.recompile_limit = 256
+            self._compiled = torch.compile(self._step, dynamic=False)
+
+        return self._compiled
 
     def _capture(self, plastic: bool) -> torch.cuda.CUDAGraph:
         """Записать CHUNK шагов в CUDA Graph (один раз на режим)."""

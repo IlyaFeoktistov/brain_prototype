@@ -112,6 +112,8 @@ export interface ReplyEvent {
   dopamine: number;
   // Уверенность каждого слова ответа (0..1), выученная мозгом из опыта.
   confidence: number[];
+  // Слова реплики сами были наградой (+) или наказанием (−) — выучено.
+  praised?: number;
 }
 
 export interface SpeakEvent {

@@ -120,6 +120,7 @@ def build_router(host) -> APIRouter:
                 generate_seconds=reply.generate_seconds,
                 thoughts=reply.thoughts,
                 unknown=reply.unknown,
+                praised=reply.praised,
             )
 
         return extra

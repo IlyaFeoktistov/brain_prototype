@@ -175,6 +175,11 @@ export function Chat({ header, thoughts, entries, progress, busy, reading, conne
             ) : null}
             {entry.reply && entry.reply.promptTokens > 0 && <small>{speed(entry.reply)}</small>}
             {entry.initiative && <small>заговорил сам: {entry.initiative}</small>}
+            {entry.reply?.praised ? (
+              <small title="слова сами стали наградой — выучено миндалиной на кнопках">
+                {entry.reply.praised > 0 ? "понял похвалу — закрепил прошлый ответ" : "понял, что ругают — ослабил прошлый ответ"}
+              </small>
+            ) : null}
             {entry === lastBrain && !entry.streaming && !entry.rated && !entry.initiative && entry.text !== "не знаю" && !busy && (
               <div className="feedback">
                 <button type="button" onClick={() => actions.feedback(1)}>

@@ -367,6 +367,9 @@ class Reply:
     unknown: list[str] = field(default_factory=list)
     # Ход мыслей: [{thought, verdict: ok|no|stop, score}].
     thoughts: list[dict] = field(default_factory=list)
+    # Слова реплики сами были наградой (+) или наказанием (−): условная
+    # награда через миндалину, 0 — нет.
+    praised: float = 0.0
 
 
 @dataclass
@@ -471,6 +474,8 @@ class LanguageInterface:
         self._feelings: dict[str, torch.Tensor] = {}
         # Выбор слова по вероятности (свой генератор — воспроизводимо).
         self._random = random.Random(cfg.seed)
+        # Сумма предвкушения миндалины по словам текущей реплики.
+        self._message_value = 0.0
         # Чувствительность клеток ядер нейромедиаторов.
         self._gains: dict[str, torch.Tensor] = {}
         # Неожиданные переходы: (проекция, клетки-источник, место B) —
@@ -591,6 +596,7 @@ class LanguageInterface:
             # Миндалина узнаёт слово — предвкушение хорошего или плохого
             # (наблюдение в замороженном мозге настроение не меняет).
             value = self.value(rates) if self.brain.plasticity else 0.0
+            self._message_value += value
 
             if value:
                 self._feel("anticipate", self.cfg.value_mood * value)
@@ -921,6 +927,25 @@ class LanguageInterface:
 
         if shown:
             self.on_grow(shown)
+
+    def _learned_praise(self) -> float:
+        """
+        Условная награда: слова реплики сами предвещают награду или
+        наказание (выучено миндалиной на кнопках) — залп или пауза VTA,
+        как на кнопку; закрепляет или ослабляет прошлый ответ мозга.
+        """
+
+        value = self._message_value
+
+        if not self.cfg.learned_praise or abs(value) < self.cfg.praise_value_min:
+            return 0.0
+
+        amplitude = self.cfg.feedback_dopamine * max(-1.0, min(1.0, value / self.cfg.praise_value_full))
+        self.brain.reward(self._dopamine(amplitude))
+        self._feel("feedback", amplitude)
+        self._rate_last_turn(amplitude)
+
+        return amplitude
 
     def _value_groups(self) -> tuple[torch.Tensor, torch.Tensor] | None:
         """Клетки «хорошо» и «плохо» (локальные индексы E миндалины)."""
@@ -1582,6 +1607,7 @@ class LanguageInterface:
 
         self.held_mood = self.emotions.mood.name
         report = ReadReport()
+        self._message_value = 0.0
         sentences = [s for s in self.sentences(text) if self.tokenize(s)]
         # Незнакомые слова — до того, как мозг их услышит в этой реплике.
         unknown = list(dict.fromkeys(
@@ -1618,6 +1644,7 @@ class LanguageInterface:
 
         self._sync()
         prompt_seconds = time.perf_counter() - start
+        praised = self._learned_praise()
 
         start = time.perf_counter()
         last = self.last_token
@@ -1691,6 +1718,7 @@ class LanguageInterface:
             confidence=[sure for _, sure in produced],
             unknown=unknown,
             thoughts=thoughts,
+            praised=praised,
         )
 
     def familiar(self, token: str) -> bool:

@@ -222,3 +222,25 @@ def test_amygdala_learns_what_leads_to_blame():
 
     assert value_of("компьютер") < before - 0.1
     assert abs(value_of("кошка")) < 0.05
+
+
+def test_praise_words_are_learned_not_scripted():
+    from tests.conftest import make_mind
+
+    mind = make_mind("small")
+    language = mind.language
+    language.read_text("Столица Франции Париж. Ты молодец.")
+
+    # Слово само по себе пока ничего не значит.
+    language.converse("Столица Франции")
+    assert language.converse("молодец").praised == 0.0
+
+    # Человек говорит «молодец» и жмёт «Верно» — врождённая награда.
+    for _ in range(4):
+        language.converse("Столица Франции")
+        language.converse("молодец")
+        language.converse("+")
+
+    # Теперь «молодец» — условная награда: дофамин без кнопки.
+    language.converse("Столица Франции")
+    assert language.converse("молодец").praised > 0

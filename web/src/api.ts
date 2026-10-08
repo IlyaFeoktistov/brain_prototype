@@ -27,6 +27,7 @@ interface Chunk {
     predicted?: number;
     prompt_seconds?: number;
     generate_seconds?: number;
+    praised?: number;
   };
 }
 
@@ -78,6 +79,7 @@ export async function chat(
       predicted: brain.predicted ?? 0,
       dopamine: brain.dopamine ?? 0,
       confidence: (brain.confidence as number[]) ?? [],
+      praised: brain.praised ?? 0,
     },
   };
 }

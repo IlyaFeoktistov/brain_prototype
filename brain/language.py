@@ -471,6 +471,11 @@ class LanguageInterface:
         self._prev_place: torch.Tensor | None = None
         self._place: torch.Tensor | None = None
         self._held: torch.Tensor | None = None
+        # Медленная тема: места слов прошлых фраз (тают по фразам) и
+        # куда они толкают смысл через выученные связи.
+        self._sentence_places: list[torch.Tensor] = []
+        self._topic: torch.Tensor | None = None
+        self._topic_drive: torch.Tensor | None = None
         # Чувство, зафиксированное на время текущей реплики.
         self.held_mood: str | None = None
         # След вспомненного разговора (прайминг ответа).
@@ -550,6 +555,9 @@ class LanguageInterface:
 
         if place is not None:
             self.brain.feel("association", place, self.cfg.concept_mv)
+
+            if self.brain.plasticity:
+                self._sentence_places.append(place)
             # Прайминг: недавно звучавшее слово легче всплывает снова.
             self._priming_trace()[place] = 1.0
 
@@ -626,6 +634,47 @@ class LanguageInterface:
         rates[self.context.E.start + held] = 0.0
 
         return rates
+
+    def _update_topic(self) -> None:
+        """
+        Тема — медленный след: места слов прошлых фраз, тают ×topic_decay
+        за фразу. Тема предлагает кандидатов: куда её слова толкают смысл
+        по выученным связям («говорили о Франции» → Париж, Европа).
+        """
+
+        if self.cfg.topic_gain <= 0 or not self.brain.plasticity:
+            self._sentence_places = []
+            return
+
+        if self._topic is None:
+            self._topic = torch.zeros(self.meaning.E.size, device=self.device)
+
+        self._topic.mul_(self.cfg.topic_decay)
+
+        for place in self._sentence_places:
+            self._topic[place] = 1.0
+
+        self._sentence_places = []
+
+        if not self._topic.any():
+            self._topic_drive = None
+            return
+
+        drive = self.brain.learned_drive(self._full(self._topic), "association")
+        norm = drive.norm()
+        self._topic_drive = drive / norm if norm > 0 else None
+
+    def _with_topic(self, drive: torch.Tensor) -> torch.Tensor:
+        """Ожидание + предложение темы (доля topic_gain силы ожидания)."""
+
+        if self._topic_drive is None or self.cfg.topic_gain <= 0:
+            return drive
+
+        if not drive.any():
+            # Начало мысли: предлагает одна тема.
+            return self._topic_drive.clone()
+
+        return drive + self.cfg.topic_gain * drive.norm() * self._topic_drive
 
     def _priming_trace(self) -> torch.Tensor:
         if getattr(self, "_priming", None) is None:
@@ -813,6 +862,7 @@ class LanguageInterface:
             self._hold_memory()
 
         self._priming_trace().mul_(self.cfg.priming_decay)
+        self._update_topic()
 
         if self._growth and self.sentences_lived % self.cfg.grow_every_sentences == 0:
             self._show_growth(self._growth)
@@ -857,6 +907,8 @@ class LanguageInterface:
         # кандидатов текущего слова, но не вставляет слова из ниоткуда.
         if self.cfg.priming_gain > 0:
             drive = drive * (1.0 + self.cfg.priming_gain * self._priming_trace())
+
+        drive = self._with_topic(drive)
 
         # Выстрелили бы только самые возбуждённые: торможение зоны
         # оставляет ~target_activity нейронов (k-WTA).
@@ -1934,9 +1986,11 @@ class LanguageInterface:
             self.saved = (i.last_rates, i.last_token, i.experienced_tokens, i.heard_in_phrase)
             # След памяти и прайминг — тоже с чистого листа и обратно.
             self.traces = (i._memory_trace().clone(), i._priming_trace().clone(), i._place)
+            self.topic = (i._topic, i._topic_drive, i._sentence_places)
             i._memory_trace().zero_()
             i._priming_trace().zero_()
             i._place = None
+            i._topic, i._topic_drive, i._sentence_places = None, None, []
             self.frozen = i.brain.frozen()
             self.frozen.__enter__()
             # Чистый контекст: пауза тишины, прошлое затухает само.
@@ -1951,6 +2005,7 @@ class LanguageInterface:
             memory, priming, i._place = self.traces
             i._memory_trace().copy_(memory)
             i._priming_trace().copy_(priming)
+            i._topic, i._topic_drive, i._sentence_places = self.topic
             return False
 
     def isolated(self) -> "_Isolated":

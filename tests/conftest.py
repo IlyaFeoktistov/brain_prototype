@@ -29,16 +29,31 @@ FACTS = """
 
 
 def make_mind(size: str = "tiny", **overrides) -> Mind:
-    cfg = BrainConfig()
-    cfg.size = size
-    cfg.save_path = os.path.join(_TMP, f"{size}.pt")
-    cfg.calibration_tokens = 150
+    """
+    Свежий откалиброванный мозг. Калибровка — основная цена (tiny 1.4 с,
+    small 3 с), загрузка — 0.03 / 0.1 с: каждый размер калибруется один
+    раз за сессию, тест получает загруженную копию. Копия — всегда, даже
+    в первый раз, чтобы все тесты стартовали из одного состояния.
+    """
 
-    for key, value in overrides.items():
-        setattr(cfg, key, value)
+    key = "-".join([size] + [f"{k}={v}" for k, v in sorted(overrides.items())])
+    born = os.path.join(_TMP, f"born-{key}.pt")
 
-    mind = Mind(cfg)
-    mind.calibrate()
+    if not os.path.exists(born):
+        cfg = BrainConfig()
+        cfg.size = size
+        cfg.calibration_tokens = 150
+
+        for name, value in overrides.items():
+            setattr(cfg, name, value)
+
+        mind = Mind(cfg)
+        mind.calibrate()
+        mind.save(born)
+
+    mind = Mind.load(born)
+    # Сохранение без пути не должно затирать общий «новорождённый» мозг.
+    mind.cfg.save_path = os.path.join(_TMP, f"{size}.pt")
 
     return mind
 

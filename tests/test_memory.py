@@ -95,11 +95,11 @@ def test_new_words_from_reading_survive_restart(mind, tmp_dir):
 
 
 def _bored(emotions):
-    emotions.valence, emotions.arousal, emotions.confusion, emotions.predictability = 0.0, 0.05, 0.0, 0.9
+    emotions.valence, emotions.arousal, emotions.confusion, emotions.novelty_hunger = 0.0, 0.05, 0.0, 0.9
 
 
 def _joyful(emotions):
-    emotions.valence, emotions.arousal, emotions.confusion, emotions.predictability = 0.6, 0.6, 0.0, 0.0
+    emotions.valence, emotions.arousal, emotions.confusion, emotions.novelty_hunger = 0.6, 0.6, 0.0, 0.0
 
 
 def test_initiative_is_learned_not_scripted():

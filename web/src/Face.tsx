@@ -62,7 +62,8 @@ export function Face({ emotion }: Props) {
   const surprised = emotion?.name === "удивление";
   const mouthCurve = v * 14;
   // Злость: внутренние концы бровей вниз; грусть: вверх.
-  const browInner = v < 0 ? (a > 0.4 ? 4 : -4) * Math.min(1, -v * 2) : 0;
+  const browInner =
+    emotion?.name === "злость" ? 7 : v < 0 ? (a > 0.4 ? 4 : -4) * Math.min(1, -v * 2) : 0;
 
   return (
     <figure className="face" aria-label={emotion ? `Мозг ${emotion.title}` : "Эмоции выключены"}>
@@ -102,7 +103,32 @@ export function Face({ emotion }: Props) {
           <span>Z</span>
         </span>
       )}
-      <figcaption>{emotion ? emotion.title : "эмоции выключены"}</figcaption>
+      <figcaption>
+        {emotion ? emotion.title : "эмоции выключены"}
+        {emotion?.drives && <Drives drives={emotion.drives} />}
+      </figcaption>
     </figure>
+  );
+}
+
+// Потребности: из их сдвигов складываются эмоции (скука, злость…).
+const DRIVES = [
+  { key: "novelty", label: "хочет нового", title: "растёт в тишине и монотонности → скука" },
+  { key: "social", label: "хочет одобрения", title: "похвала радует сильнее, когда её ждёт" },
+  { key: "frustration", label: "фрустрация", title: "был уверен — а отругали → злость" },
+] as const;
+
+function Drives({ drives }: { drives: NonNullable<EmotionState["drives"]> }) {
+  return (
+    <dl className="drives">
+      {DRIVES.map((drive) => (
+        <div key={drive.key} title={drive.title}>
+          <dt>{drive.label}</dt>
+          <dd className="drive-track" role="meter" aria-valuemin={0} aria-valuemax={1} aria-valuenow={drives[drive.key]} aria-label={drive.label}>
+            <span className={`drive-fill drive-${drive.key}`} style={{ width: `${drives[drive.key] * 100}%` }} />
+          </dd>
+        </div>
+      ))}
+    </dl>
   );
 }

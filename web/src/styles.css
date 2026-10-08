@@ -347,6 +347,49 @@ textarea {
   font: italic 500 16px/1.2 var(--serif);
 }
 
+.drives {
+  display: grid;
+  gap: 1px;
+  margin: 4px 0 0;
+  font: 11px/1.3 var(--sans);
+  color: var(--ink-soft);
+}
+
+.drives div {
+  display: grid;
+  grid-template-columns: 9.5em 56px;
+  align-items: center;
+}
+
+.drives dd {
+  margin: 0;
+}
+
+.drive-track {
+  display: block;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--rule);
+  overflow: hidden;
+}
+
+.drive-fill {
+  display: block;
+  height: 100%;
+  background: var(--hema);
+  transition: width 300ms ease-out;
+}
+
+.drive-frustration {
+  background: var(--eosin);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drive-fill {
+    transition: none;
+  }
+}
+
 .face-head {
   fill: var(--paper);
   stroke: var(--ink);

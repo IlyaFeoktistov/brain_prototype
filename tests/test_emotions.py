@@ -106,3 +106,41 @@ def test_emotional_episode_is_more_salient(mind):
     language._remember(["важная", "фраза"], 1.0)
     calm, excited = language.hippocampus.episodes[-2:]
     assert excited.salience > calm.salience
+
+
+def test_blamed_when_sure_gets_angry_when_unsure_gets_sad():
+    sure = Emotions()
+    sure.answered([0.9, 0.9])
+    sure.feedback(-6)
+    assert sure.mood.name == "злость"
+
+    unsure = Emotions()
+    unsure.answered([0.1])
+    unsure.confusion = 0.0
+    unsure.feedback(-6)
+    assert unsure.mood.name in ("досада", "грусть")
+
+
+def test_idle_and_monotony_make_bored():
+    idle = Emotions()
+    idle.relax(300)
+    assert idle.mood.name == "скука"
+
+    monotony = Emotions()
+    for _ in range(30):
+        monotony.heard(0.0, guessed=True)
+    hungry = monotony.novelty_hunger
+    assert hungry > 0.6
+
+    # Неожиданное утоляет голод по новому.
+    monotony.heard(6.0, guessed=False)
+    assert monotony.novelty_hunger < hungry - 0.25
+
+
+def test_praise_is_sweeter_when_wanted():
+    lonely, sated = Emotions(), Emotions()
+    lonely.social_need, sated.social_need = 1.0, 0.0
+    lonely.feedback(+6)
+    sated.feedback(+6)
+    assert lonely.valence > sated.valence
+    assert lonely.social_need < 1.0

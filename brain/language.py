@@ -474,6 +474,7 @@ class LanguageInterface:
         """
 
         self.brain.run(self.cfg.rest_ms)
+        self.brain.forget()
 
         self.sentences_lived += 1
 
@@ -744,6 +745,7 @@ class LanguageInterface:
         self.sleeping = True
         self.emotions.sleeping = True
         self.brain.modulation = 1.0
+        self.brain.consolidating = True
 
         try:
             for _ in range(replays):
@@ -776,6 +778,7 @@ class LanguageInterface:
         finally:
             self.sleeping = False
             self.emotions.sleeping = False
+            self.brain.consolidating = False
 
         self.hippocampus.forget_consolidated(self.cfg.consolidated_salience)
         self.emotions.sleepy = self.sleep_pressure >= self.cfg.sleepy_after_episodes

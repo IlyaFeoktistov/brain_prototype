@@ -138,3 +138,43 @@ def test_wandering_does_not_change_brain(mind):
     assert (weights == mind.brain.net_weight).all()
     assert len(language.hippocampus) == episodes
     assert not language.musing
+
+
+def test_fresh_memory_fades_without_sleep(mind):
+    brain = mind.brain
+    mind.language.read_text(FACTS)
+    fresh = float(brain.early.abs().sum())
+    assert fresh > 0
+
+    for _ in range(mind.cfg.early_ltp_half_life):
+        brain.forget()
+
+    # За полураспад свежая часть уходит вдвое (с поправкой на округление).
+    assert float(brain.early.abs().sum()) < fresh * 0.55
+
+
+def test_sleep_consolidates_fresh_memory(mind):
+    brain, language = mind.brain, mind.language
+    language.read_text(FACTS)
+    plastic = slice(0, brain.n_plastic)
+
+    def consolidated() -> float:
+        # Выученное, которое не затухнет: вес без свежей части.
+        return float((brain.net_weight[plastic] - brain.early - brain.birth_weight).abs().sum())
+
+    before = consolidated()
+    language.sleep(replays=len(language.hippocampus))
+
+    assert consolidated() > before * 2
+    assert brain.consolidating is False
+
+
+def test_forgetting_can_be_switched_off(mind):
+    brain = mind.brain
+    mind.language.read_text(FACTS)
+    mind.cfg.forgetting_enabled = False
+    weights = brain.net_weight.clone()
+
+    brain.forget()
+
+    assert (brain.net_weight == weights).all()

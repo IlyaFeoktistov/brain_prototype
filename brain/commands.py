@@ -40,6 +40,7 @@ HELP = """
   /reread [реплик]            перечитать переписку (по умолчанию 20 последних)
   /emotions on|off            включить / выключить эмоции
   /think on|off               размышлять про себя перед ответом (ход мыслей виден)
+  /forget on|off              свежая память затухает, пока сон её не закрепит
   /live on|off                живой режим (веб): думает в тишине, сам заговаривает
   /initiative on|off          в живом режиме — заговаривать первым
 
@@ -217,6 +218,12 @@ class Session:
             elif payload in ("off", "выкл"):
                 self.mind.cfg.thinking_enabled = False
             out(f"Размышление: {'включено' if self.mind.cfg.thinking_enabled else 'выключено'}")
+        elif command == "/forget":
+            if payload in ("on", "вкл"):
+                self.mind.cfg.forgetting_enabled = True
+            elif payload in ("off", "выкл"):
+                self.mind.cfg.forgetting_enabled = False
+            out(f"Забывание без сна: {'включено' if self.mind.cfg.forgetting_enabled else 'выключено'}")
         elif command == "/live":
             if payload in ("on", "вкл"):
                 self.mind.cfg.live_mode = True

@@ -127,6 +127,8 @@ class SpikingBrain:
         # Норадреналин: множитель пластичности от возбуждения (1 — спокойно).
         # Выставляет язык по эмоциям, во сне — 1.
         self.modulation = 1.0
+        # Сон: проигрывание закрепляет свежие изменения (capture).
+        self.consolidating = False
         # Наблюдатель (веб-интерфейс): нейроны, выстрелившие за CHUNK.
         self.on_chunk = None
 
@@ -449,11 +451,18 @@ class SpikingBrain:
         # это отклонение от него, а не от общего врождённого максимума.
         self.birth_weight = self.net_weight[: self.n_plastic].clone()
 
+        # Свежая (ранняя, early-LTP/LTD) часть выученного: входит в вес,
+        # но затухает к закреплённому весу, пока сон её не закрепит.
+        self.early = torch.zeros(self.n_plastic, device=self.device)
+
         for p in self.plastic:
             p.eligibility = self.eligibility[
                 p.offset: p.offset + p.weight.numel()
             ].view(p.weight.shape)
             p.birth = self.birth_weight[
+                p.offset: p.offset + p.weight.numel()
+            ].view(p.weight.shape)
+            p.early = self.early[
                 p.offset: p.offset + p.weight.numel()
             ].view(p.weight.shape)
 
@@ -766,10 +775,41 @@ class SpikingBrain:
         gain = self.cfg.dopamine_learning_rate * amplitude * self.modulation
 
         plastic = self.net_weight[: self.n_plastic]
-        plastic.add_(self.eligibility[: self.n_plastic], alpha=gain)
+        eligibility = self.eligibility[: self.n_plastic]
+        before = plastic.clone()
+        plastic.add_(eligibility, alpha=gain)
 
         for proj in self.plastic:
             proj.weight.clamp_(0.0, proj.cap)
+
+        # Изменение сначала свежее (early) — см. forget() и сон.
+        self.early.add_(plastic - before)
+
+        capture = self.cfg.sleep_capture
+
+        if self.consolidating and capture > 0:
+            # Synaptic tagging & capture: синапсы, участвовавшие в
+            # проигрывании (след eligibility), закрепляют свою свежую
+            # часть — пропорционально участию.
+            tag = eligibility.abs()
+            tag = tag / tag.max().clamp(min=1e-12)
+            self.early.mul_(1.0 - capture * tag)
+
+    def forget(self) -> None:
+        """
+        Свежая память затухает: ранняя часть изменений уходит к
+        закреплённому весу с полураспадом early_ltp_half_life фраз.
+        Закреплённое сном (capture) не затухает.
+        """
+
+        half_life = self.cfg.early_ltp_half_life
+
+        if not self.plasticity or not self.cfg.forgetting_enabled or half_life <= 0:
+            return
+
+        fade = 1.0 - 0.5 ** (1.0 / half_life)
+        self.net_weight[: self.n_plastic].sub_(self.early, alpha=fade)
+        self.early.mul_(1.0 - fade)
 
     def rewire(self) -> int:
         """
@@ -817,6 +857,7 @@ class SpikingBrain:
                 count, device=self.device, generator=self.generator
             )
             proj.birth[weak] = proj.weight[weak]
+            proj.early[weak] = 0.0
             proj.eligibility[weak] = 0.0
             grown += count
 
@@ -872,6 +913,7 @@ class SpikingBrain:
             )
             factor = (budget / total.clamp(min=1e-9)).clamp(max=1.0)
             proj.weight.mul_(factor[:, None])
+            proj.early.mul_(factor[:, None])
             scaled += int((factor < 1.0).sum())
 
         return scaled
@@ -1021,6 +1063,7 @@ class SpikingBrain:
                 "net_weight": self.net_weight,
                 "ear_pre": self.ear_pre,
                 "birth_weight": self.birth_weight,
+                "early": self.early,
                 "innate_mean": {p.name: p.innate_mean for p in self.plastic},
             },
             "generator": self.generator.get_state(),
@@ -1039,6 +1082,12 @@ class SpikingBrain:
 
         if "birth_weight" in synapses:
             self.birth_weight.copy_(synapses["birth_weight"])
+
+        # Старые сохранения: всё выученное считается закреплённым.
+        if "early" in synapses:
+            self.early.copy_(synapses["early"])
+        else:
+            self.early.zero_()
 
         for proj in self.plastic:
             proj.innate_mean = synapses["innate_mean"][proj.name]
@@ -1061,6 +1110,6 @@ class SpikingBrain:
             for t in (
                 self.net_pre, self.net_post, self.net_weight,
                 self.ear_pre, self.ear_post, self.ear_weight,
-                self.eligibility, self.out_all, self.out_plastic, self.in_plastic,
+                self.eligibility, self.early, self.out_all, self.out_plastic, self.in_plastic,
             )
         )

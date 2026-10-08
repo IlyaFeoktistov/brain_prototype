@@ -637,6 +637,30 @@ class LanguageInterface:
 
         return rates
 
+    def _with_closure(self, drive: torch.Tensor, rates: torch.Tensor) -> torch.Tensor:
+        """
+        Законченность мысли: «конец фразы» поддерживает контекст всей
+        фразы (вместе с вопросом) — прямой добавкой, а не умножением
+        местного вклада последнего слова. Конец — свойство фразы целиком:
+        «земля вращается вокруг» — не конец, «…вокруг солнца» — конец.
+        """
+
+        gain = self.cfg.closure_gain
+
+        if gain <= 0 or not self.cfg.sentence_end:
+            return drive
+
+        end = self.concepts.get(END, allocate=False)
+
+        if end is None:
+            return drive
+
+        whole = self.brain.learned_drive(rates, "association", source="prefrontal")
+        drive = drive.clone()
+        drive[end] += gain * whole[end]
+
+        return drive
+
     def _update_topic(self) -> None:
         """
         Тема — медленный след: места слов прошлых фраз, тают ×topic_decay
@@ -925,6 +949,7 @@ class LanguageInterface:
             drive = drive * (1.0 + self.cfg.priming_gain * self._priming_trace())
 
         drive = self._with_topic(drive)
+        drive = self._with_closure(drive, rates)
 
         # Выстрелили бы только самые возбуждённые: торможение зоны
         # оставляет ~target_activity нейронов (k-WTA).

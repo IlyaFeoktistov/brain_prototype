@@ -1045,6 +1045,10 @@ class SpikingBrain:
             else:
                 local += part
 
+        # Один источник — сырой вход от него (без смешения с контекстом).
+        if source is not None:
+            return local + context
+
         gain = self.cfg.context_gain
 
         if self.cfg.context_mode == "gain":

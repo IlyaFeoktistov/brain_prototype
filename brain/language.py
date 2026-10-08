@@ -945,7 +945,7 @@ class LanguageInterface:
         delta = rate * level * hit * (proj.cap - proj.weight[rows])
         proj.weight[rows] += delta
         # Как всё выученное — сначала свежее (не поспал — забыл).
-        proj.early[rows] += delta
+        proj.early[rows] += delta.to(proj.early.dtype)
 
     # ==============================================================
     # МИНДАЛИНА: какие слова к добру, какие к худу

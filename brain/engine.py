@@ -521,18 +521,24 @@ class SpikingBrain:
         self.n_synapses = self.net_weight.numel() - self.DUMMY_SYNAPSES
         self.n_plastic = sum(p.weight.numel() for p in self.plastic)
 
+        # Следы и свежая часть веса — в половинной точности (fp16): 2 Б
+        # вместо 4 на каждый пластичный синапс; сам вес — fp32 (мелкие
+        # шаги обучения в fp16 терялись бы).
         # Хвост — фиктивные ячейки для пустых мест таблиц.
         self.eligibility = torch.zeros(
-            self.n_plastic + self.DUMMY_SYNAPSES, device=self.device
+            self.n_plastic + self.DUMMY_SYNAPSES, dtype=torch.float16, device=self.device
         )
 
         # Вес каждого пластичного синапса при рождении: выученное —
         # это отклонение от него, а не от общего врождённого максимума.
+        # [замер] в fp16 не годится: выученное = вес − вес при рождении, и
+        # округление сравнимо с мелкими выученными шагами (тест «скука →
+        # скучно» ломался).
         self.birth_weight = self.net_weight[: self.n_plastic].clone()
 
         # Свежая (ранняя, early-LTP/LTD) часть выученного: входит в вес,
         # но затухает к закреплённому весу, пока сон её не закрепит.
-        self.early = torch.zeros(self.n_plastic, device=self.device)
+        self.early = torch.zeros(self.n_plastic, dtype=torch.float16, device=self.device)
 
         for p in self.plastic:
             p.eligibility = self.eligibility[
@@ -673,7 +679,7 @@ class SpikingBrain:
             self.eligibility.index_add_(
                 0,
                 synapses,
-                ltd.flatten() * (-cfg.stdp_a_minus / self.eligibility_scale),
+                (ltd.flatten() * (-cfg.stdp_a_minus / self.eligibility_scale)).to(self.eligibility.dtype),
             )
 
         self.i_syn.mul_(self.decay_syn).add_(drive * self.syn_scale)
@@ -728,8 +734,10 @@ class SpikingBrain:
             self.eligibility.index_add_(
                 0,
                 synapses,
-                self.ltp_kernel.index_select(0, pre)
-                * (cfg.stdp_a_plus / self.eligibility_scale),
+                (
+                    self.ltp_kernel.index_select(0, pre)
+                    * (cfg.stdp_a_plus / self.eligibility_scale)
+                ).to(self.eligibility.dtype),
             )
             self.eligibility_scale.mul_(self.decay_eligibility)
 

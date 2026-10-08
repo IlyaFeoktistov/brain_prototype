@@ -654,22 +654,29 @@ class LanguageInterface:
 
         return drive
 
-    def rest(self) -> None:
+    def rest(self, connected: bool = False) -> None:
         """
         Тишина между фразами: гомеостаз возвращает синапсы
         в рабочий диапазон. Рабочая память затухает сама.
+
+        connected=True — пауза внутри связного текста: мысль не
+        обрывается, рабочая память лишь слабеет, и первое слово следующей
+        фразы предсказывается и учится из контекста прошлой. Реплики
+        разговора и сны разделяются полностью.
         """
 
         self.brain.run(self.cfg.rest_ms)
         self.brain.forget()
 
         self.sentences_lived += 1
-        # Новая фраза — переход от прошлой не учится (см. converse),
-        # и рабочая память отпускает прошлую фразу.
-        self._place = None
+
+        if not connected:
+            # Новая мысль — переход от прошлой не учится (см. converse).
+            self._place = None
 
         if self.cfg.memory_places:
-            self._memory_trace().mul_(self.cfg.memory_rest_decay)
+            decay = self.cfg.text_memory_decay if connected else self.cfg.memory_rest_decay
+            self._memory_trace().mul_(decay)
             self._hold_memory()
 
         self._priming_trace().mul_(self.cfg.priming_decay)
@@ -690,8 +697,10 @@ class LanguageInterface:
         ):
             self.brain.rewire()
 
-        self.last_rates = None
-        self.last_token = None
+        if not connected:
+            self.last_rates = None
+            self.last_token = None
+
         self.heard_in_phrase = []
 
     # ==============================================================
@@ -957,7 +966,7 @@ class LanguageInterface:
             self.held_mood = None
             self._remember(tokens, salience)
             self._note_new_words(tokens, new_before)
-            self.rest()
+            self.rest(connected=self.cfg.connected_text)
 
             if progress and report.sentences % 20 == 0:
                 progress(report)

@@ -1492,6 +1492,25 @@ class LanguageInterface:
 
         return rates
 
+    def _spontaneous(self, ms: float) -> tuple[str, float] | None:
+        """
+        Ворота «говори» открыты без звука: что выстрелит само от того,
+        что сейчас внутри (чувство, память). Это не опыт — не учится.
+        """
+
+        amplitude = torch.full((self.meaning.E.size,), float(self.cfg.speak_gate_mv), device=self.device)
+        self.brain.feel("association", self._everyone, amplitude)
+        plasticity = self.brain.plasticity
+        self.brain.plasticity = False
+
+        try:
+            rates = self.brain.observe(ms)
+        finally:
+            self.brain.plasticity = plasticity
+            self.brain.feel("association", None, 0.0)
+
+        return self._spoken(rates, "")
+
     def _spoken(self, rates: torch.Tensor, heard: str) -> tuple[str, float] | None:
         """
         Что выстрелило само при открытых воротах: место с наибольшим
@@ -2027,6 +2046,13 @@ class LanguageInterface:
         if first is None and not (self.wonder and mood in ("любопытство", "удивление")):
             # Первое слово должно разбудить само чувство (через выученные
             # связи «чувство -> смысл»), а не случайное воспоминание.
+            if self.cfg.neural_speech:
+                # Чувство держится, ворота «говори» открыты, звука нет:
+                # какое место выстрелит само — с того и начнёт.
+                spoken = self._spontaneous(self.cfg.feel_ms)
+                first = [spoken[0]] if spoken and spoken[0] != END else None
+
+        if first is None and not self.cfg.neural_speech and not (self.wonder and mood in ("любопытство", "удивление")):
             ranked = self.semantic.decode(
                 self.brain.learned_drive(rates, "association", source="limbic"), top=Confidence.TOP
             )

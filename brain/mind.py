@@ -5,7 +5,7 @@ import time
 
 import torch
 
-from brain.config import BrainConfig
+from brain.config import FEATURES, BrainConfig
 from brain.engine import SpikingBrain
 from brain.language import LanguageInterface
 
@@ -24,6 +24,19 @@ class Mind:
         self.cfg = cfg
         self.brain = SpikingBrain(cfg)
         self.language = LanguageInterface(self.brain, cfg)
+
+    def features(self) -> dict[str, bool]:
+        return {name: bool(getattr(self.cfg, name)) for name in FEATURES}
+
+    def set_feature(self, name: str, enabled: bool) -> None:
+        if name not in FEATURES:
+            raise KeyError(name)
+
+        setattr(self.cfg, name, enabled)
+
+        # Флаг читается при сборке шага — собрать заново.
+        if FEATURES[name][1]:
+            self.brain.recompile()
 
     def calibrate(self) -> None:
         """

@@ -54,6 +54,12 @@ export interface EmotionEvent extends EmotionState {
   type: "emotion";
 }
 
+export interface Feature {
+  name: string;
+  title: string;
+  enabled: boolean;
+}
+
 export interface Status {
   type: "status";
   emotionsEnabled: boolean;
@@ -64,6 +70,8 @@ export interface Status {
   thinking: boolean;
   initiative: boolean;
   live: boolean;
+  // Функции мозга, которые можно включать на ходу (config.FEATURES).
+  features?: Feature[];
   // Очередь фонового чтения.
   reading: { name: string; done: number; total: number }[];
   busy: boolean;

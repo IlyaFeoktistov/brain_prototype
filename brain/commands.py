@@ -13,6 +13,7 @@ import threading
 import time
 from typing import Callable
 
+from brain.config import FEATURES
 from brain.language import ReadReport, Reply
 from brain.mind import Mind
 
@@ -43,6 +44,7 @@ HELP = """
   /forget on|off              свежая память затухает, пока сон её не закрепит
   /live on|off                живой режим (веб): думает в тишине, сам заговаривает
   /initiative on|off          в живом режиме — заговаривать первым
+  /feature [имя on|off]       все функции мозга: список / включить / выключить
 
   /brains                     список сохранённых мозгов
   /save [путь]  /load имя     сохранить / переключиться на другой мозг
@@ -239,6 +241,8 @@ class Session:
             elif payload in ("off", "выкл"):
                 self.mind.cfg.initiative_enabled = False
             out(f"Заговаривать первым: {'да' if self.mind.cfg.initiative_enabled else 'нет'}")
+        elif command == "/feature":
+            out(self.feature(payload))
         elif command == "/emotions":
             if payload in ("on", "вкл"):
                 self.mind.cfg.emotions_enabled = True
@@ -353,6 +357,24 @@ class Session:
         self.autosave(force=True)
 
         return report
+
+    def feature(self, payload: str) -> str:
+        """/feature — список функций; /feature имя on|off — переключить."""
+
+        parts = payload.split()
+
+        if len(parts) == 2 and parts[1] in ("on", "off", "вкл", "выкл"):
+            try:
+                self.mind.set_feature(parts[0], parts[1] in ("on", "вкл"))
+            except KeyError:
+                return f"Нет такой функции: {parts[0]} (список — /feature)"
+
+        lines = ["Функции мозга (/feature имя on|off):"]
+
+        for name, enabled in self.mind.features().items():
+            lines.append(f"  {'●' if enabled else '○'} {name:32s} {FEATURES[name][0]}")
+
+        return "\n".join(lines)
 
     def autosave(self, force: bool = False) -> None:
         """Сохранить мозг, но не чаще раза в autosave_minutes (большой мозг весит ГБ)."""

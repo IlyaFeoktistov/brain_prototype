@@ -48,6 +48,36 @@ def test_emotions_toggle_command(mind):
     assert mind.cfg.emotions_enabled is True
 
 
+def test_feature_command_lists_and_toggles(mind):
+    session, output = make_session(mind)
+    session.handle("/feature")
+    assert "dendritic_context" in output[-1][1]
+
+    session.handle("/feature thinking_enabled on")
+    assert mind.cfg.thinking_enabled is True
+    session.handle("/feature thinking_enabled off")
+    assert mind.cfg.thinking_enabled is False
+
+    session.handle("/feature нет_такой on")
+    assert "Нет такой функции" in output[-1][1]
+
+
+def test_dendritic_context_switches_on_the_fly(mind):
+    """Флаг меняет шаг нейрона: после переключения мозг читает и отвечает."""
+
+    session, _ = make_session(mind)
+    mind.language.read_text("Столица Франции Париж. Столица Италии Рим.")
+
+    session.handle("/feature dendritic_context on")
+    assert mind.cfg.dendritic_context is True
+    report = mind.language.read_text("Столица Франции Париж.")
+    assert report.tokens > 0
+    assert float(mind.brain.i_dend.abs().sum()) > 0
+
+    session.handle("/feature dendritic_context off")
+    mind.language.read_text("Столица Италии Рим.")
+
+
 def test_quit_returns_false(mind):
     session, _ = make_session(mind)
     assert session.handle("/quit") is False

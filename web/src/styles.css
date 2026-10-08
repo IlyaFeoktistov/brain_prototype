@@ -485,6 +485,33 @@ textarea {
   cursor: pointer;
 }
 
+/* ---- функции мозга (выпадающий список в шапке) ---- */
+
+.features {
+  position: relative;
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+
+.features summary {
+  cursor: pointer;
+}
+
+.features-list {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 6px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 300px;
+  padding: 10px 12px;
+  background: var(--paper, #fff);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+}
+
 /* ---- лента слов ---- */
 
 .timeline {

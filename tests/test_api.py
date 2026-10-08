@@ -135,3 +135,14 @@ def test_neuron_card(client):
     assert client.get("/api/neuron/999999999").status_code == 404
     # Карточка — только чтение.
     assert client.get("/api/state").json()["tokens"] == state
+
+
+def test_features_list_and_toggle(client):
+    features = {f["name"]: f for f in client.get("/api/features").json()}
+    assert "dendritic_context" in features and features["emotions_enabled"]["title"]
+
+    after = client.post("/api/features", json={"name": "thinking_enabled", "enabled": True}).json()
+    assert {f["name"]: f["enabled"] for f in after}["thinking_enabled"] is True
+    client.post("/api/features", json={"name": "thinking_enabled", "enabled": False})
+
+    assert client.post("/api/features", json={"name": "нет", "enabled": True}).status_code == 404

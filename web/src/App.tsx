@@ -198,6 +198,24 @@ export function App() {
             </select>
           </label>
         )}
+        {status?.features && (
+          <details className="features">
+            <summary>Функции</summary>
+            <div className="features-list">
+              {status.features.map((feature) => (
+                <label key={feature.name} className="toggle" title={feature.name}>
+                  <input
+                    type="checkbox"
+                    checked={feature.enabled}
+                    disabled={!connected}
+                    onChange={(event) => api.setFeature(feature.name, event.target.checked).catch(report)}
+                  />
+                  {feature.title}
+                </label>
+              ))}
+            </div>
+          </details>
+        )}
         {anatomy ? (
           <p className="vitals">
             <span>{anatomy.neurons.toLocaleString("ru")} нейронов</span>

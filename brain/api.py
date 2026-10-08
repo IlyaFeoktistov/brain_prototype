@@ -21,6 +21,8 @@ llama.cpp-совместимые:
     POST /api/live      {enabled}   живой режим: думает в тишине, сам заговаривает
     POST /api/initiative {enabled}  заговаривать первым (реплики — WebSocket
                                     событие "initiative")
+    GET  /api/features              функции мозга: [{name, title, enabled}]
+    POST /api/features {name,enabled} включить / выключить функцию
     POST /api/stop                  остановить чтение
 
 Живая активность нейронов — WebSocket /ws (см. brain/server.py).
@@ -39,6 +41,8 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+
+from brain.config import FEATURES
 
 
 class ChatMessage(BaseModel):
@@ -87,6 +91,18 @@ class ThinkingRequest(BaseModel):
 
 class InitiativeRequest(BaseModel):
     enabled: bool
+
+
+class FeatureRequest(BaseModel):
+    name: str
+    enabled: bool
+
+
+def _features(session) -> list[dict]:
+    return [
+        {"name": name, "title": FEATURES[name][0], "enabled": enabled}
+        for name, enabled in session.mind.features().items()
+    ]
 
 
 def _sse(data: dict | str) -> str:
@@ -395,6 +411,23 @@ def build_router(host) -> APIRouter:
         def run(session):
             session.mind.cfg.thinking_enabled = request.enabled
             return {"thinking": request.enabled}
+
+        return await call(run)
+
+    @router.get("/api/features")
+    async def features():
+        def run(session):
+            return _features(session)
+
+        return await call(run)
+
+    @router.post("/api/features")
+    async def set_feature(request: FeatureRequest):
+        def run(session):
+            if request.name not in FEATURES:
+                raise HTTPException(404, f"Нет такой функции: {request.name}")
+            session.mind.set_feature(request.name, request.enabled)
+            return _features(session)
 
         return await call(run)
 

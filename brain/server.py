@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 
 from brain.commands import Session, report_line
 from brain.language import ReadReport
-from brain.config import BrainConfig
+from brain.config import FEATURES, BrainConfig
 from brain.language import Reply, Step
 from brain.mind import Mind
 from brain.api import build_router
@@ -231,6 +231,10 @@ class BrainHost:
             "thinking": self.mind.cfg.thinking_enabled,
             "initiative": self.mind.cfg.initiative_enabled,
             "live": self.mind.cfg.live_mode,
+            "features": [
+                {"name": name, "title": FEATURES[name][0], "enabled": enabled}
+                for name, enabled in self.mind.features().items()
+            ],
             "reading": [
                 {"name": item["name"], "done": item["done"], "total": len(item["sentences"])}
                 for item in self.reading

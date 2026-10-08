@@ -99,6 +99,8 @@ export const setEmotions = (enabled: boolean) => post("/api/emotions", { enabled
 
 export const setLive = (enabled: boolean) => post("/api/live", { enabled });
 
+export const setFeature = (name: string, enabled: boolean) => post("/api/features", { name, enabled });
+
 export const stop = () => post("/api/stop", {});
 
 export async function neuron(index: number): Promise<NeuronCard> {

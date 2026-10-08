@@ -238,6 +238,15 @@ class SpikingBrain:
         self.decay_m = dt / self.tau_m
         self.decay_syn = torch.exp(-dt / self.tau_syn)
         self.decay_slow = math.exp(-dt / cfg.memory_tau_syn)
+        self.decay_dend = math.exp(-dt / cfg.dendrite_tau_ms)
+        # Дендритный вход: от E рабочей памяти к E смысловой коры.
+        self.dendrite_pre = torch.zeros(self.n_slots, dtype=torch.bool, device=self.device)
+        self.dendrite_post = torch.zeros(self.n_slots, dtype=torch.bool, device=self.device)
+        for area in self.areas.values():
+            if area.kind == "memory":
+                self.dendrite_pre[area.E.slice] = True
+        if "association" in self.areas:
+            self.dendrite_post[self.areas["association"].E.slice] = True
         self.slow_scale = self.slow_gain * self.tau_m / cfg.memory_tau_syn
         # Затухание адаптации: у ядер может быть своё (медленное) время.
         self.decay_adapt = torch.full(
@@ -554,6 +563,8 @@ class SpikingBrain:
         self.v = cfg.v_rest + self._uniform((self.n_slots,), 0.0, 10.0)
         self.i_syn = z()
         self.i_slow = z()
+        # Дендритный ток (контекст из рабочей памяти, см. dendritic_context).
+        self.i_dend = z()
         self.adapt = z()
         self.refractory = z()
         self.spikes = z()
@@ -624,12 +635,22 @@ class SpikingBrain:
         # ---- синаптический вход от спайков прошлого шага ----
         fired_before = self._fired()
 
-        synapses = self.out_all.index_select(0, fired_before).flatten()
-        drive.index_add_(
-            0,
-            self.net_post.index_select(0, synapses),
-            self.net_weight.index_select(0, synapses),
-        )
+        rows = self.out_all.index_select(0, fired_before)
+        synapses = rows.flatten()
+        post = self.net_post.index_select(0, synapses)
+        weight = self.net_weight.index_select(0, synapses)
+
+        if cfg.dendritic_context:
+            # Рабочая память -> смысл: на дальний дендрит, не в сому.
+            to_dendrite = (
+                self.dendrite_pre.index_select(0, fired_before)[:, None].expand_as(rows).flatten()
+                & self.dendrite_post.index_select(0, post)
+            )
+            dendrite = torch.zeros_like(drive).index_add_(0, post, weight * to_dendrite)
+            self.i_dend.mul_(self.decay_dend).add_(dendrite)
+            weight = weight * ~to_dendrite
+
+        drive.index_add_(0, post, weight)
 
         heard = heard_now.index_select(0, self.ear_pre)
         drive.index_add_(0, self.ear_post, heard * self.ear_weight)
@@ -661,9 +682,17 @@ class SpikingBrain:
             0.0,
         )
 
+        synaptic = self.i_syn + self.i_slow
+
+        if cfg.dendritic_context:
+            # Плато на дендрите усиливает возбуждающий вход сомы:
+            # контекст выбирает среди того, что предлагает текущее слово.
+            plateau = self.i_dend / (self.i_dend + cfg.dendrite_half_mv)
+            synaptic = synaptic + cfg.dendrite_gain * plateau * synaptic.clamp(min=0.0)
+
         dv = (
             cfg.v_rest - self.v + exp_term - self.adapt
-            + self.i_syn + self.i_slow + self.bias + self.interoception
+            + synaptic + self.bias + self.interoception
         ) * self.decay_m
         v = torch.where(self.refractory <= 0, self.v + dv, self.v)
         self.refractory.sub_(cfg.dt_ms)
@@ -738,6 +767,12 @@ class SpikingBrain:
             self._compiled = torch.compile(self._step, dynamic=False)
 
         return self._compiled
+
+    def recompile(self) -> None:
+        """Сбросить собранный шаг и CUDA Graph (поменялась настройка шага)."""
+
+        self._compiled = None
+        self._graphs = {}
 
     def _capture(self, plastic: bool) -> torch.cuda.CUDAGraph:
         """Записать CHUNK шагов в CUDA Graph (один раз на режим)."""
@@ -1125,7 +1160,7 @@ class SpikingBrain:
     # читает и пишет по фиксированным адресам. Поэтому их
     # всегда восстанавливают через copy_, а не присваиванием.
     _DYNAMIC = (
-        "v", "i_syn", "i_slow", "adapt", "refractory", "spikes",
+        "v", "i_syn", "i_slow", "i_dend", "adapt", "refractory", "spikes",
         "trace_pre", "trace_pre_rise", "ltp_kernel", "trace_post", "counts", "eligibility",
         "eligibility_scale", "dropped", "bias", "interoception",
     )

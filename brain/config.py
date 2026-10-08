@@ -216,6 +216,25 @@ def default_pathways() -> list[PathwaySpec]:
     ]
 
 
+# Функции мозга, которые можно включать и выключать на ходу (команда
+# /feature в чате, панель «Функции» в вебе, POST /api/features).
+# name -> (название, меняет ли шаг нейрона: тогда шаг пересобирается).
+FEATURES: dict[str, tuple[str, bool]] = {
+    "emotions_enabled": ("эмоции", False),
+    "thinking_enabled": ("размышление перед ответом", False),
+    "live_mode": ("живой режим (думает в тишине)", False),
+    "initiative_enabled": ("заговаривать первым", False),
+    "forgetting_enabled": ("забывание без сна", False),
+    "nap_while_reading": ("дремать посреди чтения", False),
+    "sleep_when_idle": ("засыпать в тишине", False),
+    "ask_about_unknown": ("спрашивать про незнакомые слова", False),
+    "grow_on_surprise": ("рост синапсов на неожиданном", False),
+    "structural_plasticity_enabled": ("отмирание и рост синапсов", False),
+    "synaptic_scaling_enabled": ("гомеостаз синапсов", False),
+    "dendritic_context": ("контекст на дендритах (конъюнкция в нейронах)", True),
+}
+
+
 @dataclass
 class BrainConfig:
     # ------------------------------------------------------------------
@@ -378,6 +397,22 @@ class BrainConfig:
     # [замер] covariance не лучше stdp (MRR памяти 0.164 против 0.18).
     context_rule: str = "stdp"
     context_hebb_gain: float = 1.0
+    # Контекст как конъюнкция в самих нейронах (дендритное NMDA-плато):
+    # синапсы «рабочая память → смысл» приходят на дальний дендрит и
+    # клетку сами не возбуждают, а усиливают её возбуждающий вход:
+    #     вход × (1 + dendrite_gain · плато),
+    #     плато = i_dend / (i_dend + dendrite_half_mv).
+    # То же, что режим gain у формулы ожидания, но в спайках — нужно,
+    # чтобы слово выбирали нейроны (ROADMAP P0 «без if-else»).
+    # [не подбиралось] gain 2 — как context_gain; τ 100 мс — плато NMDA.
+    # [замер] medium, 2 прохода train-data: выбор слова спайками (гонка к
+    # порогу) 10/26 → 17/26, молчит 8 → 2; но формула ожидания (она пока
+    # отвечает в чате) 25/36 → 15/36 — рассчитана на сложение контекста.
+    # Включится по умолчанию вместе с ответом через спайки.
+    dendritic_context: bool = False
+    dendrite_gain: float = 2.0
+    dendrite_half_mv: float = 2.0
+    dendrite_tau_ms: float = 100.0
 
     # Homeostatic synaptic scaling (Turrigiano): суммарный входной
     # пластичный вес нейрона не больше budget * врождённая сумма.

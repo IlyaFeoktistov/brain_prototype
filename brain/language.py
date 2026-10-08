@@ -16,6 +16,12 @@ from brain.hippocampus import Hippocampus
 from brain.limbic import FACES, Emotions
 
 
+# Конец фразы — короткий звук паузы со своим местом в смысле: мозг
+# учит, после чего мысль кончается, как любой другой переход; в ответе
+# победил «конец» — замолкает. Без правил языка: это просто пауза.
+END = "."
+
+
 def _cosine(a: torch.Tensor, b: torch.Tensor) -> float:
     na = a.norm()
     nb = b.norm()
@@ -265,7 +271,12 @@ class Confidence:
     выученное — с низкой.
     """
 
-    EDGES = (1.1, 1.2, 1.3, 1.5, 1.8, 2.2, 3.0)
+    # [замер] с местами слов ожидания стали в разы резче (8–19), и при
+    # старой шкале до 3.0 90% проверок падали в одну корзину —
+    # уверенность у всех слов была одна (0.67). Шкала продлена до 17
+    # (резкость не больше 20: лучший из 20 при прочих нулях).
+    EDGES = (1.1, 1.2, 1.3, 1.5, 1.8, 2.2, 3.0, 4.5, 6.5, 9.0, 12.0, 14.5, 17.0)
+    MIN_SAMPLES = 20
 
     def __init__(self):
         self.hits = [0] * (len(self.EDGES) + 1)
@@ -296,19 +307,30 @@ class Confidence:
         """Доля сбывшихся ожиданий при такой резкости (0..1)."""
 
         # Сглаживание (Лаплас) + монотонность: более резкое
-        # ожидание не может быть менее надёжным, чем мягкое.
-        probability = 0.0
+        # ожидание не может быть менее надёжным, чем мягкое. В максимум
+        # идут только корзины с опытом от MIN_SAMPLES проверок.
+        # [замер] без порога одна удачная проверка в корзине (1 из 1 →
+        # 0.67) поднимала уверенность всех слов выше неё до 0.67.
+        overall = (sum(self.hits) + 1) / (sum(self.total) + 2)
+        probability = None
 
         for index in range(self._bin(margin) + 1):
-            estimate = (self.hits[index] + 1) / (self.total[index] + 2)
-            probability = max(probability, estimate) if index else estimate
+            if self.total[index] < self.MIN_SAMPLES:
+                continue
 
-        return probability
+            estimate = (self.hits[index] + 1) / (self.total[index] + 2)
+            probability = estimate if probability is None else max(probability, estimate)
+
+        return overall if probability is None else probability
 
     def state_dict(self) -> dict:
         return {"hits": self.hits, "total": self.total}
 
     def load_state_dict(self, state: dict) -> None:
+        # Другая шкала (старое сохранение) — опыт собирается заново.
+        if len(state["hits"]) != len(self.hits):
+            return
+
         self.hits = list(state["hits"])
         self.total = list(state["total"])
 
@@ -548,7 +570,16 @@ class LanguageInterface:
             self._learn_form(rates)
 
         if learn_forms:
-            self.semantic.observe(token, self._area(rates, self.meaning))
+            meaning = self._area(rates, self.meaning)
+
+            # Портрет слова — его место, а не всё, что ещё не погасло от
+            # прошлых слов (иначе «конец фразы» похож на что угодно).
+            if place is not None:
+                own = torch.zeros_like(meaning)
+                own[place] = meaning[place]
+                meaning = own
+
+            self.semantic.observe(token, meaning)
             self.mouth.observe(token, self._area(rates, self.motor))
             self.experienced_tokens += 1
 
@@ -892,8 +923,8 @@ class LanguageInterface:
             new_before = [t for t in tokens if not self.familiar(t)]
             self.held_mood = self.emotions.mood.name
 
-            for step in self.experience(tokens):
-                report.tokens += 1
+            for step in self.experience(self._ended(tokens)):
+                report.tokens += step.token != END
                 report.dopamine += step.dopamine
                 salience += step.dopamine
 
@@ -987,8 +1018,8 @@ class LanguageInterface:
 
                 salience = 0.0
 
-                for step in self.experience(episode.tokens):
-                    report.tokens += 1
+                for step in self.experience(self._ended(episode.tokens)):
+                    report.tokens += step.token != END
                     report.dopamine += step.dopamine
                     salience += step.dopamine
 
@@ -1092,8 +1123,12 @@ class LanguageInterface:
         for i, sentence in enumerate(sentences):
             salience = 0.0
 
-            for step in self.experience(self.tokenize(sentence)):
-                report.tokens += 1
+            # Последняя фраза человека не кончается: от неё мозг отвечает.
+            tokens = self.tokenize(sentence)
+            last = i == len(sentences) - 1
+
+            for step in self.experience(tokens if last else self._ended(tokens)):
+                report.tokens += step.token != END
                 report.dopamine += step.dopamine
                 salience += step.dopamine
 
@@ -1465,6 +1500,9 @@ class LanguageInterface:
         if self.device.type == "cuda":
             torch.cuda.synchronize()
 
+    def _ended(self, tokens: list[str]) -> list[str]:
+        return tokens + [END] if self.cfg.sentence_end and tokens else tokens
+
     def _pick(self, ranked: list[tuple[str, float]], sample: bool) -> str:
         """
         Какое слово сказать. sample=False — самое вероятное (экзамен,
@@ -1514,6 +1552,10 @@ class LanguageInterface:
             score = ranked[0][1]
             token = self._pick(ranked, sample)
             margin = Confidence.margin(ranked)
+
+            # Мысль кончилась.
+            if token == END:
+                break
             sure = self.confidence(margin)
 
             if score < self.cfg.generate_min_score or margin < self.cfg.generate_min_margin:
@@ -1601,7 +1643,7 @@ class LanguageInterface:
 
         for _ in range(cfg.think_max_steps):
             ranked = self.semantic.decode(
-                self._with_recall(self.expectation(self.last_rates)), exclude=recent | rejected, top=20
+                self._with_recall(self.expectation(self.last_rates)), exclude=recent | rejected | {END}, top=20
             )
 
             if not ranked:

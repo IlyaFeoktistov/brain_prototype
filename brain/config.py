@@ -374,6 +374,11 @@ class BrainConfig:
     # Контекст тоже прорастает: от самых активных клеток рабочей памяти
     # (до нового слова) к месту B. [не подбиралось] 32 клетки.
     context_grow_cells: int = 64
+    # Путь «память → смысл» учится по совпадению под дофамином
+    # (language._learn_context): Δw = rate × дофамин × (cap − w) для
+    # связей от активных клеток контекста к месту нового слова.
+    # 0 — только STDP. [не подбиралось] 0.3.
+    context_hebb_rate: float = 0.3
 
     structural_plasticity_enabled: bool = True
     prune_fraction: float = 0.25

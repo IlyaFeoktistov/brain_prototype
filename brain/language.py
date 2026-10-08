@@ -622,6 +622,33 @@ class LanguageInterface:
         cells = torch.arange(self.context.E.size, device=self.device)
         self.brain.feel("prefrontal", cells, self._memory_trace())
 
+    def _learn_context(self, context: torch.Tensor, place: torch.Tensor, dopamine: float) -> None:
+        """
+        Путь «память → смысл» учится по совпадению под дофамином:
+        связи от активных клеток контекста к месту нового слова крепнут
+        пропорционально дофамину. STDP тут не работает: клетки памяти
+        стреляют непрерывно, и сбалансированное окно даёт LTP ≈ LTD.
+        """
+
+        rate = self.cfg.context_hebb_rate
+
+        if rate <= 0 or not self.brain.plasticity:
+            return
+
+        proj = next((p for p in self.brain.plastic if p.name == "prefrontal -> association"), None)
+
+        if proj is None:
+            return
+
+        source = self.context.E.start + context
+        rows = place
+        hit = torch.isin(proj.pre[rows], source.to(proj.pre.dtype)).float()
+        level = dopamine / self.cfg.surprise_dopamine_gain
+        delta = rate * level * hit * (proj.cap - proj.weight[rows])
+        proj.weight[rows] += delta
+        # Как всё выученное — сначала свежее (не поспал — забыл).
+        proj.early[rows] += delta
+
     def _form_path(self):
         return next(
             (p for p in self.brain.projections if p.name == "auditory -> association"), None
@@ -898,6 +925,7 @@ class LanguageInterface:
 
                     if context is not None and len(context):
                         self._growth.append(("prefrontal -> association", context, self._place))
+                        self._learn_context(context, self._place, step.dopamine)
 
                 # Неожиданный переход закрепляется: dopamine
                 # превращает eligibility traces только что

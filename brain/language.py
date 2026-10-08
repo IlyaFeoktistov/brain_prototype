@@ -51,7 +51,8 @@ class Ear:
         raster = torch.zeros(
             pattern.shape[0], self.cfg.sensory_size, device=self.device
         )
-        raster[:, channels] = pattern
+        # Сложение, а не присваивание: повторная буква повторяет каналы.
+        raster.index_add_(1, channels, pattern).clamp_(max=1.0)
 
         return raster
 
@@ -68,18 +69,17 @@ class Ear:
             return code
 
         cfg = self.cfg
-        seed = int.from_bytes(
-            hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest(),
-            "little",
-        ) & 0x7FFFFFFFFFFFFFFF
-        rng = torch.Generator().manual_seed(seed)
-
         steps = int(round(cfg.stimulus_ms / cfg.dt_ms))
-        channels = torch.randperm(cfg.sensory_size, generator=rng)[
-            : cfg.sensory_channels_per_token
-        ]
         p = cfg.sensory_rate_hz * cfg.dt_ms / 1000.0
-        pattern = (torch.rand(steps, len(channels), generator=rng) < p).float()
+
+        if cfg.ear_letters:
+            channels, pattern = self._letters(token, steps, p)
+        else:
+            rng = torch.Generator().manual_seed(self._seed(token))
+            channels = torch.randperm(cfg.sensory_size, generator=rng)[
+                : cfg.sensory_channels_per_token
+            ]
+            pattern = (torch.rand(steps, len(channels), generator=rng) < p).float()
 
         code = (channels.to(self.device), pattern.to(self.device))
 
@@ -89,6 +89,38 @@ class Ear:
         self.cache[token] = code
 
         return code
+
+
+    @staticmethod
+    def _seed(text: str) -> int:
+        return int.from_bytes(
+            hashlib.blake2b(text.encode("utf-8"), digest_size=8).digest(),
+            "little",
+        ) & 0x7FFFFFFFFFFFFFFF
+
+    def _letters(self, token: str, steps: int, p: float) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Слово звучит по буквам: время слова делится поровну между
+        символами, каждый символ — свои каналы и свой узор спайков, где бы
+        он ни стоял. Похожие формы («франция», «франции») звучат похоже
+        сами, на любом языке; узнавать их мозг учится сам.
+        """
+
+        cfg = self.cfg
+        per_char = cfg.sensory_channels_per_token
+        chars = list(token) or [" "]
+        bounds = [round(i * steps / len(chars)) for i in range(len(chars) + 1)]
+        channels: list[torch.Tensor] = []
+        pattern = torch.zeros(steps, per_char * len(chars))
+
+        for i, char in enumerate(chars):
+            rng = torch.Generator().manual_seed(self._seed("символ:" + char))
+            channels.append(torch.randperm(cfg.sensory_size, generator=rng)[:per_char])
+            spikes = (torch.rand(steps, per_char, generator=rng) < p).float()
+            start, stop = bounds[i], bounds[i + 1]
+            pattern[start:stop, i * per_char: (i + 1) * per_char] = spikes[: stop - start]
+
+        return torch.cat(channels), pattern
 
 
 # ==================================================================
@@ -404,6 +436,10 @@ class LanguageInterface:
         self._feelings: dict[str, torch.Tensor] = {}
         # Чувствительность клеток ядер нейромедиаторов.
         self._gains: dict[str, torch.Tensor] = {}
+        # Неожиданные переходы «место A → место B»: здесь вырастут синапсы.
+        self._growth: list[tuple[torch.Tensor, torch.Tensor]] = []
+        self._prev_place: torch.Tensor | None = None
+        self._place: torch.Tensor | None = None
         # Чувство, зафиксированное на время текущей реплики.
         self.held_mood: str | None = None
         # След вспомненного разговора (прайминг ответа).
@@ -480,8 +516,13 @@ class LanguageInterface:
         if place is not None:
             self.brain.feel("association", None, 0.0)
 
+        self._prev_place, self._place = self._place, place
+
         self.brain.run(self.cfg.gap_ms)
         self.brain.homeostasis(rates)
+
+        if learn_forms and place is not None:
+            self._learn_form(rates)
 
         if learn_forms:
             self.semantic.observe(token, self._area(rates, self.meaning))
@@ -489,6 +530,38 @@ class LanguageInterface:
             self.experienced_tokens += 1
 
         return rates
+
+    def _form_path(self):
+        return next(
+            (p for p in self.brain.projections if p.name == "auditory -> association"), None
+        )
+
+    def _learn_form(self, rates: torch.Tensor) -> None:
+        """
+        Узнавание по звучанию (instar): клетки смысла, которые стреляли,
+        пока звучало слово, тянут свои входы от слуха к узору звучания.
+        """
+
+        path = self._form_path()
+
+        if path is None or not self.brain.plasticity:
+            return
+
+        heard = (rates.index_select(0, path.pre.flatten().long()).view_as(path.weight) > 0).float()
+        active = (rates[path.post.slice] > 0).float()[:, None]
+        path.weight.add_(self.cfg.form_rate * active * (self.cfg.form_cap * heard - path.weight))
+
+    def recognize(self, rates: torch.Tensor) -> torch.Tensor:
+        """Куда звучание (активность слуха) толкает смысл по выученному пути."""
+
+        path = self._form_path()
+        drive = torch.zeros(self.meaning.E.size, device=self.device)
+
+        if path is not None:
+            heard = rates.index_select(0, path.pre.flatten().long()).view_as(path.weight)
+            drive = (heard * path.weight).sum(1)
+
+        return drive
 
     def rest(self) -> None:
         """
@@ -500,6 +573,12 @@ class LanguageInterface:
         self.brain.forget()
 
         self.sentences_lived += 1
+        # Новая фраза — переход от прошлой не учится (см. converse).
+        self._place = None
+
+        if self._growth and self.sentences_lived % self.cfg.grow_every_sentences == 0:
+            self.brain.grow("association", self._growth, self.cfg.grow_synapses)
+            self._growth = []
 
         if (
             self.cfg.synaptic_scaling_enabled
@@ -690,6 +769,15 @@ class LanguageInterface:
                     step.dopamine, noradrenaline = self._nucleus_burst(
                         step.dopamine / self.cfg.surprise_dopamine_gain
                     )
+
+                # Неожиданный переход: связи для него нужны — вырастут.
+                if (
+                    step.dopamine > 0
+                    and self.cfg.grow_on_surprise
+                    and self._prev_place is not None
+                    and self._place is not None
+                ):
+                    self._growth.append((self._prev_place, self._place))
 
                 # Неожиданный переход закрепляется: dopamine
                 # превращает eligibility traces только что

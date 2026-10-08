@@ -359,6 +359,18 @@ class BrainConfig:
     early_ltp_half_life: int = 300
     sleep_capture: float = 0.5
 
+    # Синапсы растут там, где нужны: на неожиданном переходе «слово A →
+    # слово B» к клеткам места B прорастают grow_synapses синапсов от
+    # клеток места A (взамен самых слабых входов). Растут пачкой раз в
+    # grow_every_sentences фраз (перестройка таблиц сбрасывает CUDA-графы).
+    # [замер] у места 16 клеток, вход 100 случайных из ~7600: от места к
+    # месту в среднем ~3 синапса, между «италии» и «рим» — 0, и «рим»
+    # не учился вовсе (после «столица италии» ждал «испании»).
+    # [не подбиралось] 8 синапсов, раз в 10 фраз.
+    grow_on_surprise: bool = True
+    grow_synapses: int = 8
+    grow_every_sentences: int = 10
+
     structural_plasticity_enabled: bool = True
     prune_fraction: float = 0.25
     rewire_every_sentences: int = 50
@@ -398,6 +410,25 @@ class BrainConfig:
     concepts_enabled: bool = True
     concept_cells: int = 16
     concept_mv: float = 30.0
+
+    # Ухо слышит слово по буквам (Ear._letters): похожие формы звучат
+    # похоже сами, на любом языке. False (старые сохранения) — слово
+    # звучит как случайный хэш целиком.
+    ear_letters: bool = True
+    # Путь «слух → смысл» при понятиях — узнавание слова по звучанию.
+    # Учится не STDP с дофамином, а по совпадению (instar): веса клеток,
+    # активных во время звучания, тянутся к узору этого звучания:
+    # Δw = form_rate × post × (form_cap × pre − w). [замер] со STDP путь
+    # связывал звучание со СЛЕДУЮЩИМ словом: «кошка» будила «от», «и»,
+    # «в», а факты портились посторонним током. [не подбиралось] 0.2, 1.0.
+    form_pathway: PathwaySpec = field(
+        default_factory=lambda: PathwaySpec(
+            "auditory", "association", k=100, weight=(0.0, 0.02),
+            plastic=False, k_inhibitory=0, predictive=False,
+        )
+    )
+    form_rate: float = 0.2
+    form_cap: float = 1.0
 
     nuclei_enabled: bool = True
     nucleus_ms: float = 20.0
@@ -619,6 +650,10 @@ class BrainConfig:
         data = dict(data)
         # Сохранения до понятий: проводка «слух → смысл» в них есть.
         data.setdefault("concepts_enabled", False)
+        data.setdefault("ear_letters", False)
+
+        if isinstance(data.get("form_pathway"), dict):
+            data["form_pathway"] = PathwaySpec(**data["form_pathway"])
         data["areas"] = [AreaSpec(**a) for a in data.get("areas", [])] or default_areas()
         # Сохранения до появления predictive: путь чувства в них
         # модулирующий, как сейчас (иначе он снова портит ожидания).

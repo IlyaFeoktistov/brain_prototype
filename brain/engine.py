@@ -356,10 +356,11 @@ class SpikingBrain:
 
         # ---- проводящие пути между зонами ----
         for path in cfg.pathways:
-            # С понятиями слово будит свои клетки смысла напрямую:
-            # случайная проводка «слух → смысл» будила бы посторонние.
+            # С понятиями слово будит свои клетки смысла напрямую, а
+            # «слух → смысл» — слабый обучаемый путь (звучание -> место):
+            # случайная сильная проводка будила бы посторонние клетки.
             if cfg.concepts_enabled and (path.src, path.dst) == ("auditory", "association"):
-                continue
+                path = cfg.form_pathway
 
             src = self.areas[path.src]
             dst = self.areas[path.dst]
@@ -912,6 +913,52 @@ class SpikingBrain:
             error = (spec.target_activity - active) / spec.target_activity
             step = (self.cfg.homeostasis_rate * error).clamp(-1.0, 1.0)
             self.bias[E.slice] = (self.bias[E.slice] + step).clamp(low, high)
+
+    def grow(self, area: str, links: list[tuple[torch.Tensor, torch.Tensor]], count: int) -> int:
+        """
+        Вырастить синапсы E->E зоны: для каждой пары (pre, post) —
+        локальные индексы клеток — count синапсов от случайных pre к
+        случайным post, взамен самого слабого входа клетки post.
+        Новый синапс слабый (нижний врождённый вес) и учится как все.
+        """
+
+        if not self.plasticity or not links:
+            return 0
+
+        proj = next((p for p in self.plastic if p.name == f"{area}: E->E"), None)
+
+        if proj is None:
+            return 0
+
+        low = proj.innate_range[0]
+        start = proj.pre_pop.start
+        grown = 0
+
+        for pre, post in links:
+            pick = torch.randint(0, len(post), (count,), device=self.device, generator=self.generator)
+            rows = post[pick]
+            which = torch.randint(0, len(pre), (count,), device=self.device, generator=self.generator)
+            new_pre = pre[which] + start
+            # Уже есть такая связь — не дублировать.
+            fresh = ~(proj.pre[rows] == new_pre[:, None].to(proj.pre.dtype)).any(1)
+            rows, new_pre = rows[fresh], new_pre[fresh]
+
+            if not len(rows):
+                continue
+
+            cols = proj.weight[rows].argmin(1)
+            proj.pre[rows, cols] = new_pre.to(proj.pre.dtype)
+            proj.weight[rows, cols] = low
+            proj.birth[rows, cols] = low
+            proj.early[rows, cols] = 0.0
+            proj.eligibility[rows, cols] = 0.0
+            grown += len(rows)
+
+        if grown:
+            self._build_tables()
+            self.synapses_grown += grown
+
+        return grown
 
     def synaptic_scaling(self) -> int:
         """

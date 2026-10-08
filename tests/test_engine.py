@@ -102,3 +102,29 @@ def test_rewire_replaces_only_weak_synapses(mind):
     # Таблицы пересобраны — симуляция продолжает работать.
     mind.language.read_text("Столица Франции Париж.")
     assert float(brain.dropped) == 0
+
+
+def test_similar_forms_sound_similar(mind):
+    ear = mind.language.ear
+
+    def sound(word):
+        return ear.encode(word).sum(0)
+
+    cos = lambda x, y: float(x @ y / (x.norm() * y.norm() + 1e-9))
+    # Слово звучит по буквам: формы похожи, чужое слово — нет.
+    assert cos(sound("франция"), sound("франции")) > cos(sound("франция"), sound("кошка")) + 0.3
+
+
+def test_synapses_grow_where_transition_is_learned(mind):
+    language, brain = mind.language, mind.brain
+    mind.cfg.grow_every_sentences = 1
+    language.read_text("Столица Италии Рим.")
+
+    proj = next(p for p in brain.plastic if p.name == "association: E->E")
+    start = brain.areas["association"].E.start
+    italy = set((language.concepts.get("италии", allocate=False) + start).tolist())
+    rome = language.concepts.get("рим", allocate=False)
+
+    links = sum(int(pre) in italy for pre in proj.pre[rome].flatten().tolist())
+    assert links >= mind.cfg.grow_synapses // 2
+    assert brain.synapses_grown > 0

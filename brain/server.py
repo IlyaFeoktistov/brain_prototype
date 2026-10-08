@@ -501,6 +501,12 @@ class BrainHost:
     def _attach(self) -> None:
         self.mind.brain.on_chunk = self._on_chunk
         self.mind.language.on_step = self._on_step
+        self.mind.language.on_grow = lambda links: self.emit(
+            {"type": "grow", "links": [{"path": n, "pre": pre, "post": post} for n, pre, post in links]}
+        )
+        self.mind.language.on_choice = lambda token, chances: self.emit(
+            {"type": "choice", "token": token, "candidates": [[w, round(p, 3)] for w, p in chances]}
+        )
         self.session = Session(self.mind, self._out, self._on_reply)
         # /read в вебе не блокирует мозг: текст встаёт в очередь.
         self.session.background_read = self.enqueue_read

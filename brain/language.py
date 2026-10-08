@@ -483,6 +483,11 @@ class LanguageInterface:
         self.on_speak: Callable[[str, float], None] | None = None
         # Ход мыслей при размышлении: каждая мысль и вердикт проверки.
         self.on_think: Callable[[dict], None] | None = None
+        # Микроскоп: где прорастают синапсы — [(путь, клетки-источник,
+        # клетки-цель)] в глобальных индексах.
+        self.on_grow: Callable[[list[tuple[str, list[int], list[int]]]], None] | None = None
+        # Выбор слова при речи: слово и кандидаты с вероятностями.
+        self.on_choice: Callable[[str, list[tuple[str, float]]], None] | None = None
         self.dialog_turns = 0
         # Журнал переписки: внешняя «записка», которую можно перечитать.
         # Сам разговор мозг помнит синапсами и гиппокампом, а не журналом.
@@ -660,6 +665,27 @@ class LanguageInterface:
     # МИНДАЛИНА: какие слова к добру, какие к худу
     # ==============================================================
 
+    def _show_growth(self, links: list[tuple[str, torch.Tensor, torch.Tensor]]) -> None:
+        """Сообщить микроскопу, где прорастают синапсы (глобальные индексы)."""
+
+        if not self.on_grow:
+            return
+
+        shown = []
+
+        for name, pre, post in links[-24:]:
+            proj = next((p for p in self.brain.projections if p.name == name), None)
+
+            if proj is not None:
+                shown.append((
+                    name,
+                    (pre[:16] + proj.pre_pop.start).tolist(),
+                    (post[:16] + proj.post.start).tolist(),
+                ))
+
+        if shown:
+            self.on_grow(shown)
+
     def _value_groups(self) -> tuple[torch.Tensor, torch.Tensor] | None:
         """Клетки «хорошо» и «плохо» (локальные индексы E миндалины)."""
 
@@ -700,7 +726,9 @@ class LanguageInterface:
             return
 
         group = groups[0] if amplitude > 0 else groups[1]
-        self.brain.grow([("association -> amygdala", place, group) for place in places], self.cfg.value_grow)
+        links = [("association -> amygdala", place, group) for place in places]
+        self._show_growth(links)
+        self.brain.grow(links, self.cfg.value_grow)
 
         source = self.meaning.E.start + torch.cat(places)
         hit = torch.isin(path.pre[group], source.to(path.pre.dtype)).float()
@@ -784,6 +812,7 @@ class LanguageInterface:
         self._priming_trace().mul_(self.cfg.priming_decay)
 
         if self._growth and self.sentences_lived % self.cfg.grow_every_sentences == 0:
+            self._show_growth(self._growth)
             self.brain.grow(self._growth, self.cfg.grow_synapses)
             self._growth = []
 
@@ -1675,6 +1704,16 @@ class LanguageInterface:
     def _ended(self, tokens: list[str]) -> list[str]:
         return tokens + [END] if self.cfg.sentence_end and tokens else tokens
 
+    def _chances(self, ranked: list[tuple[str, float]]) -> list[tuple[str, float]]:
+        """Вероятности кандидатов при выборе по вероятности (для показа)."""
+
+        top = ranked[: self.cfg.speak_top_k]
+        temperature = max(self.cfg.speak_temperature, 1e-3)
+        weights = [2.718281828 ** ((score - top[0][1]) / temperature) for _, score in top]
+        total = sum(weights)
+
+        return [(token, weight / total) for (token, _), weight in zip(top, weights)]
+
     def _pick(self, ranked: list[tuple[str, float]], sample: bool) -> str:
         """
         Какое слово сказать. sample=False — самое вероятное (экзамен,
@@ -1742,6 +1781,9 @@ class LanguageInterface:
                 break
 
             produced.append((token, sure))
+
+            if self.on_choice:
+                self.on_choice(token, self._chances(ranked))
 
             if self.on_speak:
                 self.on_speak(token, sure)

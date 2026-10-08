@@ -116,6 +116,10 @@ textarea {
   overflow: auto;
 }
 
+.slide {
+  position: relative;
+}
+
 .slide,
 .slide-placeholder {
   display: grid;
@@ -1168,4 +1172,83 @@ body.resizing-y {
   margin: 2px 0 0;
   color: var(--hema);
   font: italic 14px/1.4 var(--serif);
+}
+
+/* ---- рост синапсов: дуги «место A → место B» ---- */
+
+.growth {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.growth-arc {
+  animation: growth-fade 2.2s ease-out forwards;
+}
+
+.growth-arc path {
+  fill: none;
+  stroke: var(--dab);
+  stroke-width: 1.5;
+}
+
+.growth-arc circle {
+  fill: var(--dab);
+}
+
+.growth-context path {
+  stroke: var(--hema);
+  stroke-dasharray: 4 3;
+}
+
+.growth-context circle {
+  fill: var(--hema);
+}
+
+.growth-value path,
+.growth-value circle {
+  stroke: var(--eosin);
+  fill: none;
+}
+
+.growth-value circle {
+  fill: var(--eosin);
+}
+
+@keyframes growth-fade {
+  from {
+    opacity: 0.95;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.thought-choice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  flex-basis: 100%;
+  margin: 2px 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.thought-choice strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.choice-best {
+  color: var(--hema);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .growth-arc {
+    animation-duration: 4s;
+  }
 }

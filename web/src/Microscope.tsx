@@ -156,7 +156,20 @@ interface Props {
   anatomy: Anatomy;
   fluo: Fluorescence;
   onActivity: (perArea: Record<string, number>) => void;
+  // Последний рост синапсов: дуги «место A → место B».
+  growth?: { id: number; links: { path: string; pre: number[]; post: number[] }[] } | null;
 }
+
+interface Arc {
+  key: string;
+  d: string;
+  from: [number, number];
+  to: [number, number];
+  path: string;
+}
+
+// Сколько дуга роста видна (мс).
+const ARC_MS = 2200;
 
 // Порядок срезов повторяет путь сигнала: слух -> смысл -> память / рот.
 const PLACES: Record<string, string> = {
@@ -251,9 +264,51 @@ function useNeuronCard(index: number | null) {
   return { card, loading, error };
 }
 
-export function Microscope({ anatomy, fluo, onActivity }: Props) {
+// Где на срезе клетка: центр её пикселя в координатах слайда.
+function cellPoint(sections: SectionLayout[], index: number, origin: DOMRect): [number, number] | null {
+  const section = sections.find((s) => index >= s.start && index < s.start + s.count);
+  if (!section) return null;
+  const cell = section.cellOf[index - section.start];
+  const rect = section.canvas.getBoundingClientRect();
+  const col = cell % section.cols;
+  const row = Math.floor(cell / section.cols);
+  return [
+    rect.left - origin.left + ((col + 0.5) / section.cols) * rect.width,
+    rect.top - origin.top + ((row + 0.5) / section.rows) * rect.height,
+  ];
+}
+
+function centroid(points: ([number, number] | null)[]): [number, number] | null {
+  const real = points.filter((p): p is [number, number] => p !== null);
+  if (!real.length) return null;
+  return [real.reduce((s, p) => s + p[0], 0) / real.length, real.reduce((s, p) => s + p[1], 0) / real.length];
+}
+
+export function Microscope({ anatomy, fluo, onActivity, growth }: Props) {
   const canvases = useRef<Map<string, HTMLCanvasElement>>(new Map());
   const sectionsRef = useRef<SectionLayout[]>([]);
+  const slide = useRef<HTMLDivElement>(null);
+  const [arcs, setArcs] = useState<Arc[]>([]);
+
+  // Рост синапсов: дуга от места-источника к месту-цели, гаснет сама.
+  useEffect(() => {
+    if (!growth || !slide.current) return;
+    const origin = slide.current.getBoundingClientRect();
+    const fresh: Arc[] = [];
+    growth.links.forEach((link, i) => {
+      const from = centroid(link.pre.map((n) => cellPoint(sectionsRef.current, n, origin)));
+      const to = centroid(link.post.map((n) => cellPoint(sectionsRef.current, n, origin)));
+      if (!from || !to) return;
+      const bend = Math.hypot(to[0] - from[0], to[1] - from[1]) * 0.25 + 12;
+      const mx = (from[0] + to[0]) / 2;
+      const my = (from[1] + to[1]) / 2 - bend;
+      fresh.push({ key: `${growth.id}-${i}`, d: `M${from[0]},${from[1]} Q${mx},${my} ${to[0]},${to[1]}`, from, to, path: link.path });
+    });
+    if (!fresh.length) return;
+    setArcs((list) => [...list, ...fresh].slice(-60));
+    // Без отмены: следующий рост не должен оставлять прошлые дуги навсегда.
+    window.setTimeout(() => setArcs((list) => list.filter((arc) => !fresh.includes(arc))), ARC_MS);
+  }, [growth]);
   const [hover, setHover] = useState<Hover | null>(null);
   const [pinned, setPinned] = useState<Hover | null>(null);
   const shown = pinned ?? hover;
@@ -319,7 +374,7 @@ export function Microscope({ anatomy, fluo, onActivity }: Props) {
   }, [anatomy, fluo, onActivity]);
 
   return (
-    <div className="slide">
+    <div className="slide" ref={slide}>
       {anatomy.areas.map((area) => (
         <figure key={area.name} className={`section section-${PLACES[area.name] ?? "other"}`}>
           <div className="section-glass">
@@ -358,6 +413,17 @@ export function Microscope({ anatomy, fluo, onActivity }: Props) {
           </figcaption>
         </figure>
       ))}
+      {arcs.length > 0 && (
+        <svg className="growth" aria-hidden="true">
+          {arcs.map((arc) => (
+            <g key={arc.key} className={`growth-arc growth-${arc.path.startsWith("prefrontal") ? "context" : arc.path.endsWith("amygdala") ? "value" : "word"}`}>
+              <path d={arc.d} />
+              <circle cx={arc.from[0]} cy={arc.from[1]} r={3} />
+              <circle cx={arc.to[0]} cy={arc.to[1]} r={4} />
+            </g>
+          ))}
+        </svg>
+      )}
       {shown && (
         <NeuronCard
           anatomy={anatomy}

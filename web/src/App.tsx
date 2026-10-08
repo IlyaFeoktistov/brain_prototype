@@ -1,5 +1,5 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { connect, type Anatomy, type Brains, type EmotionState, type Connection, type ServerMessage, type Status, type StepEvent } from "./brain";
+import { connect, type GrowEvent, type Anatomy, type Brains, type EmotionState, type Connection, type ServerMessage, type Status, type StepEvent } from "./brain";
 import { Chat, type ChatActions, type ChatEntry } from "./Chat";
 import * as api from "./api";
 import { Fluorescence, Microscope } from "./Microscope";
@@ -32,6 +32,8 @@ export function App() {
   const [brains, setBrains] = useState<Brains | null>(null);
   const [emotion, setEmotion] = useState<EmotionState | null>(null);
   const [thoughts, setThoughts] = useState<ThoughtEntry[]>([]);
+  // Последний рост синапсов — микроскоп рисует дуги.
+  const [growth, setGrowth] = useState<{ id: number; links: GrowEvent["links"] } | null>(null);
   const [chatWidth, setChatWidth] = useStoredSize("brain.chatWidth", 380);
 
   const connection = useRef<Connection | null>(null);
@@ -85,6 +87,12 @@ export function App() {
         case "musing":
           addThought({ kind: "musing", text: message.text });
           break;
+        case "choice":
+          addThought({ kind: "choice", text: message.token, candidates: message.candidates });
+          break;
+        case "grow":
+          setGrowth({ id: nextId.current++, links: message.links });
+          break;
         case "thought":
           addThought({ kind: "step", text: message.thought, verdict: message.verdict, score: message.score });
           break;
@@ -119,7 +127,7 @@ export function App() {
             update((entry) => ({ ...entry, text: final, streaming: false, reply }));
             // Обдумывал ответ (/think on) — цепочку мыслей закрывает сам ответ.
             setThoughts((list) =>
-              list.length && list[list.length - 1].kind === "step"
+              list.length && list[list.length - 1].kind !== "musing"
                 ? [...list, { id: nextId.current++, kind: "musing", text: final }]
                 : list,
             );
@@ -224,7 +232,7 @@ export function App() {
         <div className="stage">
           {anatomy ? (
             <>
-              <Microscope anatomy={anatomy} fluo={fluo} onActivity={setActivity} />
+              <Microscope anatomy={anatomy} fluo={fluo} onActivity={setActivity} growth={growth} />
               <div className="legend">
                 <Pathways anatomy={anatomy} status={status} activity={activity} emotion={emotion} />
                 <dl className="key">

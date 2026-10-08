@@ -143,6 +143,19 @@ export interface ThoughtEvent {
   score: number;
 }
 
+// Где прорастают синапсы (глобальные индексы клеток).
+export interface GrowEvent {
+  type: "grow";
+  links: { path: string; pre: number[]; post: number[] }[];
+}
+
+// Выбор слова при речи: кандидаты с вероятностями.
+export interface ChoiceEvent {
+  type: "choice";
+  token: string;
+  candidates: [string, number][];
+}
+
 export interface InitiativeEvent {
   type: "initiative";
   reason: string;
@@ -161,7 +174,9 @@ export type ServerMessage =
   | EmotionEvent
   | InitiativeEvent
   | MusingEvent
-  | ThoughtEvent;
+  | ThoughtEvent
+  | GrowEvent
+  | ChoiceEvent;
 
 export type ClientMessage =
   | { type: "line"; text: string }

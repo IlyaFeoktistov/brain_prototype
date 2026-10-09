@@ -39,10 +39,17 @@ def _clean(text: str) -> str:
 
 _streamed = False
 _last_face = ""
+# Строка прогресса без перевода строки (перезаписывается через \r).
+_progress = False
 
 
 def _out(text: str, kind: str) -> None:
-    global _streamed, _last_face
+    global _streamed, _last_face, _progress
+
+    # Прогресс кончился — следующий вывод с новой строки.
+    if _progress and kind != "progress":
+        print()
+    _progress = kind == "progress"
 
     if kind == "thought":
         thought, verdict, score = text.split("\t")

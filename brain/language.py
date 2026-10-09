@@ -6,6 +6,7 @@ import hashlib
 import random
 import re
 import time
+from collections import deque
 from typing import Callable
 
 import torch
@@ -547,6 +548,8 @@ class LanguageInterface:
         # Журнал переписки: внешняя «записка», которую можно перечитать.
         # Сам разговор мозг помнит синапсами и гиппокампом, а не журналом.
         self.dialog: list[dict] = []
+        # Что снилось: последние проигранные во сне фразы (`/dreams`).
+        self.dreams: deque[str] = deque(maxlen=20)
 
     # ==============================================================
     # TEXT
@@ -1763,6 +1766,7 @@ class LanguageInterface:
 
                 episode.salience = salience
                 episode.replays += 1
+                self.dreams.append(" ".join(episode.tokens))
                 report.sentences += 1
                 self.rest()
 
@@ -2769,6 +2773,7 @@ class LanguageInterface:
             "emotions": self.emotions.state_dict(),
             "hippocampus": self.hippocampus.state_dict(),
             "dialog": self.dialog,
+            "dreams": list(self.dreams),
             "wonder": self.wonder,
             "asked": sorted(self.asked),
             "dialog_turns": self.dialog_turns,
@@ -2805,5 +2810,7 @@ class LanguageInterface:
             self.hippocampus.load_state_dict(state["hippocampus"])
 
         self.dialog = list(state.get("dialog", []))
+        self.dreams.clear()
+        self.dreams.extend(state.get("dreams", []))
         self.wonder = list(state.get("wonder", []))
         self.asked = set(state.get("asked", []))

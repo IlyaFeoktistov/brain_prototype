@@ -141,3 +141,14 @@ def test_terminal_sleeps_in_silence_and_wakes_up(mind):
     lines = queue.Queue()
     lines.put("привет")
     assert _idle(session, Liveliness(), 0.0, 5, lines) == 5
+
+
+def test_dreams_list_what_was_replayed(mind):
+    session, output = make_session(mind)
+    session.handle("/dreams")
+    assert output[-1][1] == "Ещё не спал"
+
+    session.handle("/read: Кошка мяукает.")
+    session.handle("/sleep 2")
+    session.handle("/dreams")
+    assert "кошка мяукает" in output[-1][1]

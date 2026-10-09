@@ -259,6 +259,8 @@ curl -s localhost:8000/v1/chat/completions -H 'content-type: application/json' \
 
 ## Экзамен
 
+Разговор: `python -m brain.chat_check small имя [load=путь]` — скрипт говорит с мозгом по сценарию `chat-scenario.txt` (здоровается, называет имя, спрашивает факты, уточняет «а россии?», поправляет, спит, переспрашивает) и считает по группам; расшифровка — `data/measure/имя-chat.txt`.
+
 ```bash
 python -m brain.evaluate data/brain.pt     # сколько отвечает, сколько «не знаю», верно ли первое слово
 ```

@@ -74,6 +74,12 @@ class AreaSpec:
     # Кто учит связи внутри зоны: "dopamine" или "acetylcholine" (запись
     # с одного раза, гиппокамп) — см. PathwaySpec.modulator.
     ee_modulator: str = "dopamine"
+    # Сила фонового шума у E-клеток зоны; None — по типу зоны
+    # (background_weight / memory_background_weight).
+    background: float | None = None
+    # Сила торможения к E-клеткам зоны (множитель ie_weight): у CA3
+    # корзинчатые клетки держат вспышку разреженной.
+    inhibition: float = 1.0
 
 
 @dataclass
@@ -213,22 +219,42 @@ def hippocampus_areas() -> list[AreaSpec]:
     """
 
     return [
+        # Слово — 8 клеток места из ~13 тыс.: клетка EC с 100 входами видит
+        # его с шансом ~6%. [замер] при активности 5% и фоне коры больше
+        # половины активных клеток выбирал шум (тот же вопрос дважды — 56%
+        # общих, самые активные — 37%). Тише фон и реже код — стреляют
+        # те, у кого есть вход.
         AreaSpec(
             "entorhinal", "энторинальная кора (вход гиппокампа)",
-            0.03, k_ee=20, ee_plastic=False, target_activity=0.05,
+            0.03, k_ee=20, ee_plastic=False, target_activity=0.02, background=0.025,
         ),
         # [биология] гранулярные клетки активны единицами на тысячу.
         AreaSpec(
             "dentate", "зубчатая извилина (разделение похожего)",
             0.06, k_ee=10, ee_plastic=False, ee_weight=(0.0, 0.0), target_activity=0.005,
+            # [биология] гранулярные клетки гиперполяризованы и почти молчат
+            # без входа: фон вчетверо слабее коры — кто выстрелит, решает
+            # вход из энторинальной коры, а не шум. [замер] с фоном коры тот
+            # же вопрос дважды давал 9% общих клеток (DESIGN «Гиппокамп из
+            # нейронов: стенд»).
+            background=0.025,
         ),
         # Рекуррентные коллатерали CA3 — автоассоциативная память; пишутся
         # ацетилхолином бодрствования. Память-зона: эпизод держится, пока
         # идёт (медленный NMDA), — так слово t связывается со словом t+1.
+        # [замер] с фоном зоны памяти (0.3) тот же вопрос дважды давал в CA3
+        # 9–20% общих клеток: узор решал шум. [не подбиралось] 0.1 — как кора.
         AreaSpec(
             "ca3", "CA3 гиппокампа (эпизоды, достраивание по части)",
             0.03, kind="memory", k_ee=100, ee_plastic=True, ee_cap=3.0,
             ee_weight=(0.0, 0.05), target_activity=0.02, ee_modulator="acetylcholine",
+            background=0.1,
+        ),
+        # CA1 сравнивает вспомненное (CA3, коллатерали Шаффера) с тем, что
+        # приходит сейчас (энторинальная кора), и возвращает в кору.
+        AreaSpec(
+            "ca1", "CA1 гиппокампа (выход в кору)",
+            0.03, k_ee=20, ee_plastic=False, target_activity=0.02, background=0.05,
         ),
     ]
 
@@ -243,15 +269,20 @@ def hippocampus_pathways() -> list[PathwaySpec]:
     """
 
     return [
-        PathwaySpec("association", "entorhinal", k=100, weight=(4.0, 4.0)),
+        PathwaySpec("association", "entorhinal", k=100, weight=(8.0, 8.0)),
         PathwaySpec("prefrontal", "entorhinal", k=50, weight=(2.0, 2.0)),
         PathwaySpec("entorhinal", "dentate", k=50, weight=(0.0, 6.0), inhibitory_weight=6.0),
         PathwaySpec("dentate", "ca3", k=4, weight=(20.0, 20.0), k_inhibitory=10),
         # Перфорантный путь EC → CA3: по нему подсказка находит эпизод.
         PathwaySpec("entorhinal", "ca3", k=50, weight=(0.0, 0.05), plastic=True, cap=2.0,
                     k_inhibitory=0, predictive=False, modulator="acetylcholine"),
-        # CA3 → смысл (через CA1): вспомненное будит места слов.
-        PathwaySpec("ca3", "association", k=50, weight=(0.0, 0.05), plastic=True, cap=2.0,
+        # Коллатерали Шаффера CA3 → CA1 и прямой вход EC → CA1.
+        PathwaySpec("ca3", "ca1", k=50, weight=(0.0, 0.05), plastic=True, cap=2.0,
+                    k_inhibitory=10, predictive=False, modulator="acetylcholine"),
+        PathwaySpec("entorhinal", "ca1", k=50, weight=(2.0, 2.0)),
+        # CA1 → смысл (через субикулум и EC): вспомненное будит места слов —
+        # подсказка током, выбирают нейроны коры.
+        PathwaySpec("ca1", "association", k=50, weight=(0.0, 0.05), plastic=True, cap=2.0,
                     k_inhibitory=0, predictive=False, modulator="acetylcholine"),
     ]
 
@@ -1084,6 +1115,18 @@ class BrainConfig:
     # даёт до surprise_dopamine_gain (6) — запись с одного раза сильнее.
     # Число — со стенда (DESIGN «Гиппокамп из нейронов»).
     hippocampus_encode: float = 30.0
+    # Сон с нейронным гиппокампом: острая волна — ацетилхолина нет,
+    # рекуррентные связи CA3 берут верх, и CA3 вспыхивает сам: ровный ток
+    # ripple_mv на все клетки CA3 на ripple_ms (у человека рябь 50–150 мс).
+    # Что вспыхнет — решают выученные связи; CA1 будит места слов в коре,
+    # кора учится STDP. Дофамин: VTA реактивируется вместе с гиппокампом
+    # (Valdés 2015) — replay_dopamine на вспышку. Всё [не подбиралось].
+    # Отладка: False — при нейронном гиппокампе сон всё ещё проигрывает
+    # список фраз (сравнить, что даёт сон вспышками).
+    neural_replay: bool = True
+    ripple_mv: float = 6.0
+    ripple_ms: float = 100.0
+    replay_dopamine: float = 1.0
 
     # Размышление (think): внутренняя речь + проверяющий.
     # [замер] на 14 вопросах train-data (1 проход + сон 300): первое

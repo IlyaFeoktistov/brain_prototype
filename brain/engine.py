@@ -400,6 +400,11 @@ class SpikingBrain:
             }
         )
 
+        # Своя сила фона у зоны (AreaSpec.background) — у E-клеток.
+        for spec in cfg.areas:
+            if spec.background is not None:
+                self.noise_gain[self.areas[spec.name].E.slice] = spec.background
+
     def _random_pre(self, post: Population, k: int, pre_pop: Population) -> torch.Tensor:
         pre = torch.randint(
             pre_pop.start,
@@ -520,7 +525,7 @@ class SpikingBrain:
             )
             self._connect(
                 f"{spec.name}: I->E", area.I, area.E, cfg.k_ie,
-                (cfg.ie_weight, cfg.ie_weight),
+                (cfg.ie_weight * spec.inhibition, cfg.ie_weight * spec.inhibition),
             )
             self._connect(
                 f"{spec.name}: I->I", area.I, area.I, cfg.k_ii,
@@ -1106,7 +1111,9 @@ class SpikingBrain:
             # Synaptic tagging & capture: синапсы, участвовавшие в
             # проигрывании (след eligibility), закрепляют свою свежую
             # часть — пропорционально участию.
-            tag = eligibility.abs()
+            # В fp32: в fp16 граница 1e-12 — ноль, и при нулевых следах
+            # (кора молчит во вспышке гиппокампа) выходило 0/0 = NaN.
+            tag = eligibility.abs().float()
             tag = tag / tag.max().clamp(min=1e-12)
             self.early.mul_(1.0 - capture * tag)
 

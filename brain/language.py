@@ -1038,7 +1038,8 @@ class LanguageInterface:
 
         self._recall = []
 
-        if not self.cfg.episode_recall or not self.cfg.neural_speech:
+        # Гиппокамп из нейронов подсказывает сам — током CA1 → смысл.
+        if not self.cfg.episode_recall or not self.cfg.neural_speech or self.cfg.neural_hippocampus:
             return
 
         novel = {token for token in tokens if not self.familiar(token)}
@@ -1995,6 +1996,9 @@ class LanguageInterface:
         self.brain.modulation = 1.0
         self.brain.consolidating = True
 
+        if self.cfg.neural_hippocampus and self.cfg.neural_replay:
+            return self._sleep_ripples(replays, report, progress, stop)
+
         interleave = self.cfg.sleep_interleave
         postings = self.hippocampus.index(self.word) if interleave else {}
 
@@ -2023,6 +2027,62 @@ class LanguageInterface:
 
         self.hippocampus.forget_consolidated(self.cfg.consolidated_salience, keep=interleave)
         self.emotions.sleepy = self.sleep_pressure >= self.cfg.sleepy_after_episodes
+
+        return report
+
+    def _sleep_ripples(self, ripples: int, report: ReadReport, progress, stop) -> ReadReport:
+        """
+        Сон с гиппокампом из нейронов: острые волны с рябью. Ацетилхолина
+        нет — CA3 растормаживается и вспыхивает сам; что вспыхнет, решают
+        выученные рекуррентные связи (эпизоды). CA1 будит места слов в
+        коре, кора учится обычным STDP; дофамин — от VTA, реактивирующейся
+        вместе с гиппокампом. Новое и старое проигрываются как получится —
+        по силе связей, без выбора кодом.
+        """
+
+        ca3 = self.brain.areas["ca3"].E
+        everyone = torch.arange(ca3.size, device=self.device)
+        self.brain.consolidating = True
+
+        try:
+            for _ in range(ripples):
+                if stop is not None and stop.is_set():
+                    break
+
+                self.brain.silence("goal")
+                self.last_rates = None
+                self.brain.feel("ca3", everyone, self.cfg.ripple_mv)
+                rates = self.brain.observe(self.cfg.ripple_ms)
+                self.brain.feel("ca3", None, 0.0)
+                self.brain.reward(self.cfg.replay_dopamine)
+
+                if self.cfg.base_circuit:
+                    self.brain.downscale(self.cfg.sleep_downscale)
+
+                # Что снилось — какие места слов вспыхнули (только показ).
+                tokens, cells = self.concepts.table()
+
+                if tokens:
+                    counts = self._area(rates, self.meaning)[cells].sum(1)
+                    top = counts.topk(min(5, len(tokens)))
+                    words = [tokens[i] for c, i in zip(top.values.tolist(), top.indices.tolist()) if c > 0]
+                    self.dreams.append(self.join(words))
+
+                report.sentences += 1
+                self.rest()
+
+                if progress and report.sentences % 20 == 0:
+                    progress(report)
+        finally:
+            self.sleeping = False
+            self.emotions.sleeping = False
+            self.brain.consolidating = False
+
+        # Счётчик впечатлений (давление сна — пока список, «Честный мозг» 5):
+        # проспанное больше не давит.
+        for episode in self.hippocampus.episodes:
+            episode.replays = max(episode.replays, 1)
+        self.emotions.sleepy = False
 
         return report
 
@@ -2553,7 +2613,9 @@ class LanguageInterface:
         ответа между ними в эпизоде нет — своя речь не запоминается.
         """
 
-        if not self.cfg.pair_turns:
+        # Гиппокамп из нейронов связывает соседние реплики сам —
+        # контекстом (рабочая память → энторинальная кора), а не склейкой.
+        if not self.cfg.pair_turns or self.cfg.neural_hippocampus:
             return
 
         previous = next((t["text"] for t in reversed(self.dialog) if t["who"] == "человек"), None)

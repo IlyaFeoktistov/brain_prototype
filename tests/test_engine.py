@@ -158,7 +158,7 @@ def test_health_is_clean_and_catches_runaway(mind):
     """Стенд: здоровый мозг без нарушений; очаг (кора стреляет в тишине) — пойман."""
 
     language = mind.language
-    language.read_text("Кошка мяукает. Собака лает.")
+    language.read_text("Кошка мяукает.\nСобака лает.")
     assert language.health.sentences >= 2
     assert not language.health.log
     assert "association" in language.health.report()

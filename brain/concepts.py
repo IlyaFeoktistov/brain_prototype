@@ -64,6 +64,9 @@ class Concepts:
         self.evicted: list[tuple[str, torch.Tensor]] = []
         self.full = False
         self.forgotten = 0
+        # Как слово было написано: место -> {форма: сколько раз}. Рот
+        # говорит самую частую (долг: должен учиться рот, а не счётчик).
+        self.forms: dict[str, dict[str, int]] = {}
 
     def __contains__(self, token: str) -> bool:
         return token in self.places
@@ -93,6 +96,16 @@ class Concepts:
 
         return place
 
+    def note_form(self, token: str, form: str) -> None:
+        if token in self.places:
+            seen = self.forms.setdefault(token, {})
+            seen[form] = seen.get(form, 0) + 1
+
+    def form(self, token: str) -> str:
+        seen = self.forms.get(token)
+
+        return max(seen, key=seen.get) if seen else token
+
     def _evict(self, near: torch.Tensor | None) -> None:
         """
         Забыть давнее из слов, слышанных однажды: его клетки свободны.
@@ -109,6 +122,7 @@ class Concepts:
         cells = self.places.pop(victim)
         self.heard.pop(victim, None)
         self.once.pop(victim, None)
+        self.forms.pop(victim, None)
         self.usage[cells.cpu()] -= 1
         self._table = None
         self.evicted.append((victim, cells))
@@ -130,6 +144,7 @@ class Concepts:
     def reset(self) -> None:
         self.heard.clear()
         self.once.clear()
+        self.forms.clear()
         self.evicted.clear()
         self.places.clear()
         self._table = None
@@ -164,6 +179,7 @@ class Concepts:
             "heard": self.heard,
             "once": list(self.once),
             "forgotten": self.forgotten,
+            "forms": self.forms,
         }
 
     def load_state_dict(self, state: dict) -> None:
@@ -173,3 +189,4 @@ class Concepts:
         self.heard = dict(state.get("heard", {}))
         self.once = dict.fromkeys(state.get("once", []))
         self.forgotten = state.get("forgotten", 0)
+        self.forms = {key: dict(seen) for key, seen in state.get("forms", {}).items()}

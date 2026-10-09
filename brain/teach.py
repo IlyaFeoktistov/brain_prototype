@@ -72,6 +72,8 @@ def same_word(said: str, key: str) -> bool:
     # «европа», «рим» ≠ «и».
     stem = max(3, len(key) - 2)
 
+    said, key = said.casefold(), key.casefold()
+
     return said[:stem] == key[:stem] and abs(len(said) - len(key)) <= 3
 
 
@@ -86,7 +88,11 @@ class Teacher:
         """Реплика человека → ответ мозга. Верно ли и сколько слов после ключа."""
 
         reply = self.session.say(text)
-        answer = self.language.dialog[-1].get("answer", "").split()
+        # Слова ответа — без знаков: «верно» и «уплывание» считаются по словам.
+        answer = [
+            token for token in self.language.tokenize(self.language.dialog[-1].get("answer", ""))
+            if token[0].isalnum()
+        ]
         hit = next(
             (i for i, word in enumerate(answer[:FIRST_WORDS]) if same_word(word, key)),
             None,

@@ -94,12 +94,12 @@ def test_neural_speech_answers_from_spikes():
     language = mind.language
 
     for _ in range(6):
-        language.read_text("Столица Франции Париж. Столица Италии Рим.")
+        language.read_text("Столица Франции Париж.\nСтолица Италии Рим.")
 
     # [замер] «столица италии» здесь пока тоже → «париж»: контекст на
     # дендритах на маленьком мозге и 6 прочтениях слабее формулы.
     said = [token for token, _ in language.generate("столица франции")]
-    assert said and said[0] == "париж"
+    assert said and language.word(said[0]) == "париж"
 
 
 def test_sleep_in_web_falls_asleep_wakeably(mind):
@@ -151,7 +151,7 @@ def test_dreams_list_what_was_replayed(mind):
     session.handle("/read: Кошка мяукает.")
     session.handle("/sleep 2")
     session.handle("/dreams")
-    assert "кошка мяукает" in output[-1][1]
+    assert "Кошка мяукает." in output[-1][1]
 
 
 def test_trace_shows_paths_and_choice(mind):

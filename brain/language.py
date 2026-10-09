@@ -22,7 +22,10 @@ from brain.limbic import FACES, Emotions
 # Конец фразы — короткий звук паузы со своим местом в смысле: мозг
 # учит, после чего мысль кончается, как любой другой переход; в ответе
 # победил «конец» — замолкает. Без правил языка: это просто пауза.
-END = "."
+# Конец строки — пауза: и символ, который мозг знает, и событие «мысль
+# кончилась» (здесь замолкают). Точка, «?», «!» — обычные символы со
+# своими местами: что они значат, мозг учит сам.
+END = "\n"
 
 
 def _cosine(a: torch.Tensor, b: torch.Tensor) -> float:
@@ -114,6 +117,11 @@ class Ear:
         символами, каждый символ — свои каналы и свой узор спайков, где бы
         он ни стоял. Похожие формы («франция», «франции») звучат похоже
         сами, на любом языке; узнавать их мозг учится сам.
+
+        Заглавная — та же буква и общий признак «крупно» (как глаз видит
+        размер), а не другой символ: «Москва» звучит почти как «москва»,
+        а КРИК — много «крупно» подряд, что миндалина может связать с
+        чувством. Что значит «крупно», мозг учит сам.
         """
 
         cfg = self.cfg
@@ -121,14 +129,22 @@ class Ear:
         chars = list(token) or [" "]
         bounds = [round(i * steps / len(chars)) for i in range(len(chars) + 1)]
         channels: list[torch.Tensor] = []
-        pattern = torch.zeros(steps, per_char * len(chars))
+        groups: list[tuple[int, torch.Tensor]] = []
 
         for i, char in enumerate(chars):
-            rng = torch.Generator().manual_seed(self._seed("символ:" + char))
-            channels.append(torch.randperm(cfg.sensory_size, generator=rng)[:per_char])
-            spikes = (torch.rand(steps, per_char, generator=rng) < p).float()
+            small = char.lower()
+            parts = [small] + (["крупно"] if small != char else [])
+
+            for part in parts:
+                rng = torch.Generator().manual_seed(self._seed("символ:" + part))
+                channels.append(torch.randperm(cfg.sensory_size, generator=rng)[:per_char])
+                groups.append((i, (torch.rand(steps, per_char, generator=rng) < p).float()))
+
+        pattern = torch.zeros(steps, per_char * len(groups))
+
+        for g, (i, spikes) in enumerate(groups):
             start, stop = bounds[i], bounds[i + 1]
-            pattern[start:stop, i * per_char: (i + 1) * per_char] = spikes[: stop - start]
+            pattern[start:stop, g * per_char: (g + 1) * per_char] = spikes[: stop - start]
 
         return torch.cat(channels), pattern
 
@@ -591,27 +607,49 @@ class LanguageInterface:
 
     @staticmethod
     def tokenize(text: str) -> list[str]:
-        return re.findall(
-            r"[^\W_]+(?:[-'/_.][^\W_]+)*",
-            text.lower(),
-            flags=re.UNICODE,
-        )
+        """
+        Ничего не вырезается: слово — подряд идущие буквы и цифры (как
+        написано, с регистром), любой другой символ — отдельный токен.
+        Пробелы — промежутки между токенами, переводы строк — паузы
+        (см. sentences).
+        """
+
+        return re.findall(r"[^\W_]+|[^\w\s]|_", text, flags=re.UNICODE)
+
+    @staticmethod
+    def word(token: str) -> str:
+        """
+        Место смысла для формы: «Москва» и «москва» — одно место, ухо
+        слышит разницу. Долг (ROADMAP P0 «Конец фразы и знаки»): что
+        формы — одно слово, решает код, а должно узнавание нейронами.
+        """
+
+        return token.casefold()
+
+    @staticmethod
+    def join(tokens) -> str:
+        """Текст из токенов: знаки прижаты к слову, как пишут («Париж.»)."""
+
+        text = ""
+
+        for token in tokens:
+            tight = token in ".,!?;:…)»" or text.endswith(("(", "«"))
+            text += token if tight or not text else " " + token
+
+        return text
+
+    def words(self, text: str) -> list[str]:
+        return [self.word(token) for token in self.tokenize(text)]
 
     @staticmethod
     def sentences(text: str) -> list[str]:
         """
-        Фразы, между которыми мозг делает паузу.
-
-        «?» паузой не считается: «какая столица франции? париж» — одна
-        мысль, и переход «вопрос -> ответ» должен учиться так же, как
-        «франции -> париж». После паузы следующий переход не учится.
+        Строки, между которыми мозг делает паузу. Конец строки — пауза;
+        внутри строки знаки — обычные символы, «вопрос? ответ.» — одна
+        мысль. После паузы следующий переход не учится.
         """
 
-        return [
-            part
-            for part in re.split(r"[.!;\n]+(?:\s|$)|\n", text)
-            if part.strip()
-        ]
+        return [part for part in text.split("\n") if part.strip()]
 
     def _area(self, rates: torch.Tensor, area) -> torch.Tensor:
         return rates[area.E.slice]
@@ -620,8 +658,13 @@ class LanguageInterface:
     # PERCEPTION
     # ==============================================================
 
-    def perceive(self, token: str, learn_forms: bool = True) -> torch.Tensor:
-        """Услышать один токен; вернуть частоты всех нейронов."""
+    def perceive(self, token: str, learn_forms: bool = True, form: str | None = None) -> torch.Tensor:
+        """
+        Услышать один токен; вернуть частоты всех нейронов. token — место
+        смысла (word), form — как написано: ухо слышит форму.
+        """
+
+        form = form or token
 
         self._feel_inside()
 
@@ -650,6 +693,9 @@ class LanguageInterface:
 
             if self.brain.plasticity:
                 self._sentence_places.append(place)
+
+            if learn_forms:
+                self.concepts.note_form(token, form)
             # Прайминг: недавно звучавшее слово легче всплывает снова.
             self._priming_trace()[place] = 1.0
 
@@ -664,7 +710,7 @@ class LanguageInterface:
             trace[held] = torch.maximum(trace[held], torch.tensor(strength * self.cfg.memory_mv, device=self.device))
             self._hold_memory()
 
-        sound = self.ear.encode(token)
+        sound = self.ear.encode(form)
 
         if gate:
             rates = self._listen_and_prepare(sound, place, token)
@@ -1068,7 +1114,7 @@ class LanguageInterface:
         words = [
             word
             for turn in self.dialog[-2:]
-            for word in self.tokenize(turn.get("answer", turn["text"]) if turn["who"] == "мозг" else turn["text"])
+            for word in self.words(turn.get("answer", turn["text"]) if turn["who"] == "мозг" else turn["text"])
         ]
         places = [p for p in (self.concepts.get(w, allocate=False) for w in dict.fromkeys(words)) if p is not None]
 
@@ -1442,6 +1488,7 @@ class LanguageInterface:
     # ==============================================================
 
     def _step(self, token: str, learn: bool) -> Step:
+        form, token = token, self.word(token)
         expected_state = None
         step = Step(token=token)
         neural = self.cfg.neural_surprise and self._prepared is not None
@@ -1467,7 +1514,7 @@ class LanguageInterface:
             context = memory.topk(min(self.cfg.context_grow_cells, memory.numel())).indices
             context = context[memory[context] > 0]
 
-        rates = self.perceive(token, learn_forms=learn)
+        rates = self.perceive(token, learn_forms=learn, form=form)
 
         if (expected_state is not None or neural) and token in self.semantic:
             if not neural:
@@ -1677,6 +1724,9 @@ class LanguageInterface:
             if token == END:
                 break
 
+            # Рот говорит форму, чаще слышанную с этим местом (долг:
+            # счётчик кодом, а должен учиться рот).
+            token = self.concepts.form(token)
             produced.append((token, sure))
 
             if self.on_speak:
@@ -1836,7 +1886,7 @@ class LanguageInterface:
 
                 if self.cfg.base_circuit:
                     self.brain.downscale(self.cfg.sleep_downscale)
-                self.dreams.append(" ".join(episode.tokens))
+                self.dreams.append(self.join(episode.tokens))
                 report.sentences += 1
                 self.rest()
 
@@ -1872,7 +1922,7 @@ class LanguageInterface:
     def feedback(self, text: str) -> float | None:
         """Врождённый канал поощрения/наказания."""
 
-        words = self.tokenize(text) or [text.strip()]
+        words = self.words(text) or [text.strip()]
 
         if len(words) != 1:
             return None
@@ -1968,7 +2018,7 @@ class LanguageInterface:
         # услышанное объяснение), а «вопрос -> объяснение» гиппокамп
         # запоминает одним эпизодом и закрепит во сне.
         heard = [token for sentence in sentences for token in self.tokenize(sentence)]
-        explained = [word for word in dict.fromkeys(heard) if word in self.asked]
+        explained = [word for word in dict.fromkeys(self.word(t) for t in heard) if word in self.asked]
 
         for word in explained:
             self.brain.reward(self._dopamine(self.cfg.curiosity_reward))
@@ -1982,7 +2032,7 @@ class LanguageInterface:
         thoughts: list[dict] = []
         self.recall_conversation()
 
-        if last in unknown:
+        if last in {self.word(token) for token in unknown}:
             produced = []
         elif self.cfg.thinking_enabled:
             produced, thoughts = self.think()
@@ -2000,7 +2050,7 @@ class LanguageInterface:
         self.held_mood = None
         self.recall_drive = None
 
-        answer = " ".join(token for token, _ in produced)
+        answer = self.join(token for token, _ in produced)
         question = ""
 
         # Врождённый рефлекс любопытства: спросить про новое.
@@ -2017,7 +2067,7 @@ class LanguageInterface:
 
         if worth_asking and not explaining and self.cfg.ask_about_unknown:
             question = "а что такое " + " и ".join(f"«{word}»" for word in worth_asking) + "?"
-            self.asked.update(worth_asking)
+            self.asked.update(self.word(word) for word in worth_asking)
             self._feel("curious")
 
         text = " … ".join(part for part in (answer, question) if part) or "не знаю"
@@ -2040,7 +2090,7 @@ class LanguageInterface:
     def familiar(self, token: str) -> bool:
         """Слышал ли мозг это слово раньше (хотя бы раз)."""
 
-        row = self.semantic.index.get(token)
+        row = self.semantic.index.get(self.word(token))
 
         return row is not None and self.semantic.observations[row] >= self.cfg.familiar_after
 
@@ -2082,7 +2132,7 @@ class LanguageInterface:
             return
 
         for word in new:
-            if len(word) >= self.cfg.ask_min_letters and word not in self.asked:
+            if len(word) >= self.cfg.ask_min_letters and self.word(word) not in self.asked:
                 self.wonder.append(word)
 
         del self.wonder[: -100]
@@ -2287,7 +2337,7 @@ class LanguageInterface:
         drive = torch.zeros(self.meaning.E.size, device=self.device)
 
         for age, text in enumerate(reversed(turns)):
-            words = [w for w in self.tokenize(text) if w in self.semantic]
+            words = [w for w in self.words(text) if w in self.semantic]
 
             if not words:
                 continue
@@ -2644,8 +2694,8 @@ class LanguageInterface:
                 "meaning": self._area(rates, self.meaning).clone(),
                 "context": self._area(rates, self.context).clone(),
                 "expected": expected,
-                "ranked": self.semantic.decode(expected, {tokens[-1]}, top=5),
-                "spoken": self.mouth.decode(self.speak(expected), {tokens[-1]}, top=5),
+                "ranked": self.semantic.decode(expected, {self.word(tokens[-1])}, top=5),
+                "spoken": self.mouth.decode(self.speak(expected), {self.word(tokens[-1])}, top=5),
             }
 
     def debug_prediction(self, text: str) -> str:
@@ -2702,8 +2752,8 @@ class LanguageInterface:
                 # Сначала выстрелившие (их выбирают ворота), потом подготовленные.
                 rank = spikes * 1000.0 + potential
 
-                if token in self.concepts:
-                    rank[words.index(token)] = float("-inf")
+                if self.word(token) in self.concepts:
+                    rank[words.index(self.word(token))] = float("-inf")
 
                 best = rank.topk(min(top, len(words))).indices
                 rates = self._without_current(self.last_rates)
@@ -2758,7 +2808,7 @@ class LanguageInterface:
         )
 
     def debug_word(self, word: str) -> str:
-        tokens = self.tokenize(word)
+        tokens = self.words(word)
 
         if not tokens:
             return "Формат: /debug слово"
@@ -2800,7 +2850,7 @@ class LanguageInterface:
         ансамблями двух слов, обратное направление и фон.
         """
 
-        a_tokens, b_tokens = self.tokenize(first), self.tokenize(second)
+        a_tokens, b_tokens = self.words(first), self.words(second)
 
         if not a_tokens or not b_tokens:
             return "Формат: /debug_association слово слово"

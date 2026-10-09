@@ -58,8 +58,10 @@ def facts(path: Path, tokenize) -> list[Question]:
         if not line or line.startswith("#"):
             continue
 
+        # Тире — часть вопроса: после «Столица Франции —» ждут ответ.
         if "—" in line:
             left, right = line.split("—", 1)
+            left += " —"
         elif " является " in line:
             left, right = line.split(" является ", 1)
             left += " является"
@@ -96,11 +98,13 @@ def run(mind: Mind, questions: list[Question], show: int) -> dict[str, Score]:
 
     for q in questions:
         score = scores.setdefault(q.kind, Score())
-        said = [token for token, _ in language.generate(q.prompt)]
+        # Сверка по месту смысла: «париж» = «Париж».
+        said = [language.word(token) for token, _ in language.generate(q.prompt)]
+        answer = [language.word(token) for token in q.answer]
         score.total += 1
         score.answered += bool(said)
-        score.first += bool(said) and said[0] == q.answer[0]
-        score.top3 += bool(set(said[:3]) & set(q.answer))
+        score.first += bool(said) and said[0] == answer[0]
+        score.top3 += bool(set(said[:3]) & set(answer))
 
         if len(score.examples) < show:
             score.examples.append(

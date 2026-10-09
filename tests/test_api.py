@@ -97,7 +97,7 @@ def test_feedback_and_emotions(client):
 def test_background_reading_does_not_block_chat(client):
     import time
 
-    text = "Столица Франции Париж. Столица Германии Берлин. " * 60
+    text = "Столица Франции Париж.\nСтолица Германии Берлин.\n" * 60
     queued = client.post("/api/read", json={"name": "длинный", "text": text, "background": True}).json()
     assert queued["queued"] and queued["sentences"] > 50
 

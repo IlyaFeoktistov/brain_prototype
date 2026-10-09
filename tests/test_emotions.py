@@ -207,7 +207,7 @@ def test_amygdala_learns_what_leads_to_blame():
 
     mind = make_mind("small")
     language = mind.language
-    language.read_text("Компьютер сломался. Кошка спит.")
+    language.read_text("Компьютер сломался.\nКошка спит.")
 
     def value_of(word):
         with language.isolated():

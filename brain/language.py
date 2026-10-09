@@ -493,6 +493,9 @@ class LanguageInterface:
         self._prepared: tuple[list[str], torch.Tensor] | None = None
         self._gate_mv = cfg.speak_gate_mv
         self._own_speech = False
+        # Продолжение вспомненного эпизода: [(место смысла, сила)] — по
+        # одному на каждое слово ответа (см. _recall_episode).
+        self._recall: list[tuple[str, float]] = []
         self.choice: tuple[str, float] | None = None
         self._everyone = torch.arange(self.meaning.E.size, device=self.device)
 
@@ -1028,6 +1031,17 @@ class LanguageInterface:
             self._priming = torch.zeros(self.meaning.E.size, device=self.device)
 
         return self._priming
+
+    def _recall_episode(self, tokens: list[str]) -> None:
+        """Перед ответом: гиппокамп достраивает эпизод по словам реплики."""
+
+        self._recall = []
+
+        if not self.cfg.episode_recall or not self.cfg.neural_speech:
+            return
+
+        rest, strength = self.hippocampus.recall(tokens, key=self.word)
+        self._recall = [(self.word(token), strength) for token in rest]
 
     def _goal_on(self) -> bool:
         return self.goal is not None and self._goal_cells > 1 and self.cfg.goal_enabled
@@ -1700,6 +1714,14 @@ class LanguageInterface:
         if place is not None:
             amplitude[place] = self.cfg.concept_mv
 
+        # Гиппокамп подсказывает следующее слово вспомненного эпизода.
+        if self._recall:
+            recalled, strength = self._recall.pop(0)
+            hint = self.concepts.get(recalled, allocate=False)
+
+            if hint is not None:
+                amplitude[hint] += self.cfg.episode_recall_mv * strength
+
         self.brain.feel("association", self._everyone, amplitude)
         rates = self.brain.observe(self.cfg.stimulus_ms, sound)
         self.choice = self._spoken(rates, token)
@@ -2070,6 +2092,7 @@ class LanguageInterface:
             if not self.familiar(token)
         ))
         start = time.perf_counter()
+        self._recall_episode([t for s in sentences for t in self.tokenize(s)])
 
         for i, sentence in enumerate(sentences):
             salience = 0.0
@@ -2135,6 +2158,7 @@ class LanguageInterface:
             produced = self._speak()
         else:
             produced = self._continue(sample=True)
+        self._recall = []
         self._sync()
         self._feel("answered", [sure for _, sure in produced])
         self.held_mood = None
@@ -2735,12 +2759,17 @@ class LanguageInterface:
         think = self.cfg.thinking_enabled if think is None else think
 
         with self.isolated():
-            self.experience(tokens, learn=False, answer=True)
+            self._recall_episode(tokens)
 
-            if think:
-                return self.think()[0]
+            try:
+                self.experience(tokens, learn=False, answer=True)
 
-            return self._speak() if self.cfg.neural_speech else self._continue()
+                if think:
+                    return self.think()[0]
+
+                return self._speak() if self.cfg.neural_speech else self._continue()
+            finally:
+                self._recall = []
 
     # ==============================================================
     # READ-ONLY ДИАГНОСТИКА

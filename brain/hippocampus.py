@@ -70,6 +70,34 @@ class Hippocampus:
 
         self.store(tokens + list(more), salience, ended)
 
+    def recall(self, cue: list[str], key=lambda t: t) -> tuple[list[str], float]:
+        """
+        Достраивание по части (CA3): эпизод, где из слов подсказки
+        встретилось больше всего, — и что в нём шло после последнего из
+        них. Сила — доля слов подсказки, нашедшихся в эпизоде; при равенстве
+        побеждает свежий. Нечего достраивать — ([], 0).
+        """
+
+        words = {key(t) for t in cue}
+
+        if not words:
+            return [], 0.0
+
+        best, score = None, 0.0
+
+        for episode in reversed(self.episodes):
+            seen = [key(t) for t in episode.tokens]
+            share = len(words & set(seen)) / len(words)
+
+            if share > score:
+                last = max(i for i, t in enumerate(seen) if t in words)
+
+                # Достраивать нечего — эпизод кончается на подсказке.
+                if last + 1 < len(seen):
+                    best, score = episode.tokens[last + 1:], share
+
+        return (list(best), score) if best else ([], 0.0)
+
     def sample(self) -> Episode | None:
         if not self.episodes:
             return None

@@ -109,3 +109,35 @@ def test_sleep_in_web_falls_asleep_wakeably(mind):
     session.fall_asleep = lambda: "засыпаю порциями"
     session.handle("/sleep")
     assert output[-1][1] == "засыпаю порциями"
+
+
+def test_terminal_sleeps_in_silence_and_wakes_up(mind):
+    """Терминал в тишине засыпает порциями и высыпается."""
+
+    import queue
+    from brain.chat import _idle
+    from brain.live import Liveliness
+
+    session, _ = make_session(mind)
+    session.handle("/read: Кошка мяукает. Собака лает. Солнце светит.")
+    mind.cfg.sleepy_after_episodes = 1
+    mind.cfg.autosave = False
+    pressure = mind.language.sleep_pressure
+    assert pressure > 0
+
+    sleep_left = _idle(session, Liveliness(), 0.0, 0, queue.Queue())
+    assert sleep_left == 0 or mind.language.emotions.sleeping
+
+    for _ in range(100):
+        if not sleep_left:
+            break
+        sleep_left = _idle(session, Liveliness(), 0.0, sleep_left, queue.Queue())
+
+    assert sleep_left == 0
+    assert mind.language.sleep_pressure == 0
+    assert not mind.language.emotions.sleeping
+
+    # Сообщение в очереди будит: порция сна не начинается.
+    lines = queue.Queue()
+    lines.put("привет")
+    assert _idle(session, Liveliness(), 0.0, 5, lines) == 5

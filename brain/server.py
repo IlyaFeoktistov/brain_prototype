@@ -30,6 +30,7 @@ from brain.config import FEATURES, BrainConfig
 from brain.language import Reply, Step
 from brain.mind import Mind
 from brain.api import build_router
+from brain.live import Liveliness
 
 
 WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
@@ -52,8 +53,7 @@ class BrainHost:
         # Очередь фонового чтения: мозг читает порциями между сообщениями.
         self.reading: deque = deque()
         # Когда мозг последний раз заговорил сам и думал в тишине.
-        self.spoke_up_at = 0.0
-        self.wandered_at = 0.0
+        self.live = Liveliness()
 
         self.mind: Mind | None = None
         self.session: Session | None = None
@@ -437,18 +437,11 @@ class BrainHost:
         self._emit_emotion()
 
     def _should_wander(self, last_activity: float) -> bool:
-        cfg = self.mind.cfg
-        now = time.time()
-        return (
-            cfg.live_mode
-            and not self.reading
-            and not self.dozing
-            and now - last_activity >= cfg.wander_every_seconds
-            and now - self.wandered_at >= cfg.wander_every_seconds
-        )
+        busy = bool(self.reading) or self.dozing
+        return self.live.should_wander(self.mind, last_activity, busy)
 
     def _wander(self) -> None:
-        self.wandered_at = time.time()
+        self.live.wandered_at = time.time()
         future: Future = Future()
 
         def run(session):
@@ -467,24 +460,11 @@ class BrainHost:
             self.emit({"type": "musing", "text": result[0]})
 
     def _should_speak_up(self, last_activity: float) -> bool:
-        cfg = self.mind.cfg
-        if not cfg.live_mode:
-            return False
-        now = time.time()
-        # Порыв из потребностей, а не таймер; таймеры — лишь «не перебивать»
-        # и рефрактерность.
-        return (
-            cfg.initiative_enabled
-            and bool(self.clients)
-            and not self.reading
-            and not self.dozing
-            and self.mind.language.emotions.urge >= cfg.initiative_urge
-            and now - last_activity >= cfg.initiative_idle_seconds
-            and now - self.spoke_up_at >= cfg.initiative_cooldown_seconds
-        )
+        busy = bool(self.reading) or self.dozing
+        return self.live.should_speak_up(self.mind, last_activity, bool(self.clients), busy)
 
     def _speak_up(self) -> None:
-        self.spoke_up_at = time.time()
+        self.live.spoke_up_at = time.time()
         future: Future = Future()
         self._execute(lambda session: session.language.initiative(), future, None, quiet=True)
         said = future.result() if future.done() and not future.exception() else None
@@ -496,15 +476,7 @@ class BrainHost:
             self._emit_emotion()
 
     def _should_fall_asleep(self, last_activity: float) -> bool:
-        """Засыпает, только когда устал (накопились впечатления) и тихо."""
-
-        cfg = self.mind.cfg
-        return (
-            not self.reading
-            and cfg.sleep_when_idle
-            and time.time() - last_activity >= cfg.idle_sleep_seconds
-            and self.mind.language.sleep_pressure >= cfg.sleepy_after_episodes
-        )
+        return self.live.should_fall_asleep(self.mind, last_activity, bool(self.reading))
 
     def submit(self, fn, sink=None) -> Future:
         """

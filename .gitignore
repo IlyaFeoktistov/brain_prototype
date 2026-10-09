@@ -36,8 +36,9 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
-# Сохранённый мозг
-data/
+# Сохранённый мозг и данные; стенды (data/tools) — в git
+data/*
+!data/tools/
 *.pt
 *.pt.tmp
 

@@ -95,6 +95,11 @@ export const feedback = (reward: number) => post<{ text: string }>("/api/feedbac
 
 export const load = (name: string) => post<{ brain: string; neurons: number }>("/api/load", { name });
 
+// Новый мозг рядом с прежними: рождается, сохраняется и становится текущим.
+// size — tiny / small / medium / large или число нейронов; пусто — как у текущего.
+export const newBrain = (name: string, size: string) =>
+  post<{ brain: string; neurons: number; text: string }>("/api/new", { name, size });
+
 export const setEmotions = (enabled: boolean) => post("/api/emotions", { enabled });
 
 export const setLive = (enabled: boolean) => post("/api/live", { enabled });

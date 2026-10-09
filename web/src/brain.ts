@@ -57,6 +57,8 @@ export interface EmotionEvent extends EmotionState {
 export interface Feature {
   name: string;
   title: string;
+  // Что делает, зачем нужна, когда трогать (config.FEATURES).
+  help: string;
   enabled: boolean;
 }
 

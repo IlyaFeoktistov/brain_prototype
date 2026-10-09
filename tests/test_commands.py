@@ -40,6 +40,24 @@ def test_brains_list_and_switch(mind, tmp_dir):
     assert session.mind.cfg.save_path == other_path
 
 
+def test_new_brain_is_born_saved_and_current(mind, tmp_dir):
+    mind.cfg.save_path = os.path.join(tmp_dir, "old.pt")
+    session, output = make_session(mind)
+    session.handle("/new fresh tiny")
+
+    assert session.mind is not mind
+    assert session.mind.cfg.save_path == os.path.join(tmp_dir, "fresh.pt")
+    assert os.path.exists(session.mind.cfg.save_path)
+    assert session.mind.language.experienced_tokens == 0
+    # Прежний сохранён — к нему можно вернуться.
+    assert os.path.exists(os.path.join(tmp_dir, "old.pt"))
+
+    session.handle("/new fresh")
+    assert "уже есть" in output[-1][1]
+    session.handle("/new other huge")
+    assert "Нет такого размера" in output[-1][1]
+
+
 def test_emotions_toggle_command(mind):
     session, output = make_session(mind)
     session.handle("/emotions off")
@@ -57,6 +75,9 @@ def test_feature_command_lists_and_toggles(mind):
     assert mind.cfg.thinking_enabled is True
     session.handle("/feature thinking_enabled off")
     assert mind.cfg.thinking_enabled is False
+
+    session.handle("/feature base_circuit")
+    assert "Не выключай" in output[-1][1]
 
     session.handle("/feature нет_такой on")
     assert "Нет такой функции" in output[-1][1]

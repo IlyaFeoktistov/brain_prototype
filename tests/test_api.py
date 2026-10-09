@@ -83,6 +83,7 @@ def test_command_and_errors(client):
     assert output and "мозг ожидает" in output[0]["text"] or "нет ожидания" in output[0]["text"]
 
     assert client.post("/api/load", json={"name": "nope.pt"}).status_code == 404
+    assert client.post("/api/new", json={"name": "x", "size": "огромный"}).status_code == 400
 
 
 def test_feedback_and_emotions(client):
@@ -158,6 +159,7 @@ def test_neuron_card(client):
 def test_features_list_and_toggle(client):
     features = {f["name"]: f for f in client.get("/api/features").json()}
     assert "dendritic_context" in features and features["emotions_enabled"]["title"]
+    assert all(feature["help"] for feature in features.values())
 
     after = client.post("/api/features", json={"name": "thinking_enabled", "enabled": True}).json()
     assert {f["name"]: f["enabled"] for f in after}["thinking_enabled"] is True

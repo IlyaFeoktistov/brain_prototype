@@ -232,7 +232,7 @@ class BrainHost:
             "initiative": self.mind.cfg.initiative_enabled,
             "live": self.mind.cfg.live_mode,
             "features": [
-                {"name": name, "title": FEATURES[name][0], "enabled": enabled}
+                {"name": name, "title": FEATURES[name][0], "help": FEATURES[name][2], "enabled": enabled}
                 for name, enabled in self.mind.features().items()
             ],
             "reading": [
@@ -503,7 +503,7 @@ class BrainHost:
             future.set_result(fn(self.session))
 
             if self.session.mind is not mind:
-                # /load — новый мозг, новая анатомия.
+                # /load или /new — другой мозг, новая анатомия.
                 self.mind = self.session.mind
                 self._attach()
                 self.emit(self.anatomy())

@@ -16,6 +16,14 @@ const THOUGHTS_LENGTH = 400;
 const CHAT_MIN = 300;
 const chatMax = () => Math.max(CHAT_MIN, window.innerWidth * 0.7);
 
+// Размеры нового мозга (config.PRESETS): память видеокарты — DESIGN.
+const SIZES = [
+  { value: "tiny", label: "tiny · 2 тыс. — проверить, что работает" },
+  { value: "small", label: "small · 20 тыс. — опыты, минуты на урок" },
+  { value: "medium", label: "medium · 100 тыс. — больше помнит, 1.4 ГБ" },
+  { value: "large", label: "large · 500 тыс. — не влезает в 6 ГБ" },
+];
+
 function bioTime(ms: number): string {
   const s = ms / 1000;
   return s < 120 ? `${s.toFixed(1)} с` : `${(s / 60).toFixed(1)} мин`;
@@ -35,6 +43,8 @@ export function App() {
   // Последний рост синапсов — микроскоп рисует дуги.
   const [growth, setGrowth] = useState<{ id: number; links: GrowEvent["links"] } | null>(null);
   const [chatWidth, setChatWidth] = useStoredSize("brain.chatWidth", 380);
+  // Форма «Новый мозг»: null — закрыта.
+  const [draft, setDraft] = useState<{ name: string; size: string } | null>(null);
 
   const connection = useRef<Connection | null>(null);
   const nextId = useRef(1);
@@ -175,43 +185,95 @@ export function App() {
     <div className="app">
       <header className="masthead">
         <h1>Срез мозга</h1>
-        {brains && brains.items.length > 0 && (
-          <label className="brain-picker">
-            <span>Мозг</span>
-            <select
-              value={brains.current}
-              disabled={!connected || status?.busy}
-              onChange={(event) => {
-                const name = event.target.value;
-                addEntry({ who: "you", text: `Переключаюсь на ${name}` });
-                api
-                  .load(name)
-                  .then((r) => addEntry({ who: "info", text: `Загружено: ${r.brain} — ${r.neurons.toLocaleString("ru")} нейронов` }))
-                  .catch(report);
-              }}
-            >
-              {brains.items.map((brain) => (
-                <option key={brain.name} value={brain.name}>
-                  {brain.name} · {brain.megabytes} МБ
-                </option>
-              ))}
-            </select>
-          </label>
+        {brains && (
+          <div className="brain-picker">
+            {brains.items.length > 0 && (
+              <label>
+                <span>Мозг</span>
+                <select
+                  value={brains.current}
+                  disabled={!connected || status?.busy}
+                  onChange={(event) => {
+                    const name = event.target.value;
+                    addEntry({ who: "you", text: `Переключаюсь на ${name}` });
+                    api
+                      .load(name)
+                      .then((r) => addEntry({ who: "info", text: `Загружено: ${r.brain} — ${r.neurons.toLocaleString("ru")} нейронов` }))
+                      .catch(report);
+                  }}
+                >
+                  {brains.items.map((brain) => (
+                    <option key={brain.name} value={brain.name}>
+                      {brain.name} · {brain.megabytes} МБ
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {draft === null ? (
+              <button
+                type="button"
+                className="new-brain"
+                disabled={!connected || status?.busy}
+                onClick={() => setDraft({ name: "", size: "small" })}
+              >
+                Новый мозг
+              </button>
+            ) : (
+              <form
+                className="new-brain-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const name = draft.name.trim();
+                  if (!name) return;
+                  setDraft(null);
+                  addEntry({ who: "you", text: `Новый мозг ${name} (${draft.size})` });
+                  api
+                    .newBrain(name, draft.size)
+                    .then((r) => addEntry({ who: "info", text: r.text }))
+                    .catch(report);
+                }}
+              >
+                <input
+                  autoFocus
+                  placeholder="имя"
+                  value={draft.name}
+                  onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+                />
+                <select value={draft.size} onChange={(event) => setDraft({ ...draft, size: event.target.value })}>
+                  {SIZES.map((size) => (
+                    <option key={size.value} value={size.value}>
+                      {size.label}
+                    </option>
+                  ))}
+                </select>
+                <button type="submit" disabled={!draft.name.trim()}>
+                  Создать
+                </button>
+                <button type="button" onClick={() => setDraft(null)}>
+                  Отмена
+                </button>
+              </form>
+            )}
+          </div>
         )}
         {status?.features && (
           <details className="features">
             <summary>Функции</summary>
             <div className="features-list">
               {status.features.map((feature) => (
-                <label key={feature.name} className="toggle" title={feature.name}>
-                  <input
-                    type="checkbox"
-                    checked={feature.enabled}
-                    disabled={!connected}
-                    onChange={(event) => api.setFeature(feature.name, event.target.checked).catch(report)}
-                  />
-                  {feature.title}
-                </label>
+                <div key={feature.name} className="feature">
+                  <label className="toggle" title={feature.name}>
+                    <input
+                      type="checkbox"
+                      checked={feature.enabled}
+                      disabled={!connected}
+                      onChange={(event) => api.setFeature(feature.name, event.target.checked).catch(report)}
+                    />
+                    {feature.title}
+                  </label>
+                  <p className="feature-help">{feature.help}</p>
+                </div>
               ))}
             </div>
           </details>

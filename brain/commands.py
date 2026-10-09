@@ -13,7 +13,7 @@ import threading
 import time
 from typing import Callable
 
-from brain.config import FEATURES
+from brain.config import FEATURES, PRESETS, BrainConfig
 from brain.language import ReadReport, Reply
 from brain.mind import Mind
 
@@ -49,7 +49,10 @@ HELP = """
   /initiative on|off          в живом режиме — заговаривать первым
   /feature [имя on|off]       все функции мозга: список / включить / выключить
 
+  /feature имя                что функция делает и когда её трогать
+
   /brains                     список сохранённых мозгов
+  /new имя [размер]           новый мозг (tiny, small, medium, large или число нейронов)
   /save [путь]  /load имя     сохранить / переключиться на другой мозг
   /help /quit                 (на выходе мозг сохраняется сам)
 """.strip("\n")
@@ -273,6 +276,8 @@ class Session:
             )
         elif command == "/brains":
             out(self.brains_text())
+        elif command == "/new":
+            out(self.new_brain(payload))
         elif command == "/load":
             target = self.resolve_brain(payload)
 
@@ -314,6 +319,49 @@ class Session:
                 return candidate
 
         return None
+
+    def new_brain(self, payload: str) -> str:
+        """
+        /new имя [размер] — новый мозг рядом с прежними: рождается
+        (калибровка), сохраняется в имя.pt и становится текущим. Прежний
+        сохраняется, к нему можно вернуться /load. Функции — по умолчанию.
+        """
+
+        parts = payload.split()
+
+        if not parts:
+            return "Формат: /new имя [tiny|small|medium|large|число нейронов]  (размер — как у текущего)"
+
+        name = parts[0].removesuffix(".pt")
+        size = parts[1] if len(parts) > 1 else self.mind.cfg.size
+
+        if not name or Path(name).name != name:
+            return f"Имя без папок: {parts[0]}"
+
+        if size not in PRESETS and not size.isdigit():
+            return f"Нет такого размера: {size} (tiny, small, medium, large, xlarge или число нейронов)"
+
+        path = Path(self.mind.cfg.save_path).expanduser().parent / f"{name}.pt"
+
+        if path.exists():
+            return f"Мозг {path.name} уже есть: /load {name} или другое имя"
+
+        # Текущий сохраняется, чтобы прогресс не потерять.
+        self.autosave(force=True)
+        cfg = BrainConfig()
+        cfg.size = size
+        cfg.save_path = str(path)
+        cfg.device = self.mind.cfg.device
+        mind = Mind(cfg)
+        mind.calibrate()
+        mind.save()
+        self.mind = mind
+
+        return (
+            f"Новый мозг: {path} — {mind.brain.n:,} нейронов. Он ничего не знает: "
+            "дай ему прочитать текст (/read), потом поспать (/sleep). "
+            "Как учить — README «Как обучать лучше всего» или справка в вебе."
+        )
 
     def brains_text(self) -> str:
         current = Path(self.mind.cfg.save_path).expanduser().resolve()
@@ -374,9 +422,21 @@ class Session:
         return report
 
     def feature(self, payload: str) -> str:
-        """/feature — список функций; /feature имя on|off — переключить."""
+        """
+        /feature — список функций; /feature имя — что она делает;
+        /feature имя on|off — переключить.
+        """
 
         parts = payload.split()
+
+        if len(parts) == 1:
+            if parts[0] not in FEATURES:
+                return f"Нет такой функции: {parts[0]} (список — /feature)"
+
+            title, _, about = FEATURES[parts[0]]
+            state = "включена" if self.mind.features()[parts[0]] else "выключена"
+
+            return f"{parts[0]} — {title} ({state})\n  {about}"
 
         if len(parts) == 2 and parts[1] in ("on", "off", "вкл", "выкл"):
             try:
@@ -384,7 +444,7 @@ class Session:
             except KeyError:
                 return f"Нет такой функции: {parts[0]} (список — /feature)"
 
-        lines = ["Функции мозга (/feature имя on|off):"]
+        lines = ["Функции мозга (/feature имя — что делает; /feature имя on|off):"]
 
         for name, enabled in self.mind.features().items():
             lines.append(f"  {'●' if enabled else '○'} {name:32s} {FEATURES[name][0]}")

@@ -16,12 +16,13 @@ llama.cpp-совместимые:
     POST /api/feedback  {reward}    +1 похвала, -1 ругань
     GET  /api/brains                сохранённые мозги
     POST /api/load      {name}      переключиться на другой мозг
+    POST /api/new       {name,size} новый мозг (size — tiny/small/… или число)
     POST /api/emotions  {enabled}   включить / выключить эмоции
     POST /api/thinking  {enabled}   размышлять перед ответом
     POST /api/live      {enabled}   живой режим: думает в тишине, сам заговаривает
     POST /api/initiative {enabled}  заговаривать первым (реплики — WebSocket
                                     событие "initiative")
-    GET  /api/features              функции мозга: [{name, title, enabled}]
+    GET  /api/features              функции мозга: [{name, title, help, enabled}]
     POST /api/features {name,enabled} включить / выключить функцию
     POST /api/stop                  остановить чтение
 
@@ -81,6 +82,12 @@ class LoadRequest(BaseModel):
     name: str
 
 
+class NewBrainRequest(BaseModel):
+    name: str
+    # Пусто — как у текущего мозга.
+    size: str = ""
+
+
 class EmotionsRequest(BaseModel):
     enabled: bool
 
@@ -100,7 +107,7 @@ class FeatureRequest(BaseModel):
 
 def _features(session) -> list[dict]:
     return [
-        {"name": name, "title": FEATURES[name][0], "enabled": enabled}
+        {"name": name, "title": FEATURES[name][0], "help": FEATURES[name][2], "enabled": enabled}
         for name, enabled in session.mind.features().items()
     ]
 
@@ -410,6 +417,19 @@ def build_router(host) -> APIRouter:
                 raise HTTPException(404, f"Нет такого мозга: {request.name}")
             session.handle(f"/load {request.name}")
             return {"brain": _current(session), "neurons": session.mind.brain.n}
+
+        return await call(run)
+
+    @router.post("/api/new")
+    async def new_brain(request: NewBrainRequest):
+        def run(session):
+            before = session.mind
+            text = session.new_brain(f"{request.name} {request.size}".strip())
+
+            if session.mind is before:
+                raise HTTPException(400, text)
+
+            return {"brain": _current(session), "neurons": session.mind.brain.n, "text": text}
 
         return await call(run)
 

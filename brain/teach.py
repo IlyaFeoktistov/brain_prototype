@@ -32,6 +32,9 @@ from brain.mind import Mind
 # Через сколько реплик переспросить поправленный вопрос: «понял» должно
 # пережить хотя бы пару чужих вопросов, иначе это эхо рабочей памяти.
 REASK_AFTER = 2
+# Человек читает ответ и печатает свой — время тишины перед каждой его
+# репликой, мс (pause=…). 0 — реплики вплотную, как было.
+PAUSE_MS = 0.0
 # Верным считается ответ, где ключевое слово среди первых слов: как
 # «в тройке» у экзамена — «в европе», «вокруг солнца» начинаются с предлога.
 FIRST_WORDS = 3
@@ -88,6 +91,9 @@ class Teacher:
     def ask(self, text: str, key: str, tag: str) -> tuple[bool, int]:
         """Реплика человека → ответ мозга. Верно ли и сколько слов после ключа."""
 
+        if PAUSE_MS > 0:
+            self.mind.brain.run(PAUSE_MS)
+
         reply = self.session.say(text)
         # Слова ответа — без знаков: «верно» и «уплывание» считаются по словам.
         answer = [
@@ -104,7 +110,27 @@ class Teacher:
 
         return hit is not None, drift
 
+    def probe(self, facts: list[Fact], key) -> tuple[int, list[str]]:
+        """
+        Проба без следа (generate — изолированно, без обучения): сколько
+        вопросов урока мозг сейчас отвечает дословно. Отличает, что стёр
+        сон, а что — сами проверочные вопросы (они учат, как любой опыт).
+        """
+
+        hits, answers = 0, []
+
+        for fact in facts:
+            said = [t for t, _ in self.language.generate(fact.question) if t[0].isalnum()]
+            hit = any(same_word(word, key(fact)) for word in said[:FIRST_WORDS])
+            hits += hit
+            answers.append(f"{fact.question} → {' '.join(said) or 'не знаю'} {'✓' if hit else '✗'}")
+
+        return hits, answers
+
     def correct(self, fact: Fact) -> None:
+        if PAUSE_MS > 0:
+            self.mind.brain.run(PAUSE_MS)
+
         reply = self.session.say(fact.answer)
         self.transcript.append(f"[поправка] я: {fact.answer}\n      мозг: {reply.text}")
 
@@ -121,6 +147,9 @@ def main() -> None:
 
         if k == "load":
             load = v
+        elif k == "pause":
+            global PAUSE_MS
+            PAUSE_MS = float(v)
         elif k == "facts":
             facts_path = Path(v)
         else:
@@ -185,6 +214,10 @@ def main() -> None:
     for _, again in pending:
         after_fix += teacher.ask(again.question, key(again), "переспрос")[0]
 
+    probes = []
+    hits, answers = teacher.probe(taught, key)
+    probes.append(("проба до сна", hits, answers))
+
     t = time.time()
     mind.language.sleep_until_rested()
     transcript.append(f"… сон {time.time() - t:.0f} с …")
@@ -204,13 +237,18 @@ def main() -> None:
 
         return hits, drifts
 
+    hits, answers = teacher.probe(taught, key)
+    probes.append(("проба после сна", hits, answers))
+
     held_hits, held_drift = test([(f.question, f) for f in held], "отложенный")
     para = [(p, f) for f in taught for p in f.paraphrases]
     para_hits, para_drift = test(para, "иначе")
+    hits, answers = teacher.probe(taught, key)
+    probes.append(("проба после 50 проверочных вопросов", hits, answers))
     slept_hits, slept_drift = test([(f.question, f) for f in taught], "после сна")
 
     drifts = held_drift + para_drift + slept_drift
-    lines = [
+    lines = [f"{name:38s} {hits}/{len(taught)}" for name, hits, _ in probes] + [
         f"сразу верно          {first}/{len(taught)}",
         f"после поправки       {after_fix}/{len(corrected)} (переспрос через {REASK_AFTER} реплики)",
         f"после сна, дословно  {slept_hits}/{len(taught)}",
@@ -219,7 +257,8 @@ def main() -> None:
         f"слов после верного   {sum(drifts) / max(1, len(drifts)):.1f} в среднем (0 — замолк)",
     ]
     out = Path(f"data/measure/{name}-teach.txt")
-    out.write_text("\n".join(transcript + [""] + lines) + "\n", encoding="utf-8")
+    detail = [f"\n{name}:\n  " + "\n  ".join(answers) for name, _, answers in probes]
+    out.write_text("\n".join(transcript + detail + [""] + lines) + "\n", encoding="utf-8")
     print("\n".join(transcript[:12] + ["…"] + lines), flush=True)
     print(f"расшифровка: {out}")
 

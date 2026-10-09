@@ -288,9 +288,14 @@ class SpikingBrain:
             {"cortex_E": cfg.e_adapt_b, "memory_E": 0.0, "I": 0.0}
         )
 
+        # Потолок медленного тока (насыщение NMDA).
+        self.slow_max = torch.full((self.n_slots,), float("inf"), device=self.device)
+
         for spec in cfg.areas:
             if spec.adapt_b is not None:
                 self.adapt_b[self.areas[spec.name].E.slice] = spec.adapt_b
+            if spec.slow_max is not None:
+                self.slow_max[self.areas[spec.name].E.slice] = spec.slow_max
         self.v_peak = self._fill(
             {"cortex_E": 0.0, "memory_E": cfg.v_threshold, "I": cfg.v_threshold}
         )
@@ -315,9 +320,10 @@ class SpikingBrain:
         self.syn_scale = self.tau_m / self.tau_syn
         # Быстрый ток рабочей памяти ослаблен: она должна держать
         # прошлые слова, а не дублировать текущее.
-        for area in self.areas.values():
-            if area.kind == "memory":
-                self.syn_scale[area.E.slice] *= cfg.memory_ampa_ratio
+        for spec in cfg.areas:
+            if spec.kind == "memory":
+                ratio = spec.ampa_ratio if spec.ampa_ratio is not None else cfg.memory_ampa_ratio
+                self.syn_scale[self.areas[spec.name].E.slice] *= ratio
 
         dt = cfg.dt_ms
         self.decay_m = dt / self.tau_m
@@ -344,9 +350,15 @@ class SpikingBrain:
         # стреляют, пока чувство держится, глушило путь «чувство → слова»
         # (тест «скука → скучно»: «мне человек»).
         self.cortex_e = torch.zeros(self.n_slots, device=self.device)
+        # Чьё торможение растёт с частотой: по умолчанию те же клетки; у
+        # цели — тоже (стреляет дольше всех — гаснет первой).
+        self.inh_adapts = torch.zeros(self.n_slots, device=self.device)
         for spec in cfg.areas:
             if spec.kind == "cortex" and spec.ee_plastic:
                 self.cortex_e[self.areas[spec.name].E.slice] = 1.0
+            adapts = spec.inhibition_adapts
+            if adapts if adapts is not None else (spec.kind == "cortex" and spec.ee_plastic):
+                self.inh_adapts[self.areas[spec.name].E.slice] = 1.0
         self.stp_recover = dt / cfg.stp_tau_rec_ms
         self.decay_inh_gain = math.exp(-dt / cfg.inh_gain_tau_ms)
         # Затухание адаптации: у ядер может быть своё (медленное) время.
@@ -453,6 +465,33 @@ class SpikingBrain:
 
         return proj
 
+    def _wire_columns(self, spec, area) -> None:
+        """
+        Врождённые колонки: E-клетки зоны идут группами по spec.columns,
+        каждая клетка получает входы от всех соседей по колонке весом
+        spec.column_weight (вместо своих первых случайных входов). Колонка —
+        аттрактор: разбуженная, горит сама на медленном токе, пока её не
+        погасит торможение зоны.
+        """
+
+        proj = self.projections[-1]
+        size, k = proj.pre.shape
+        mates = spec.columns - 1
+
+        if k < mates:
+            return
+
+        cell = torch.arange(size, device=self.device)
+        first = cell - cell % spec.columns
+        others = first[:, None] + torch.arange(spec.columns, device=self.device)[None, :]
+        others = others[others != cell[:, None]].view(size, mates)
+        whole = others < size
+        pre = torch.where(whole, others + area.E.start, proj.pre[:, :mates].long())
+        proj.pre[:, :mates] = pre.to(proj.pre.dtype)
+        proj.weight[:, :mates] = torch.where(
+            whole, torch.tensor(spec.column_weight, device=self.device), proj.weight[:, :mates]
+        )
+
     def _init_projections(self) -> None:
         cfg = self.cfg
         self.projections: list[Projection] = []
@@ -465,6 +504,9 @@ class SpikingBrain:
                 f"{spec.name}: E->E", area.E, area.E, spec.k_ee,
                 spec.ee_weight, plastic=spec.ee_plastic, cap=spec.ee_cap,
             )
+            if spec.columns > 1:
+                self._wire_columns(spec, area)
+
             self._connect(
                 f"{spec.name}: E->I", area.E, area.I, cfg.k_ei,
                 (cfg.ei_weight, cfg.ei_weight),
@@ -773,6 +815,7 @@ class SpikingBrain:
 
         self.i_syn.mul_(self.decay_syn).add_(drive * self.syn_scale)
         self.i_slow.mul_(self.decay_slow).add_(drive.clamp(min=0.0) * self.slow_scale)
+        self.i_slow.clamp_(max=self.slow_max)
 
         # ---- мембрана (AdEx / LIF) ----
         exp_term = torch.where(
@@ -816,7 +859,7 @@ class SpikingBrain:
             # Усиление торможения: каждый спайк E коры поднимает, медленно
             # возвращается к 1 (в равновесии 1 + шаг · τ · частота).
             self.inh_gain.sub_(1.0).mul_(self.decay_inh_gain).add_(1.0)
-            self.inh_gain.add_(cfg.inh_gain_per_spike * self.spikes * self.cortex_e)
+            self.inh_gain.add_(cfg.inh_gain_per_spike * self.spikes * self.inh_adapts)
 
         if cfg.pool_inhibition_mv > 0:
             self.pool.mul_(self.decay_pool).add_((self.spikes * self.pool_mask).sum())
@@ -1383,6 +1426,21 @@ class SpikingBrain:
 
         if neurons is not None:
             self.interoception[E.start + neurons] = amplitude
+
+    def silence(self, area: str) -> None:
+        """
+        Погасить устойчивую активность зоны (и её ток CAN): медленная волна
+        сна — кора целиком замолкает (down-state).
+        """
+
+        if area not in self.areas:
+            return
+
+        for pop in (self.areas[area].E, self.areas[area].I):
+            self.i_syn[pop.slice] = 0.0
+            self.i_slow[pop.slice] = 0.0
+            self.adapt[pop.slice] = 0.0
+            self.v[pop.slice] = self.cfg.v_rest
 
     def quiet(self, area: str) -> None:
         """Погасить активность зоны (только внутри frozen())."""

@@ -67,7 +67,8 @@ def test_asks_about_unknown_words(mind):
 
 
 @pytest.mark.xfail(reason="после «Париж .» ПФК («столица франции») тянет все столицы — "
-                   "«Париж . Рим Париж»; лечит цель в ПФК (ROADMAP P0, этап 2)", strict=False)
+                   "«Париж Берлин Италии Париж»; с целью без сброса на паузе проходил, "
+                   "со сбросом — нет (DESIGN «Цель в ПФК»)", strict=False)
 def test_answer_does_not_repeat_words(trained):
     produced = trained.language.generate("столица франции")
     # Слова, без знаков: «.» может стоять после каждого.

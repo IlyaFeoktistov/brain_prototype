@@ -218,7 +218,7 @@ def test_amygdala_learns_what_leads_to_blame():
     said = set()
     # Каждый раз, когда говорили про компьютер, — ругань.
     for _ in range(3):
-        said |= set(language.converse("компьютер сломался").text.split())
+        said |= set(language.words(language.converse("компьютер сломался").text))
         language.converse("-")
 
     assert value_of("компьютер") < before - 0.1

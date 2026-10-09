@@ -123,8 +123,10 @@ def test_initiative_is_learned_not_scripted():
         language.converse("мне скучно")
 
     # Тишина: эхо рабочей памяти («мне скучно» только что звучало) гаснет,
-    # говорить может только чувство.
+    # говорить может только чувство. Цель держит услышанное сама — её
+    # гасим тоже (иначе тест проходит эхом цели).
     language.rest()
+    mind.brain.silence("goal")
     mind.brain.run(3000)
     _bored(language.emotions)
     said = language.initiative()

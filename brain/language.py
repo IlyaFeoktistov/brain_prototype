@@ -526,6 +526,15 @@ class LanguageInterface:
             reuse=False,
         )
 
+        # Места слов в цели (ПФК, зона «goal»): как у памяти, но держит их
+        # сама зона. Места слышанных однажды переиспользуются.
+        self.goal = self.brain.areas.get("goal")
+        spec = next((s for s in cfg.areas if s.name == "goal"), None)
+        self._goal_cells = spec.columns if spec is not None else 0
+        # Слово -> колонка цели (врождённые, см. AreaSpec.columns); новое
+        # слово берёт колонку слова, звучавшего давнее всех.
+        self.goal_columns: dict[str, int] = {}
+
         # Какое чувство сейчас ощущается и с какого момента (адаптация).
         self._felt_mood: str | None = None
         self._felt_since = 0.0
@@ -710,6 +719,16 @@ class LanguageInterface:
             trace[held] = torch.maximum(trace[held], torch.tensor(strength * self.cfg.memory_mv, device=self.device))
             self._hold_memory()
 
+        # Услышанное (не своё) слово будит своё место цели; дальше его
+        # держит сама зона.
+        aim = (
+            self._goal_place(token, learn_forms)
+            if self._goal_on() and not self._own_speech else None
+        )
+
+        if aim is not None:
+            self.brain.feel("goal", aim, self.cfg.goal_load_mv)
+
         sound = self.ear.encode(form)
 
         if gate:
@@ -724,6 +743,9 @@ class LanguageInterface:
 
         if place is not None or gate:
             self.brain.feel("association", None, 0.0)
+
+        if aim is not None:
+            self.brain.feel("goal", None, 0.0)
 
         if place is not None:
 
@@ -1007,6 +1029,30 @@ class LanguageInterface:
 
         return self._priming
 
+    def _goal_on(self) -> bool:
+        return self.goal is not None and self._goal_cells > 1 and self.cfg.goal_enabled
+
+    def _goal_place(self, token: str, allocate: bool) -> torch.Tensor | None:
+        columns = self.goal_columns
+        column = columns.pop(token, None)
+
+        if column is None:
+            if not allocate:
+                return None
+
+            total = self.goal.E.size // self._goal_cells
+
+            if len(columns) < total:
+                column = len(columns)
+            else:
+                # Колонку отдаёт слово, звучавшее давнее всех.
+                column = columns.pop(next(iter(columns)))
+
+        columns[token] = column
+        start = column * self._goal_cells
+
+        return torch.arange(start, start + self._goal_cells, device=self.device)
+
     def _hold_memory(self) -> None:
         cells = torch.arange(self.context.E.size, device=self.device)
         self.brain.feel("prefrontal", cells, self._memory_trace())
@@ -1196,6 +1242,7 @@ class LanguageInterface:
         for _, cells in self.memory.evicted:
             self.brain.reset_cells(self.context.E, cells)
 
+
         self.concepts.evicted.clear()
         self.memory.evicted.clear()
 
@@ -1243,6 +1290,13 @@ class LanguageInterface:
         фразы предсказывается и учится из контекста прошлой. Реплики
         разговора и сны разделяются полностью.
         """
+
+        # Пауза — граница события: цель (то, что держала реплика или
+        # строка) сбрасывается, как рабочая память человека на границе
+        # события (Zacks). Долг: сброс кодом, а должны клетки окончания
+        # звука → торможение цели.
+        if not connected and self._goal_on():
+            self.brain.silence("goal")
 
         quiet = self.brain.observe(self.cfg.rest_ms)
         self.brain.forget()
@@ -1499,6 +1553,8 @@ class LanguageInterface:
             step.expected, step.error = self._preparedness(token)
         elif self.last_rates is not None:
             expected_state = self.expectation(self.last_rates)
+
+        if expected_state is not None:
             exclude = {self.last_token} if self.last_token else None
             ranked = self.semantic.decode(expected_state, exclude=exclude, top=Confidence.TOP)
 
@@ -1871,6 +1927,10 @@ class LanguageInterface:
                     break
 
                 salience = 0.0
+                # Медленная волна: кора замолкает между проигрываниями —
+                # цель прошлого эпизода в следующий не тянется.
+                self.brain.silence("goal")
+                self.last_rates = None
 
                 for step in self.experience(self._ended(episode.tokens)):
                     report.tokens += step.token != END
@@ -1966,7 +2026,7 @@ class LanguageInterface:
 
         # Новая реплика — новая мысль: пауза, иначе мозг выучит переход
         # от конца прошлой реплики к началу этой («германии -> квантовая»).
-        if self.last_rates is not None:
+        if self.last_token is not None:
             self.rest()
 
         self.held_mood = self.emotions.mood.name
@@ -2214,7 +2274,7 @@ class LanguageInterface:
 
         mood = self.emotions.mood.name
 
-        if self.last_rates is not None:
+        if self.last_token is not None:
             self.rest()
 
         self._notice_feeling()
@@ -2652,6 +2712,9 @@ class LanguageInterface:
             self.frozen.__enter__()
             # Чистый контекст: пауза тишины, прошлое затухает само.
             i.brain.run(i.cfg.probe_pause_ms)
+            # Цель прошлого разговора в пробу не тянется (состояние мозга
+            # вернётся при выходе).
+            i.brain.silence("goal")
             i.last_rates, i.last_token, i.heard_in_phrase = None, None, []
             return self
 
@@ -2968,6 +3031,7 @@ class LanguageInterface:
             "category_predicted_by": self._category_predicted_by,
             "category_size": self._category_size,
             "memory_places": self.memory.state_dict(),
+            "goal_columns": list(self.goal_columns.items()),
             "experienced_tokens": self.experienced_tokens,
             "sentences_lived": self.sentences_lived,
             "confidence": self.confidence.state_dict(),
@@ -2997,6 +3061,8 @@ class LanguageInterface:
 
         if "memory_places" in state:
             self.memory.load_state_dict(state["memory_places"])
+
+        self.goal_columns = dict(state.get("goal_columns", []))
         self.experienced_tokens = state["experienced_tokens"]
         self.dialog_turns = state["dialog_turns"]
         self.sentences_lived = state.get("sentences_lived", 0)

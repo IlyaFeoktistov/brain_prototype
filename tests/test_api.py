@@ -24,6 +24,24 @@ def test_models_lists_brains(client):
     data = client.get("/v1/models").json()
     assert data["object"] == "list"
     assert all(model["id"].endswith(".pt") for model in data["data"])
+    # Отвечающий мозг в списке, даже если ещё не сохранён.
+    current = client.get("/api/brains").json()["current"]
+    assert current in [model["id"] for model in data["data"]]
+
+
+def test_stream_while_waking_is_503(client):
+    from brain.server import host
+
+    host.ready.clear()
+    try:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"stream": True, "messages": [{"role": "user", "content": "Столица"}]},
+        )
+    finally:
+        host.ready.set()
+
+    assert response.status_code == 503
 
 
 def test_chat_completion(client):

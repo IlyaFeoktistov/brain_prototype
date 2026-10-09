@@ -147,6 +147,11 @@ def build_router(host) -> APIRouter:
         wrap(kind, value) -> строка SSE: kind = "token" | "done".
         """
 
+        # Проверить до начала ответа: после первого байта статус уже не
+        # поменять, и 503 превращается в оборванное соединение.
+        if not host.ready.is_set():
+            raise HTTPException(503, "Мозг ещё просыпается")
+
         queue: asyncio.Queue = asyncio.Queue()
         loop = asyncio.get_running_loop()
 
@@ -167,7 +172,14 @@ def build_router(host) -> APIRouter:
 
                 yield wrap("token", value)
 
-            yield wrap("done", future.result())
+            try:
+                result = future.result()
+            except Exception as error:
+                # Ответ уже идёт — ошибку отдать событием, а не обрывом.
+                yield _sse({"error": {"message": str(error)}})
+                return
+
+            yield wrap("done", result)
 
         return StreamingResponse(events(), media_type="text/event-stream")
 
@@ -233,7 +245,10 @@ def build_router(host) -> APIRouter:
     @router.get("/v1/models")
     async def models():
         def run(session):
-            return [path.name for path in session.brain_files()]
+            names = [path.name for path in session.brain_files()]
+            # Новый мозг ещё не сохранён, но отвечает именно он.
+            current = _current(session)
+            return names if current in names else [current, *names]
 
         names = await call(run)
         return {

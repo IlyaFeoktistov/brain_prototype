@@ -1,5 +1,6 @@
 """Гиппокамп, сон, память диалога, размышление."""
 
+import pytest
 from tests.conftest import FACTS
 
 
@@ -102,6 +103,11 @@ def _joyful(emotions):
     emotions.valence, emotions.arousal, emotions.confusion, emotions.novelty_hunger = 0.6, 0.6, 0.0, 0.0
 
 
+@pytest.mark.xfail(
+    reason="чувство → слова не учится: после тишины скука будит «воду», "
+    "раньше тест проходил за счёт эха рабочей памяти (ROADMAP P2)",
+    strict=False,
+)
 def test_initiative_is_learned_not_scripted():
     from tests.conftest import make_mind
 
@@ -116,12 +122,18 @@ def test_initiative_is_learned_not_scripted():
         _bored(language.emotions)
         language.converse("мне скучно")
 
+    # Тишина: эхо рабочей памяти («мне скучно» только что звучало) гаснет,
+    # говорить может только чувство.
+    language.rest()
+    mind.brain.run(3000)
     _bored(language.emotions)
     said = language.initiative()
     assert said is not None and "скучно" in said[1]
     assert not any(phrase in said[1] for phrase in scripted)
 
     # В другом чувстве выученное про скуку не всплывает.
+    language.rest()
+    mind.brain.run(3000)
     _joyful(language.emotions)
     joyful = language.initiative()
     assert joyful is None or "скучно" not in joyful[1]

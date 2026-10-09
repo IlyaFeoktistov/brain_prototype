@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 import hashlib
+import math
 import random
 import re
 import time
@@ -509,6 +510,9 @@ class LanguageInterface:
             reuse=False,
         )
 
+        # Какое чувство сейчас ощущается и с какого момента (адаптация).
+        self._felt_mood: str | None = None
+        self._felt_since = 0.0
         self.confidence = Confidence()
         # Стенд отладки: показатели здоровья после каждой фразы (/health).
         self.health = Health(brain, cfg)
@@ -1199,10 +1203,6 @@ class LanguageInterface:
         self.health.pause(quiet)
         self.health.sentence(" ".join(self.heard_in_phrase))
 
-        # В тишине смысловая кора молчит; стреляющие клетки — очаг.
-        if self.cfg.calm_hz > 0:
-            self.brain.calm(quiet, self.meaning.E, self.cfg.calm_hz, self.cfg.calm_keep)
-
         self.sentences_lived += 1
 
         if not connected:
@@ -1833,6 +1833,9 @@ class LanguageInterface:
 
                 episode.salience = salience
                 episode.replays += 1
+
+                if self.cfg.base_circuit:
+                    self.brain.downscale(self.cfg.sleep_downscale)
                 self.dreams.append(" ".join(episode.tokens))
                 report.sentences += 1
                 self.rest()
@@ -2124,7 +2127,22 @@ class LanguageInterface:
         amplitude = self.cfg.interoception_mv + self.cfg.interoception_arousal_mv * emotions.arousal
         # Чувство держится всю реплику: настроение за фразу не скачет.
         mood = self.held_mood or emotions.mood.name
+
+        # Новое чувство — сигнал в полную силу, дальше адаптация.
+        if mood != self._felt_mood:
+            self._felt_mood, self._felt_since = mood, self.brain.time_ms
+
+        if self.cfg.interoception_adapt_ms > 0:
+            tonic = self.cfg.interoception_tonic
+            elapsed = self.brain.time_ms - self._felt_since
+            amplitude *= tonic + (1.0 - tonic) * math.exp(-elapsed / self.cfg.interoception_adapt_ms)
+
         self.brain.feel("limbic", self._feeling_neurons(mood), amplitude)
+
+    def _notice_feeling(self) -> None:
+        """Прислушаться к себе: чувство снова ощущается в полную силу."""
+
+        self._felt_since = self.brain.time_ms
 
     def initiative(self) -> tuple[str, str] | None:
         """
@@ -2149,6 +2167,7 @@ class LanguageInterface:
         if self.last_rates is not None:
             self.rest()
 
+        self._notice_feeling()
         self._feel_inside()
         # Дать чувству установиться: клетки прошлого чувства ещё
         # несколько миллисекунд досрабатывают по инерции.

@@ -337,6 +337,18 @@ class SpikingBrain:
         if "association" in self.areas:
             self.dendrite_post[self.areas["association"].E.slice] = True
         self.slow_scale = self.slow_gain * self.tau_m / cfg.memory_tau_syn
+        # Базовый контур: у кого истощаются синапсы и чьё торможение
+        # растёт с частотой — E зон с обучаемыми связями внутри себя (там
+        # ансамбли могут замкнуться: смысловая кора). Входные зоны (чувства,
+        # слух) — проводники: [замер] истощение у клеток чувства, которые
+        # стреляют, пока чувство держится, глушило путь «чувство → слова»
+        # (тест «скука → скучно»: «мне человек»).
+        self.cortex_e = torch.zeros(self.n_slots, device=self.device)
+        for spec in cfg.areas:
+            if spec.kind == "cortex" and spec.ee_plastic:
+                self.cortex_e[self.areas[spec.name].E.slice] = 1.0
+        self.stp_recover = dt / cfg.stp_tau_rec_ms
+        self.decay_inh_gain = math.exp(-dt / cfg.inh_gain_tau_ms)
         # Затухание адаптации: у ядер может быть своё (медленное) время.
         self.decay_adapt = torch.full(
             (self.n_slots,), math.exp(-dt / cfg.e_adapt_tau), device=self.device
@@ -663,6 +675,10 @@ class SpikingBrain:
         self.eligibility_scale = torch.ones(1, device=self.device)
         # Спайки, не влезшие в таблицу шага (должно быть 0).
         self.dropped = torch.zeros(1, device=self.device)
+        # Базовый контур (base_circuit): ресурс пресинапса (истощение,
+        # 1 — полный) и усиление торможения, приходящего к клетке (1 — норма).
+        self.stp_x = torch.ones(self.n_slots, device=self.device)
+        self.inh_gain = torch.ones(self.n_slots, device=self.device)
         # У маленьких мозгов зоны малы, и случайные пики занимают
         # большую долю нейронов — им нужен запас не по доле, а в штуках.
         self.max_spikes = max(
@@ -723,6 +739,13 @@ class SpikingBrain:
             dendrite = torch.zeros_like(drive).index_add_(0, post, weight * to_dendrite)
             self.i_dend.mul_(self.decay_dend).add_(dendrite)
             weight = weight * ~to_dendrite
+
+        if cfg.base_circuit:
+            # Истощение: синапс отдаёт долю оставшегося ресурса пресинапса.
+            weight = weight * self.stp_x.index_select(0, fired_before)[:, None].expand_as(rows).flatten()
+            # Торможение к клетке × её усиление (растёт, если клетка
+            # стреляет выше нормы).
+            weight = torch.where(weight < 0, weight * self.inh_gain.index_select(0, post), weight)
 
         drive.index_add_(0, post, weight)
 
@@ -785,6 +808,15 @@ class SpikingBrain:
         self.v.copy_(torch.where(fired, cfg.v_reset, v))
         self.refractory.copy_(torch.where(fired, cfg.refractory_ms, self.refractory))
         self.adapt.mul_(self.decay_adapt).add_(self.adapt_b * self.spikes)
+
+        if cfg.base_circuit:
+            # Ресурс восстанавливается к 1, спайк тратит долю stp_u.
+            self.stp_x.add_((1.0 - self.stp_x) * self.stp_recover)
+            self.stp_x.sub_(cfg.stp_u * self.stp_x * self.spikes * self.cortex_e)
+            # Усиление торможения: каждый спайк E коры поднимает, медленно
+            # возвращается к 1 (в равновесии 1 + шаг · τ · частота).
+            self.inh_gain.sub_(1.0).mul_(self.decay_inh_gain).add_(1.0)
+            self.inh_gain.add_(cfg.inh_gain_per_spike * self.spikes * self.cortex_e)
 
         if cfg.pool_inhibition_mv > 0:
             self.pool.mul_(self.decay_pool).add_((self.spikes * self.pool_mask).sum())
@@ -1097,37 +1129,21 @@ class SpikingBrain:
 
         return reset
 
-    def calm(self, rates: torch.Tensor, pop: Population, max_hz: float, keep: float) -> int:
+    def downscale(self, fraction: float) -> None:
         """
-        Гомеостаз по частоте (Turrigiano): клетки, стреляющие в тишине
-        чаще max_hz, — очаг (выученные связи частых слов друг к другу
-        замкнулись сами на себя). Их выученный прирост входов × keep;
-        остальных клеток не касается. Возвращает число успокоенных клеток.
+        Сон ослабляет выученное (Tononi): прирост каждого пластичного
+        синапса над весом при рождении × (1 − fraction). Сильное остаётся
+        сильным относительно слабого, общий уровень падает.
         """
 
-        if not self.plasticity:
-            return 0
+        if not self.plasticity or fraction <= 0:
+            return
 
-        hot = (rates[pop.slice] > max_hz).nonzero().flatten()
-
-        if not len(hot):
-            return 0
-
-        for proj in self.plastic:
-            if proj.post is not pop:
-                continue
-
-            # Сразу к бюджету масштабирования (не ждать его очереди) и
-            # ещё × keep выученного прироста.
-            weight = proj.weight[hot]
-            budget = weight.shape[1] * proj.innate_mean * self.cfg.synaptic_scaling_budget
-            weight = weight * (budget / weight.sum(1, keepdim=True).clamp(min=1e-9)).clamp(max=1.0)
-            birth = proj.birth[hot].to(weight.dtype)
-            gained = (weight - birth).clamp(min=0.0)
-            proj.weight[hot] = weight - gained * (1.0 - keep)
-            proj.early[hot] = proj.early[hot] * keep
-
-        return len(hot)
+        plastic = self.net_weight[: self.n_plastic]
+        birth = self.birth_weight.to(plastic.dtype)
+        gained = (plastic - birth).clamp(min=0.0)
+        plastic.sub_(gained * fraction)
+        self.early.mul_(1.0 - fraction)
 
     def homeostasis(self, rates: torch.Tensor) -> None:
         """
@@ -1323,7 +1339,7 @@ class SpikingBrain:
     _DYNAMIC = (
         "v", "i_syn", "i_slow", "i_dend", "pool", "adapt", "refractory", "spikes",
         "trace_pre", "trace_pre_rise", "ltp_kernel", "trace_post", "counts", "eligibility",
-        "eligibility_scale", "dropped", "bias", "interoception",
+        "eligibility_scale", "dropped", "bias", "interoception", "stp_x", "inh_gain",
     )
 
     def _snapshot(self) -> dict:

@@ -1888,13 +1888,13 @@ class LanguageInterface:
     # СОН: гиппокамп проигрывает эпизоды коре
     # ==============================================================
 
-    def _remember(self, tokens: list[str], salience: float) -> None:
+    def _remember(self, tokens: list[str], salience: float, ended: bool = True) -> None:
         """Гиппокамп запоминает фразу с одного раза (но не свои сны)."""
 
         if not self.sleeping:
             if self.cfg.emotions_enabled:
                 salience *= 1.0 + self.cfg.arousal_salience * self.emotions.arousal
-            self.hippocampus.store(tokens, salience)
+            self.hippocampus.store(tokens, salience, ended)
             self.emotions.sleepy = self.sleep_pressure >= self.cfg.sleepy_after_episodes
 
     def sleep(
@@ -1932,7 +1932,9 @@ class LanguageInterface:
                 self.brain.silence("goal")
                 self.last_rates = None
 
-                for step in self.experience(self._ended(episode.tokens)):
+                tokens = self._ended(episode.tokens) if episode.ended else episode.tokens
+
+                for step in self.experience(tokens):
                     report.tokens += step.token != END
                     report.dopamine += step.dopamine
                     salience += step.dopamine
@@ -2059,7 +2061,8 @@ class LanguageInterface:
                     report.hits += step.expected == step.token
 
             report.sentences += 1
-            self._remember(self.tokenize(sentence), salience)
+            # На последней фразе ответил мозг — паузы после неё не было.
+            self._remember(self.tokenize(sentence), salience, ended=not last)
 
             # Между фразами — пауза, но после последней мозг
             # сразу продолжает мысль.
@@ -2131,6 +2134,7 @@ class LanguageInterface:
             self._feel("curious")
 
         text = " … ".join(part for part in (answer, question) if part) or "не знаю"
+        self._remember_with_previous(user_text, report.dopamine)
         self.dialog.append({"who": "человек", "text": user_text})
         self.dialog.append({"who": "мозг", "text": text, "answer": answer, "rating": 0})
         del self.dialog[: -self.cfg.dialog_log_turns]
@@ -2444,6 +2448,28 @@ class LanguageInterface:
             question = self.dialog[index - 1]["text"] if index else ""
             tokens = self.tokenize(question) + self.tokenize(turn["answer"])
             self.hippocampus.store(tokens, salience=amplitude)
+
+    def _remember_with_previous(self, text: str, salience: float) -> None:
+        """
+        Гиппокамп связывает соседние по времени события (временной
+        контекст, Howard & Kahana): последняя фраза прошлой реплики человека
+        не кончилась — на ней мозг отвечал, — и эпизод продолжается этой
+        репликой: «столица франции? | Париж»; во сне это одна мысль, и после
+        «?» учится ответ, а не конец. Что реплика — поправка, не решается:
+        продолжаются любые соседние (и «Париж | столица германии?»). Своего
+        ответа между ними в эпизоде нет — своя речь не запоминается.
+        """
+
+        if not self.cfg.pair_turns:
+            return
+
+        previous = next((t["text"] for t in reversed(self.dialog) if t["who"] == "человек"), None)
+        lines = [s for s in self.sentences(previous or "") if self.tokenize(s)]
+
+        if lines:
+            # Эта реплика сама не кончилась паузой, если её последняя фраза
+            # — та, на которой ответит мозг.
+            self.hippocampus.extend(self.tokenize(lines[-1]), self.tokenize(text), salience, ended=False)
 
     def reread(self, turns: int, progress=None, stop=None) -> ReadReport:
         """

@@ -26,6 +26,10 @@ class Episode:
     # Сколько дофамина фраза вызвала в последний раз (неожиданность).
     salience: float
     replays: int = 0
+    # Кончилась ли фраза паузой. Нет — на ней ответил мозг (реплика
+    # человека): во сне конец строки после неё не проигрывается, а то
+    # мозг выучит «после вопроса — тишина».
+    ended: bool = True
 
 
 class Hippocampus:
@@ -40,16 +44,31 @@ class Hippocampus:
     def __len__(self) -> int:
         return len(self.episodes)
 
-    def store(self, tokens: list[str], salience: float) -> None:
+    def store(self, tokens: list[str], salience: float, ended: bool = True) -> None:
         if len(tokens) < 2:
             return
 
-        self.episodes.append(Episode(list(tokens), salience))
+        self.episodes.append(Episode(list(tokens), salience, ended=ended))
 
         if len(self.episodes) > self.capacity:
             # Забывается самое выученное (наименее неожиданное).
             weakest = min(range(len(self.episodes)), key=lambda i: self.episodes[i].salience)
             self.episodes.pop(weakest)
+
+    def extend(self, tokens: list[str], more: list[str], salience: float, ended: bool) -> None:
+        """
+        Эпизод не кончился, а продолжился: последний эпизод с этими словами
+        дописывается (временной контекст тот же). Нет такого — новый.
+        """
+
+        for episode in reversed(self.episodes[-10:]):
+            if episode.tokens == tokens:
+                episode.tokens = tokens + list(more)
+                episode.salience = max(episode.salience, salience)
+                episode.ended = ended
+                return
+
+        self.store(tokens + list(more), salience, ended)
 
     def sample(self) -> Episode | None:
         if not self.episodes:
@@ -71,10 +90,10 @@ class Hippocampus:
 
     def state_dict(self) -> dict:
         return {
-            "episodes": [(e.tokens, e.salience, e.replays) for e in self.episodes],
+            "episodes": [(e.tokens, e.salience, e.replays, e.ended) for e in self.episodes],
             "random": self.random.getstate(),
         }
 
     def load_state_dict(self, state: dict) -> None:
-        self.episodes = [Episode(list(t), s, r) for t, s, r in state["episodes"]]
+        self.episodes = [Episode(list(e[0]), e[1], e[2], *(e[3:] or [True])) for e in state["episodes"]]
         self.random.setstate(state["random"])

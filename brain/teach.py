@@ -12,7 +12,8 @@ teach-data.txt обычными репликами (`converse` — мозг уч
 
 Без load= мозг создаётся и читает train-data.md дважды (как brain.measure)
 и сохраняется в data/measure/имя-read.pt — с него можно повторить.
-Расшифровка — в data/measure/имя-teach.txt.
+Расшифровка — в data/measure/имя-teach.txt, мозг после урока и сна —
+в data/measure/имя-taught.pt.
 """
 
 from __future__ import annotations
@@ -187,6 +188,8 @@ def main() -> None:
     t = time.time()
     mind.language.sleep_until_rested()
     transcript.append(f"… сон {time.time() - t:.0f} с …")
+    # Мозг после урока и сна — для /trace и проб.
+    mind.save(f"data/measure/{name}-taught.pt")
 
     # Проверка без поправок: сначала то, что меньше всего подсказано уроком.
     def test(items: list[tuple[str, Fact]], tag: str) -> tuple[int, list[int]]:

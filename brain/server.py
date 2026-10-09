@@ -258,7 +258,8 @@ class BrainHost:
     # ==============================================================
 
     def start(self) -> None:
-        threading.Thread(target=self._run, name="brain", daemon=True).start()
+        self.thread = threading.Thread(target=self._run, name="brain", daemon=True)
+        self.thread.start()
 
     def _run(self) -> None:
         cfg = BrainConfig()
@@ -532,7 +533,12 @@ class BrainHost:
         self.reading.clear()
 
     def shutdown(self) -> None:
+        # Дождаться потока мозга: иначе он ещё спит или читает порцию на
+        # видеокарте, пока здесь сохраняется мозг (и пока в том же процессе
+        # запускается другой — тесты: запись CUDA Graph ломалась).
+        self.session and self.session.stop.set()
         self.jobs.put(None)
+        self.thread.join(timeout=60)
 
         if self.mind is not None and self.mind.cfg.autosave:
             self.mind.save()

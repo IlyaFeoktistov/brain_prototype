@@ -13,6 +13,7 @@ import torch
 
 from brain.concepts import Concepts
 from brain.engine import SpikingBrain
+from brain.health import Health
 from brain.hippocampus import Hippocampus
 from brain.limbic import FACES, Emotions
 
@@ -509,6 +510,8 @@ class LanguageInterface:
         )
 
         self.confidence = Confidence()
+        # Стенд отладки: показатели здоровья после каждой фразы (/health).
+        self.health = Health(brain, cfg)
         self.emotions = Emotions()
         self.hippocampus = Hippocampus(
             cfg.hippocampus_capacity, cfg.replay_priority, seed=cfg.seed
@@ -663,6 +666,8 @@ class LanguageInterface:
             rates = self._listen_and_prepare(sound, place, token)
         else:
             rates = self.brain.observe(self.cfg.stimulus_ms, sound)
+
+        self.health.word(rates)
 
         if self.cfg.neural_surprise:
             self._note_preparation(token)
@@ -1191,6 +1196,8 @@ class LanguageInterface:
 
         quiet = self.brain.observe(self.cfg.rest_ms)
         self.brain.forget()
+        self.health.pause(quiet)
+        self.health.sentence(" ".join(self.heard_in_phrase))
 
         # В тишине смысловая кора молчит; стреляющие клетки — очаг.
         if self.cfg.calm_hz > 0:

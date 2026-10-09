@@ -152,3 +152,22 @@ def test_procedural_wiring_saves_memory_and_reads():
         if p.pre_pop.start <= neuron < p.pre_pop.stop
     ])
     assert sorted(post[0][weight[0] != 0].tolist()) == sorted(expected.tolist())
+
+
+def test_health_is_clean_and_catches_runaway(mind):
+    """Стенд: здоровый мозг без нарушений; очаг (кора стреляет в тишине) — пойман."""
+
+    language = mind.language
+    language.read_text("Кошка мяукает. Собака лает.")
+    assert language.health.sentences >= 2
+    assert not language.health.log
+    assert "association" in language.health.report()
+
+    # Очаг: в паузе смысловая кора стреляет (как после долгого чтения).
+    import torch
+    rates = torch.zeros(mind.brain.n, device=mind.brain.device)
+    rates[language.meaning.E.slice][:200] = 240.0
+    language.health.word(rates * 0)
+    language.health.pause(rates)
+    snap = language.health.sentence("очаг")
+    assert any("в тишине" in p for p in snap.problems)

@@ -92,6 +92,10 @@ qs = evaluate.facts(Path("train-data.md"), tok)
 def exam():
     for kind, score in evaluate.run(mind, qs, 3).items():
         print(score.line(kind)); print("\n".join(score.examples), flush=True)
+    health = mind.language.health
+    bad = [snap for snap in health.log]
+    print(f"здоровье: нарушений {len(bad)} в последних фразах из {health.sentences}"
+          + (f" — {bad[-1].problems[0]}" if bad else ""), flush=True)
     usage = c.usage
     print(f"места: слов {len(c):,}, клеток занято {(usage > 0).float().mean():.0%}, "
           f"делят место {(usage > 1).float().mean():.0%} клеток", flush=True)

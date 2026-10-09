@@ -39,6 +39,7 @@ HELP = """
   /mood                       что мозг сейчас чувствует
   /sleep [фраз]               уснуть: гиппокамп проиграет коре новые впечатления
   /dreams                     что снилось: фразы, проигранные во сне
+  /health                     стенд: частоты зон на слове и в тишине, нарушения
   /reread [реплик]            перечитать переписку (по умолчанию 20 последних)
   /emotions on|off            включить / выключить эмоции
   /think on|off               размышлять про себя перед ответом (ход мыслей виден)
@@ -255,6 +256,8 @@ class Session:
             elif payload in ("off", "выкл"):
                 self.mind.cfg.emotions_enabled = False
             out(f"Эмоции: {'включены' if self.mind.cfg.emotions_enabled else 'выключены'}")
+        elif command == "/health":
+            out(language.health.report())
         elif command == "/dreams":
             dreams = list(language.dreams)
             out("Что снилось (последнее внизу):\n" + "\n".join(f"  {d}" for d in dreams) if dreams else "Ещё не спал")

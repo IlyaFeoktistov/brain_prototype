@@ -12,7 +12,8 @@ chat-scenario.txt обычным чатом (`Session.say` — мозг учит
 - лишние слова после верного (уплывание).
 
 Без load= мозг создаётся и читает train-data.md дважды и спит (как
-brain.teach). Расшифровка — data/measure/имя-chat.txt.
+brain.teach). Расшифровка — data/measure/имя-chat.txt, мозг после
+разговора — имя-chatted.pt.
 """
 
 from __future__ import annotations
@@ -192,6 +193,8 @@ def main() -> None:
             human.say(line.answers[0])
             human.previous = line.answers[0]
 
+    # Мозг после разговора — разбирать, что он вспоминал.
+    mind.save(f"data/measure/{name}-chatted.pt")
     total = sum(sum(v) for v in score.values())
     count = sum(len(v) for v in score.values())
     lines = [f"{group:10s} {sum(v)}/{len(v)}" for group, v in score.items()] + [

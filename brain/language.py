@@ -1724,6 +1724,10 @@ class LanguageInterface:
 
         for i, token in enumerate(tokens):
             self._gate_open = answer and self.cfg.neural_speech and i == len(tokens) - 1
+            # Ацетилхолин: слушает новое — запись (высокий); отвечает или
+            # говорит сам — вспоминание (низкий); во сне — нет.
+            listening = not self.sleeping and not self._own_speech and not self._gate_open
+            self.brain.set_acetylcholine(1.0 if listening else 0.0)
             steps.append(self._step(token, learn))
 
         self._gate_open = False
@@ -2043,6 +2047,8 @@ class LanguageInterface:
         ca3 = self.brain.areas["ca3"].E
         everyone = torch.arange(ca3.size, device=self.device)
         self.brain.consolidating = True
+        # Медленный сон: ацетилхолина нет — CA3 и выход гиппокампа свободны.
+        self.brain.set_acetylcholine(0.0)
 
         try:
             for _ in range(ripples):
@@ -2051,9 +2057,7 @@ class LanguageInterface:
 
                 self.brain.silence("goal")
                 self.last_rates = None
-                self.brain.feel("ca3", everyone, self.cfg.ripple_mv)
-                rates = self.brain.observe(self.cfg.ripple_ms)
-                self.brain.feel("ca3", None, 0.0)
+                rates = self._ripple(ca3, everyone)
                 self.brain.reward(self.cfg.replay_dopamine)
 
                 if self.cfg.base_circuit:
@@ -2085,6 +2089,15 @@ class LanguageInterface:
         self.emotions.sleepy = False
 
         return report
+
+    def _ripple(self, ca3, everyone: torch.Tensor) -> torch.Tensor:
+        """Одна острая волна: возбудимость CA3 поднята, что вспыхнет — решают связи."""
+
+        self.brain.feel("ca3", everyone, self.cfg.ripple_mv)
+        rates = self.brain.observe(self.cfg.ripple_ms)
+        self.brain.feel("ca3", None, 0.0)
+
+        return rates
 
     def _replay(self, episode, report: ReadReport) -> None:
         """Одно проигрывание эпизода во сне: кора учится, как наяву."""

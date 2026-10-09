@@ -57,6 +57,7 @@ class Mind:
         rng = random.Random(self.cfg.seed)
         language = self.language
         plastic_weights = self.brain.net_weight[: self.brain.n_plastic].clone()
+        self.brain.developing = True
 
         for _ in range(self.cfg.calibration_tokens):
             sound = "".join(rng.choice("абвгдежзиклмнопрстуфхцчшыэюя") for _ in range(6))
@@ -74,6 +75,7 @@ class Mind:
         # Калибровка — не опыт: веса и следы как при рождении.
         self.brain.net_weight[: self.brain.n_plastic].copy_(plastic_weights)
         self.brain.eligibility.zero_()
+        self.brain.developing = False
         self.brain.run(self.cfg.rest_ms)
 
     # ==============================================================

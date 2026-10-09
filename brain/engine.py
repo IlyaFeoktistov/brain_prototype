@@ -89,6 +89,9 @@ class Projection:
         # (reward), "acetylcholine" — бодрствование, запись нового в
         # гиппокамп с одного раза (encode).
         self.modulator = "dopamine"
+        # Передачу по пути подавляет ацетилхолин (пресинаптически, Hasselmo
+        # 1995): при записи нового гиппокамп не разгоняет сам себя.
+        self.ach_suppressed = False
         self.eligibility = (
             torch.zeros_like(weight) if plastic else None
         )
@@ -438,6 +441,7 @@ class SpikingBrain:
         plastic: bool = False,
         cap: float = 0.0,
         modulator: str = "dopamine",
+        ach_suppressed: bool = False,
     ) -> Projection | None:
         k = min(k, pre_pop.size)
 
@@ -469,6 +473,7 @@ class SpikingBrain:
         proj.pre_pop = pre_pop
         proj.innate_range = weight
         proj.modulator = modulator
+        proj.ach_suppressed = ach_suppressed
         proj.source_kind = next(
             a.kind for a in self.areas.values() if pre_pop in (a.E, a.I)
         )
@@ -514,14 +519,14 @@ class SpikingBrain:
             self._connect(
                 f"{spec.name}: E->E", area.E, area.E, spec.k_ee,
                 spec.ee_weight, plastic=spec.ee_plastic, cap=spec.ee_cap,
-                modulator=spec.ee_modulator,
+                modulator=spec.ee_modulator, ach_suppressed=spec.ee_ach_suppressed,
             )
             if spec.columns > 1:
                 self._wire_columns(spec, area)
 
             self._connect(
                 f"{spec.name}: E->I", area.E, area.I, cfg.k_ei,
-                (cfg.ei_weight, cfg.ei_weight),
+                (cfg.ei_weight * spec.feedback, cfg.ei_weight * spec.feedback),
             )
             self._connect(
                 f"{spec.name}: I->E", area.I, area.E, cfg.k_ie,
@@ -550,7 +555,7 @@ class SpikingBrain:
             proj = self._connect(
                 f"{path.src} -> {path.dst}", src.E, dst.E, path.k,
                 path.weight, plastic=path.plastic, cap=path.cap,
-                modulator=path.modulator,
+                modulator=path.modulator, ach_suppressed=path.ach_suppressed,
             )
 
             if proj is not None:
@@ -700,7 +705,23 @@ class SpikingBrain:
             for p in self.encoding:
                 self.dopamine_mask[p.offset: p.offset + p.weight.numel()] = 0.0
 
+        # Пути, передачу по которым подавляет ацетилхолин: доля подавления
+        # на каждом синапсе (0 — не подавляется).
+        self.ach_mask = None
+        suppressed = [p for p in net if getattr(p, "ach_suppressed", False)]
+
+        if suppressed:
+            self.ach_mask = torch.zeros(self.net_weight.numel(), dtype=torch.float16, device=self.device)
+
+            for p in suppressed:
+                self.ach_mask[p.offset: p.offset + p.weight.numel()] = self.cfg.ach_suppression
+
         self._build_tables()
+
+    def set_acetylcholine(self, level: float) -> None:
+        """Уровень ацетилхолина (0 — сон и вспоминание, 1 — бодрая запись нового)."""
+
+        self.acetylcholine.fill_(level)
 
     def _build_tables(self) -> None:
         P, S = self.n_plastic, self.n_synapses
@@ -743,6 +764,10 @@ class SpikingBrain:
         for area in self.areas.values():
             self.bias[area.I.slice] = cfg.i_excitability
 
+        # Развитие до рождения (калибровка): гомеостаз быстрый везде.
+        self.developing = False
+        # Ацетилхолин (тензор — его читает записанный шаг CUDA Graph).
+        self.acetylcholine = torch.zeros(1, device=self.device)
         # Сигнал «изнутри тела» (мВ): чувство возбуждает свой набор
         # нейронов лимбической зоны — как ухо возбуждает слуховую кору.
         self.interoception = z()
@@ -805,6 +830,10 @@ class SpikingBrain:
         synapses = rows.flatten()
         post = self.net_post.index_select(0, synapses)
         weight = self.net_weight.index_select(0, synapses)
+
+        if self.ach_mask is not None:
+            # Ацетилхолин подавляет передачу по отмеченным путям.
+            weight = weight * (1.0 - self.acetylcholine * self.ach_mask.index_select(0, synapses))
 
         if cfg.dendritic_context:
             # Рабочая память -> смысл: на дальний дендрит, не в сому.
@@ -1283,7 +1312,10 @@ class SpikingBrain:
             E = self.areas[spec.name].E
             active = (rates[E.slice] > 0).float().mean()
             error = (spec.target_activity - active) / spec.target_activity
-            step = (self.cfg.homeostasis_rate * error).clamp(-1.0, 1.0)
+            # До рождения (калибровка) — критический период: подстройка
+            # быстрая во всех зонах; потом у зоны своя скорость.
+            speed = 1.0 if self.developing else spec.homeostasis
+            step = (self.cfg.homeostasis_rate * speed * error).clamp(-1.0, 1.0)
             self.bias[E.slice] = (self.bias[E.slice] + step).clamp(low, high)
 
     def grow(self, links: list[tuple[str, torch.Tensor, torch.Tensor]], count: int) -> int:

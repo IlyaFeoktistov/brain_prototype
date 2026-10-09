@@ -80,6 +80,16 @@ class AreaSpec:
     # Сила торможения к E-клеткам зоны (множитель ie_weight): у CA3
     # корзинчатые клетки держат вспышку разреженной.
     inhibition: float = 1.0
+    # Сила входа E → I зоны (множитель ei_weight): обратное торможение
+    # растёт с активностью зоны — вспышка гасит лишнее сама.
+    feedback: float = 1.0
+    # Скорость гомеостаза возбудимости зоны (множитель homeostasis_rate):
+    # у коры — подстройка за слова (так держится разреженный код), в
+    # гиппокампе — медленная, как внутренняя пластичность у человека
+    # (часы): иначе он то задавливает CA3 в ноль, то держит её у порога.
+    homeostasis: float = 1.0
+    # Передачу по связям внутри зоны подавляет ацетилхолин (CA3).
+    ee_ach_suppressed: bool = False
 
 
 @dataclass
@@ -109,6 +119,8 @@ class PathwaySpec:
     # Кто превращает след STDP в вес: "dopamine" — ошибка предсказания;
     # "acetylcholine" — бодрствование: запись с одного раза (гиппокамп).
     modulator: str = "dopamine"
+    # Передачу по пути подавляет ацетилхолин (выход гиппокампа при записи).
+    ach_suppressed: bool = False
 
 
 
@@ -227,6 +239,7 @@ def hippocampus_areas() -> list[AreaSpec]:
         AreaSpec(
             "entorhinal", "энторинальная кора (вход гиппокампа)",
             0.03, k_ee=20, ee_plastic=False, target_activity=0.02, background=0.025,
+            homeostasis=0.05,
         ),
         # [биология] гранулярные клетки активны единицами на тысячу.
         AreaSpec(
@@ -237,7 +250,7 @@ def hippocampus_areas() -> list[AreaSpec]:
             # вход из энторинальной коры, а не шум. [замер] с фоном коры тот
             # же вопрос дважды давал 9% общих клеток (DESIGN «Гиппокамп из
             # нейронов: стенд»).
-            background=0.025,
+            background=0.025, homeostasis=0.05,
         ),
         # Рекуррентные коллатерали CA3 — автоассоциативная память; пишутся
         # ацетилхолином бодрствования. Память-зона: эпизод держится, пока
@@ -246,15 +259,17 @@ def hippocampus_areas() -> list[AreaSpec]:
         # 9–20% общих клеток: узор решал шум. [не подбиралось] 0.1 — как кора.
         AreaSpec(
             "ca3", "CA3 гиппокампа (эпизоды, достраивание по части)",
-            0.03, kind="memory", k_ee=100, ee_plastic=True, ee_cap=3.0,
+            0.03, kind="memory", k_ee=200, ee_plastic=True, ee_cap=3.0,
             ee_weight=(0.0, 0.05), target_activity=0.02, ee_modulator="acetylcholine",
-            background=0.1,
+            background=0.1, inhibition=2.0, feedback=2.0, inhibition_adapts=True, homeostasis=0.05,
+            ee_ach_suppressed=True,
         ),
         # CA1 сравнивает вспомненное (CA3, коллатерали Шаффера) с тем, что
         # приходит сейчас (энторинальная кора), и возвращает в кору.
         AreaSpec(
             "ca1", "CA1 гиппокампа (выход в кору)",
             0.03, k_ee=20, ee_plastic=False, target_activity=0.02, background=0.05,
+            homeostasis=0.05,
         ),
     ]
 
@@ -262,7 +277,12 @@ def hippocampus_areas() -> list[AreaSpec]:
 def hippocampus_pathways() -> list[PathwaySpec]:
     """
     Пути гиппокампа. Врождённые — разносят код, пластичные (ацетилхолин) —
-    запоминают эпизод с одного раза. Веса [не подбиралось] — по образцу
+    запоминают эпизод с одного раза. Число входов внутри гиппокампа — из
+    правила, а не подбором: эпизод в зоне — ~2% клеток (около 20 из 1200
+    на 20 тыс.), и клетка должна получать от узора 3–4 входа, иначе
+    достраивание и передача не проходят порог: k ≈ 3.5 / 0.02 ≈ 200.
+    [замер] при k 50–100 — 1–2 входа: CA1 и смысл во вспышке молчали,
+    подсказка CA1 на «?» — ранг 19 из 57 (случайно 29). Веса [не подбиралось] — по образцу
     врождённых путей коры (4–6 мВ на синапс при 100 входах); мшистые
     волокна — мало, но сильные синапсы-«детонаторы» (Henze 2002): одна
     гранулярная клетка навязывает CA3 свой узор при записи.
@@ -274,16 +294,20 @@ def hippocampus_pathways() -> list[PathwaySpec]:
         PathwaySpec("entorhinal", "dentate", k=50, weight=(0.0, 6.0), inhibitory_weight=6.0),
         PathwaySpec("dentate", "ca3", k=4, weight=(20.0, 20.0), k_inhibitory=10),
         # Перфорантный путь EC → CA3: по нему подсказка находит эпизод.
-        PathwaySpec("entorhinal", "ca3", k=50, weight=(0.0, 0.05), plastic=True, cap=2.0,
+        PathwaySpec("entorhinal", "ca3", k=200, weight=(0.0, 0.05), plastic=True, cap=2.0,
                     k_inhibitory=0, predictive=False, modulator="acetylcholine"),
         # Коллатерали Шаффера CA3 → CA1 и прямой вход EC → CA1.
-        PathwaySpec("ca3", "ca1", k=50, weight=(0.0, 0.05), plastic=True, cap=2.0,
-                    k_inhibitory=10, predictive=False, modulator="acetylcholine"),
-        PathwaySpec("entorhinal", "ca1", k=50, weight=(2.0, 2.0)),
+        PathwaySpec("ca3", "ca1", k=200, weight=(0.0, 0.05), plastic=True, cap=2.0,
+                    k_inhibitory=50, predictive=False, modulator="acetylcholine", ach_suppressed=True),
+        # Прямой вход EC (слой III) → CA1 — «учитель» при записи: CA1
+        # стреляет от того, что пришло сейчас, и Шаффер выучивает, что CA3
+        # должен ей передавать. [замер] k=50: CA1 при записи 0.1–0.3%,
+        # учить Шаффер нечему.
+        PathwaySpec("entorhinal", "ca1", k=200, weight=(4.0, 4.0)),
         # CA1 → смысл (через субикулум и EC): вспомненное будит места слов —
         # подсказка током, выбирают нейроны коры.
-        PathwaySpec("ca1", "association", k=50, weight=(0.0, 0.05), plastic=True, cap=2.0,
-                    k_inhibitory=0, predictive=False, modulator="acetylcholine"),
+        PathwaySpec("ca1", "association", k=200, weight=(0.0, 0.05), plastic=True, cap=2.0,
+                    k_inhibitory=0, predictive=False, modulator="acetylcholine", ach_suppressed=True),
     ]
 
 
@@ -1115,9 +1139,18 @@ class BrainConfig:
     # даёт до surprise_dopamine_gain (6) — запись с одного раза сильнее.
     # Число — со стенда (DESIGN «Гиппокамп из нейронов»).
     hippocampus_encode: float = 30.0
+    # Насколько ацетилхолин бодрствования подавляет передачу по рекуррентным
+    # связям CA3, Шафферу и выходу CA1 (Hasselmo 1995: карбахол — на
+    # 70–90%). [замер] без подавления запись разгоняла петлю кора →
+    # гиппокамп → кора: EC 2% → 6%, CA1 до 29%.
+    ach_suppression: float = 0.8
     # Сон с нейронным гиппокампом: острая волна — ацетилхолина нет,
-    # рекуррентные связи CA3 берут верх, и CA3 вспыхивает сам: ровный ток
-    # ripple_mv на все клетки CA3 на ripple_ms (у человека рябь 50–150 мс).
+    # возбудимость CA3 поднимается (ровный ток ripple_mv на ripple_ms, у
+    # человека рябь 50–150 мс): первыми порог переходят клетки с самыми
+    # сильными выученными связями, растущее торможение гасит остальных.
+    # [замер] без растущего торможения — «всё или ничего» (3 мВ тишина,
+    # 6 мВ 40–90%); толчок 2% случайных клеток эпизод не находит
+    # (случайный набор почти не пересекается ни с одним).
     # Что вспыхнет — решают выученные связи; CA1 будит места слов в коре,
     # кора учится STDP. Дофамин: VTA реактивируется вместе с гиппокампом
     # (Valdés 2015) — replay_dopamine на вспышку. Всё [не подбиралось].

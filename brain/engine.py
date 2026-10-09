@@ -630,6 +630,17 @@ class SpikingBrain:
             return pre, post, weight
 
         self.net_pre, self.net_post, self.net_weight = flatten(net, dummy=True)
+        # Ветка дендрита каждого синапса (имеет смысл для синапсов памяти и
+        # цели в смысловую кору): врождённые — случайно; свой генератор,
+        # чтобы не сдвигать остальную проводку.
+        branches = torch.Generator(device=self.device).manual_seed(self.cfg.seed + 7)
+        self.net_branch = torch.randint(
+            0, max(1, self.cfg.dendrite_branches), self.net_weight.shape,
+            dtype=torch.int8, device=self.device, generator=branches,
+        )
+
+        for p in net:
+            p.branch = self.net_branch[p.offset: p.offset + p.weight.numel()].view(p.weight.shape)
         self.ear_pre, self.ear_post, self.ear_weight = flatten(sensory, dummy=False)
 
         self.n_synapses = self.net_weight.numel() - self.DUMMY_SYNAPSES
@@ -690,7 +701,7 @@ class SpikingBrain:
         self.i_syn = z()
         self.i_slow = z()
         # Дендритный ток (контекст из рабочей памяти, см. dendritic_context).
-        self.i_dend = z()
+        self.i_dend = torch.zeros(self.n_slots * max(1, cfg.dendrite_branches), device=self.device)
         # Пул торможения смысловой коры: отфильтрованное число её спайков.
         self.pool = torch.zeros(1, device=self.device)
         self.adapt = z()
@@ -778,7 +789,9 @@ class SpikingBrain:
                 self.dendrite_pre.index_select(0, fired_before)[:, None].expand_as(rows).flatten()
                 & self.dendrite_post.index_select(0, post)
             )
-            dendrite = torch.zeros_like(drive).index_add_(0, post, weight * to_dendrite)
+            branches = max(1, cfg.dendrite_branches)
+            slot = post.long() * branches + self.net_branch.index_select(0, synapses).long()
+            dendrite = torch.zeros_like(self.i_dend).index_add_(0, slot, weight * to_dendrite)
             self.i_dend.mul_(self.decay_dend).add_(dendrite)
             weight = weight * ~to_dendrite
 
@@ -832,7 +845,14 @@ class SpikingBrain:
         if cfg.dendritic_context:
             # Плато на дендрите усиливает возбуждающий вход сомы:
             # контекст выбирает среди того, что предлагает текущее слово.
-            plateau = self.i_dend / (self.i_dend + cfg.dendrite_half_mv)
+            if cfg.dendrite_branches > 1:
+                # Плато — на самой горячей ветке, если её ток выше порога.
+                branch = self.i_dend.view(self.n_slots, cfg.dendrite_branches)
+                plateau = torch.sigmoid(
+                    (branch - cfg.dendrite_threshold_mv) / cfg.dendrite_slope_mv
+                ).amax(1)
+            else:
+                plateau = self.i_dend / (self.i_dend + cfg.dendrite_half_mv)
             synaptic = synaptic + cfg.dendrite_gain * plateau * synaptic.clamp(min=0.0)
 
         if cfg.pool_inhibition_mv > 0:
@@ -1234,7 +1254,11 @@ class SpikingBrain:
 
         grown = 0
 
-        for name, pre, post in links:
+        for link in links:
+            name, pre, post = link[:3]
+            # Четвёртое — ветка дендрита: выросшие на одной неожиданности
+            # синапсы ложатся на одну ветку.
+            branch = link[3] if len(link) > 3 else None
             proj = next((p for p in self.projections if p.name == name), None)
 
             if proj is None or not len(pre) or not len(post):
@@ -1257,6 +1281,9 @@ class SpikingBrain:
             proj.pre[rows, cols] = new_pre.to(proj.pre.dtype)
             low = float(exact16(torch.tensor(low)))
             proj.weight[rows, cols] = low
+
+            if branch is not None and hasattr(proj, "branch"):
+                proj.branch[rows, cols] = branch
 
             if proj.plastic:
                 proj.birth[rows, cols] = low
@@ -1390,7 +1417,14 @@ class SpikingBrain:
 
     def _restore(self, saved: dict) -> None:
         for name, value in saved.items():
-            getattr(self, name).copy_(value)
+            target = getattr(self, name)
+
+            # Старое сохранение другой формы (дендрит без веток) — с нуля.
+            if target.shape != value.shape:
+                target.zero_()
+                continue
+
+            target.copy_(value)
 
     @contextmanager
     def frozen(self):
@@ -1465,6 +1499,7 @@ class SpikingBrain:
                 "ear_pre": self.ear_pre,
                 "birth_weight": self.birth_weight,
                 "early": self.early,
+                "net_branch": self.net_branch,
                 "innate_mean": {p.name: p.innate_mean for p in self.plastic},
             },
             "generator": self.generator.get_state(),
@@ -1483,6 +1518,9 @@ class SpikingBrain:
 
         if "birth_weight" in synapses:
             self.birth_weight.copy_(synapses["birth_weight"])
+
+        if "net_branch" in synapses and synapses["net_branch"].shape == self.net_branch.shape:
+            self.net_branch.copy_(synapses["net_branch"])
 
         # Старые сохранения: всё выученное считается закреплённым.
         if "early" in synapses:

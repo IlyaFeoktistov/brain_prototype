@@ -1103,7 +1103,7 @@ class LanguageInterface:
 
         shown = []
 
-        for name, pre, post in links[-24:]:
+        for name, pre, post, *_ in links[-24:]:
             proj = next((p for p in self.brain.projections if p.name == name), None)
 
             if proj is not None:
@@ -1610,6 +1610,9 @@ class LanguageInterface:
                 # Неожиданный переход: связи для него нужны — вырастут.
                 # От места прошлого слова и от контекста рабочей памяти.
                 if step.dopamine > 0 and self.cfg.grow_on_surprise and self._place is not None:
+                    # Синапсы контекста этой неожиданности — на одну ветку.
+                    branch = self._random.randrange(max(1, self.cfg.dendrite_branches))
+
                     if self._prev_place is not None:
                         self._growth.append(("association: E->E", self._prev_place, self._place))
 
@@ -1621,7 +1624,7 @@ class LanguageInterface:
                             held = self.memory.get(word, allocate=False)
 
                             if held is not None and bool(torch.isin(held, context).any()):
-                                self._growth.append(("prefrontal -> association", held, self._place))
+                                self._growth.append(("prefrontal -> association", held, self._place, branch))
                                 self._owed.append((held, self._place, step.dopamine, "prefrontal"))
 
                         self._learn_context(context, self._place, step.dopamine)
@@ -1633,7 +1636,7 @@ class LanguageInterface:
                             column = self._goal_place(word, allocate=False, touch=False)
 
                             if column is not None and bool(torch.isin(column, aims).any()):
-                                self._growth.append(("goal -> association", column, self._place))
+                                self._growth.append(("goal -> association", column, self._place, branch))
                                 self._owed.append((column, self._place, step.dopamine, "goal"))
 
                         self._learn_context(aims, self._place, step.dopamine, "goal")

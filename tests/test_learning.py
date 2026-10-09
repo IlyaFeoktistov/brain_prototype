@@ -66,9 +66,6 @@ def test_asks_about_unknown_words(mind):
     assert "хромодинамика" not in language.converse("Хромодинамика это").text
 
 
-@pytest.mark.xfail(reason="после «Париж .» ПФК («столица франции») тянет все столицы — "
-                   "«Париж Берлин Италии Париж»; с целью без сброса на паузе проходил, "
-                   "со сбросом — нет (DESIGN «Цель в ПФК»)", strict=False)
 def test_answer_does_not_repeat_words(trained):
     produced = trained.language.generate("столица франции")
     # Слова, без знаков: «.» может стоять после каждого.

@@ -197,6 +197,28 @@ class Readout:
         self.val[row, : len(val)] = val
         self.observations[row] += 1
 
+    def forget(self, token: str) -> None:
+        """Убрать слово: на его строку встаёт последнее."""
+
+        row = self.index.pop(token, None)
+
+        if row is None:
+            return
+
+        last = len(self.tokens) - 1
+
+        if row != last:
+            moved = self.tokens[last]
+            self.tokens[row] = moved
+            self.index[moved] = row
+            self.idx[row] = self.idx[last]
+            self.val[row] = self.val[last]
+            self.observations[row] = self.observations[last]
+
+        self.tokens.pop()
+        self.observations.pop()
+        self.val[last] = 0.0
+
     def prototype(self, token: str) -> torch.Tensor:
         row = self.index[token]
         dense = torch.zeros(self.size, device=self.device)
@@ -466,7 +488,8 @@ class LanguageInterface:
         )
 
         self.concepts = Concepts(
-            self.meaning.E.size, cfg.concept_cells, cfg.seed, self.device
+            self.meaning.E.size, cfg.concept_cells, cfg.seed, self.device,
+            reuse=cfg.reuse_places, keep=frozenset({END}),
         )
         # Категории (зона «category»): сколько раз занята каждая категория,
         # и какие решения уже приняты (место слова -> категории, категория
@@ -478,7 +501,11 @@ class LanguageInterface:
         self._category_size: dict[int, int] = {}
         # Места слов в рабочей памяти (ПФК).
         self.memory = Concepts(
-            self.context.E.size, cfg.concept_cells, cfg.seed + 1, self.device
+            self.context.E.size, cfg.concept_cells, cfg.seed + 1, self.device,
+            # Места памяти не забываются: через них идёт выученный контекст
+            # («франции» → «париж»), сброс стирал бы знание (тест
+            # «хромодинамика» на 2 тыс. нейронов: мозг повторял слово вопроса).
+            reuse=False,
         )
 
         self.confidence = Confidence()
@@ -604,6 +631,7 @@ class LanguageInterface:
             if self.cfg.memory_places else None
         )
         self._held = held
+        self._forget_evicted()
 
         self.choice = None
         gate = self._gate_open
@@ -1088,6 +1116,34 @@ class LanguageInterface:
         active = (rates[path.post.slice] > 0).float()[:, None]
         path.weight.add_(self.cfg.form_rate * active * (self.cfg.form_cap * heard - path.weight))
 
+    def _forget_evicted(self) -> None:
+        """
+        Забытые слова (их места отданы новым): синапсы мест — к
+        врождённым, слово уходит из словарей, решения о его категориях
+        забываются. Услышит снова — выучит как новое.
+        """
+
+        for token, cells in self.concepts.evicted:
+            self.brain.reset_cells(self.meaning.E, cells)
+            self.semantic.forget(token)
+            self.mouth.forget(token)
+            self._form_grown.pop(token, None)
+            key = int(cells[0])
+
+            for unit in self._category_member.pop(key, []):
+                self._category_size[unit] = max(0, self._category_size.get(unit, 1) - 1)
+
+            for unit in self._category_predicted_by.pop(key, []):
+                predicts = self._category_predicts.get(unit, [])
+                if key in predicts:
+                    predicts.remove(key)
+
+        for _, cells in self.memory.evicted:
+            self.brain.reset_cells(self.context.E, cells)
+
+        self.concepts.evicted.clear()
+        self.memory.evicted.clear()
+
     def _grow_form(self, token: str, rates: torch.Tensor, place: torch.Tensor) -> None:
         """
         Связи узнавания растут там, где нужны: от слуховых клеток, активных
@@ -1133,8 +1189,12 @@ class LanguageInterface:
         разговора и сны разделяются полностью.
         """
 
-        self.brain.run(self.cfg.rest_ms)
+        quiet = self.brain.observe(self.cfg.rest_ms)
         self.brain.forget()
+
+        # В тишине смысловая кора молчит; стреляющие клетки — очаг.
+        if self.cfg.calm_hz > 0:
+            self.brain.calm(quiet, self.meaning.E, self.cfg.calm_hz, self.cfg.calm_keep)
 
         self.sentences_lived += 1
 
@@ -2726,6 +2786,12 @@ class LanguageInterface:
             f"- нейронов: {brain.n:,}, синапсов: {brain.synapse_count():,} "
             f"({brain.memory_bytes() / 2**20:.0f} МБ)",
             f"- известных слов: {len(self.semantic)}",
+            *(
+                f"- места слов, {name}: {len(c):,} из {c.size // c.cells:,}, "
+                f"забыто слышанных однажды {c.forgotten:,}"
+                + (" — повторённым словам мест не хватает, нужен мозг больше" if c.full else "")
+                for name, c in (("смысл", self.concepts), ("память", self.memory))
+            ),
             f"- прожито токенов: {self.experienced_tokens:,}, реплик диалога: {self.dialog_turns}",
             f"- биологическое время: {brain.time_ms / 1000:.1f} s",
             f"- контекст: фиксированного окна нет — рабочая память затухает "

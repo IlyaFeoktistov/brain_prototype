@@ -190,3 +190,42 @@ def test_long_reading_naps_to_keep_memory(mind):
     assert report.naps >= 2
     # Проспал — новых непроигранных впечатлений меньше порога.
     assert language.sleep_pressure < mind.cfg.nap_after_episodes
+
+
+def test_places_forget_words_heard_once_not_repeated():
+    """Места кончились: забывается слышанное однажды, повторённое — нет."""
+
+    import torch
+    from brain.concepts import Concepts
+
+    c = Concepts(8, 2, 0, "cpu", reuse=True, keep=frozenset({"."}))
+    for word in ("кот", "кот", ".", "пёс", "лис"):
+        c.get(word, allocate=True)
+    assert len(c) == 4
+
+    c.get("ёж", allocate=True)
+    assert "пёс" not in c and c.evicted[0][0] == "пёс"
+    assert {"кот", ".", "лис", "ёж"} <= set(c.places)
+    assert (c.usage <= 1).all()
+
+    # Слышанных однажды нет — места делятся, мозг сообщает, что тесно.
+    for word in ("лис", "ёж"):
+        c.get(word, allocate=True)
+    c.get("уж", allocate=True)
+    assert c.full and len(c) == 5
+
+
+def test_forgotten_word_releases_synapses(mind):
+    language = mind.language
+    language.read_text("Кошка мяукает. Кошка мяукает.")
+    place = language.concepts.get("мяукает", allocate=False)
+    proj = next(p for p in mind.brain.plastic if p.post is language.meaning.E and p.pre_pop is language.meaning.E)
+    rows = proj.weight[place]
+    assert (rows != proj.birth[place].float()).any()
+
+    language.concepts.places.pop("мяукает")
+    language.concepts.evicted.append(("мяукает", place))
+    language._forget_evicted()
+
+    assert (proj.weight[place] == proj.birth[place].float()).all()
+    assert "мяукает" not in language.semantic

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+import gc
 import math
 
 import torch
@@ -874,9 +875,17 @@ class SpikingBrain:
         torch.cuda.current_stream().wait_stream(stream)
 
         graph = torch.cuda.CUDAGraph()
+        # Сборщик мусора во время записи может удалить граф прошлого мозга
+        # (тесты, /load) — запись рушится («operation failed due to a
+        # previous error during capture»). Убрать мусор до, не собирать во время.
+        gc.collect()
+        gc.disable()
 
-        with torch.cuda.graph(graph):
-            self._chunk(plastic)
+        try:
+            with torch.cuda.graph(graph):
+                self._chunk(plastic)
+        finally:
+            gc.enable()
 
         # Прогрев и запись не должны оставить след в мозге.
         self._restore(saved)
@@ -1054,6 +1063,71 @@ class SpikingBrain:
             self.synapses_grown += grown
 
         return grown
+
+    def reset_cells(self, pop: Population, cells: torch.Tensor) -> int:
+        """
+        Клетки освободились (место забытого слова отдают новому): их
+        выученные синапсы — входящие и исходящие — возвращаются к весу при
+        рождении, иначе новое слово унаследует чужие связи. Схема связей
+        (кто к кому) остаётся. Возвращает число сброшенных синапсов.
+        """
+
+        reset = 0
+        ids = (cells.to(self.device) + pop.start).to(torch.int32)
+
+        for proj in self.plastic:
+            mask = None
+
+            if proj.post is pop:
+                mask = torch.zeros(proj.weight.shape[0], dtype=torch.bool, device=self.device)
+                mask[cells.to(self.device)] = True
+                mask = mask[:, None].expand_as(proj.weight)
+
+            if proj.pre_pop is pop:
+                outgoing = torch.isin(proj.pre, ids)
+                mask = outgoing if mask is None else mask | outgoing
+
+            if mask is None:
+                continue
+
+            proj.weight[mask] = proj.birth[mask].to(proj.weight.dtype)
+            proj.early[mask] = 0.0
+            proj.eligibility[mask] = 0.0
+            reset += int(mask.sum())
+
+        return reset
+
+    def calm(self, rates: torch.Tensor, pop: Population, max_hz: float, keep: float) -> int:
+        """
+        Гомеостаз по частоте (Turrigiano): клетки, стреляющие в тишине
+        чаще max_hz, — очаг (выученные связи частых слов друг к другу
+        замкнулись сами на себя). Их выученный прирост входов × keep;
+        остальных клеток не касается. Возвращает число успокоенных клеток.
+        """
+
+        if not self.plasticity:
+            return 0
+
+        hot = (rates[pop.slice] > max_hz).nonzero().flatten()
+
+        if not len(hot):
+            return 0
+
+        for proj in self.plastic:
+            if proj.post is not pop:
+                continue
+
+            # Сразу к бюджету масштабирования (не ждать его очереди) и
+            # ещё × keep выученного прироста.
+            weight = proj.weight[hot]
+            budget = weight.shape[1] * proj.innate_mean * self.cfg.synaptic_scaling_budget
+            weight = weight * (budget / weight.sum(1, keepdim=True).clamp(min=1e-9)).clamp(max=1.0)
+            birth = proj.birth[hot].to(weight.dtype)
+            gained = (weight - birth).clamp(min=0.0)
+            proj.weight[hot] = weight - gained * (1.0 - keep)
+            proj.early[hot] = proj.early[hot] * keep
+
+        return len(hot)
 
     def homeostasis(self, rates: torch.Tensor) -> None:
         """

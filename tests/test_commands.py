@@ -152,3 +152,14 @@ def test_dreams_list_what_was_replayed(mind):
     session.handle("/sleep 2")
     session.handle("/dreams")
     assert "кошка мяукает" in output[-1][1]
+
+
+def test_trace_shows_paths_and_choice(mind):
+    session, output = make_session(mind)
+    session.handle("/read: Столица Франции Париж. Столица Франции Париж.")
+    before = mind.brain.net_weight.clone()
+    session.handle("/trace столица франции")
+    text = output[-1][1]
+
+    assert "«франции»" in text and "ворота «говори»" in text
+    assert (before == mind.brain.net_weight).all(), "трассировка не меняет мозг"

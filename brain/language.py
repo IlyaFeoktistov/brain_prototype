@@ -2649,6 +2649,65 @@ class LanguageInterface:
 
         return "\n".join(lines)
 
+    def trace(self, text: str, top: int = 5) -> str:
+        """
+        Трассировка вопроса (стенд): после каждого слова — какие места
+        слов подготовлены (средний потенциал клеток места, мВ), сколько
+        выученного тока к ним идёт по каждому пути и сколько они
+        выстрелили; в конце — кого выбрали ворота «говори». Без следа.
+        """
+
+        tokens = self.tokenize(text)
+
+        if not tokens:
+            return "Формат: /trace вопрос"
+
+        sources = [
+            name for name, area in self.brain.areas.items()
+            if any(p.post is self.meaning.E and p.pre_pop is area.E for p in self.brain.plastic)
+        ]
+        lines = ["путь тока к месту: " + ", ".join(sources) + "  (выученный вход; спайки — на этом слове)"]
+
+        with self.isolated():
+            for i, token in enumerate(tokens):
+                self.experience([token], learn=False, answer=i == len(tokens) - 1)
+                words, cells = self.concepts.table()
+
+                if not words:
+                    lines.append(f"«{token}»: мест слов ещё нет")
+                    continue
+
+                potential = self.brain.v[self.meaning.E.slice][cells].mean(1)
+                spikes = self._area(self.last_rates, self.meaning)[cells].sum(1)
+
+                # Сначала выстрелившие (их выбирают ворота), потом подготовленные.
+                rank = spikes * 1000.0 + potential
+
+                if token in self.concepts:
+                    rank[words.index(token)] = float("-inf")
+
+                best = rank.topk(min(top, len(words))).indices
+                rates = self._without_current(self.last_rates)
+                drives = [
+                    self.brain.learned_drive(rates, "association", source=name)[cells[best]].mean(1)
+                    for name in sources
+                ]
+                table = torch.stack([potential[best], spikes[best], *drives]).T.tolist()
+                lines.append(f"«{token}»: подготовлены")
+
+                for index, row in zip(best.tolist(), table):
+                    paths = " ".join(f"{value:6.2f}" for value in row[2:])
+                    lines.append(f"    {words[index]:16s} {row[0]:6.1f} мВ  спайков {row[1]:4.0f}   ток {paths}")
+
+            choice = self.choice
+
+        lines.append(
+            f"ворота «говори» выбрали: {choice[0]} (доля спайков {choice[1]:.2f})"
+            if choice else "ворота «говори»: никто не выстрелил — молчание"
+        )
+
+        return "\n".join(lines)
+
     def compare(self, first: str, second: str) -> str:
         """
         Рабочая память: один и тот же последний токен

@@ -39,6 +39,7 @@ HELP = """
   /mood                       что мозг сейчас чувствует
   /sleep [фраз]               уснуть: гиппокамп проиграет коре новые впечатления
   /dreams                     что снилось: фразы, проигранные во сне
+  /trace вопрос               стенд: как сигнал идёт к ответу по шагам
   /health                     стенд: частоты зон на слове и в тишине, нарушения
   /reread [реплик]            перечитать переписку (по умолчанию 20 последних)
   /emotions on|off            включить / выключить эмоции
@@ -196,6 +197,8 @@ class Session:
                 if len(words) == 2
                 else "Формат: /debug_association слово слово"
             )
+        elif command == "/trace":
+            out(language.trace(payload))
         elif command == "/predict":
             out(language.debug_prediction(payload))
         elif command == "/continue":

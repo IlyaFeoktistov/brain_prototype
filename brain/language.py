@@ -574,7 +574,7 @@ class LanguageInterface:
         # здесь вырастут синапсы.
         self._growth: list[tuple[str, torch.Tensor, torch.Tensor]] = []
         # Укрепление, причитающееся ещё не выросшим синапсам контекста.
-        self._owed: list[tuple[torch.Tensor, torch.Tensor, float]] = []
+        self._owed: list[tuple[torch.Tensor, torch.Tensor, float, str]] = []
         # То же для категорий: связь -> (путь, клетки-источник, клетки-цель).
         self._owed_links: dict[tuple, tuple[str, torch.Tensor, torch.Tensor]] = {}
         self._prev_place: torch.Tensor | None = None
@@ -1032,9 +1032,13 @@ class LanguageInterface:
     def _goal_on(self) -> bool:
         return self.goal is not None and self._goal_cells > 1 and self.cfg.goal_enabled
 
-    def _goal_place(self, token: str, allocate: bool) -> torch.Tensor | None:
+    def _goal_place(self, token: str, allocate: bool, touch: bool = True) -> torch.Tensor | None:
         columns = self.goal_columns
-        column = columns.pop(token, None)
+        column = columns.get(token) if not touch else columns.pop(token, None)
+
+        if column is not None and not touch:
+            start = column * self._goal_cells
+            return torch.arange(start, start + self._goal_cells, device=self.device)
 
         if column is None:
             if not allocate:
@@ -1057,12 +1061,15 @@ class LanguageInterface:
         cells = torch.arange(self.context.E.size, device=self.device)
         self.brain.feel("prefrontal", cells, self._memory_trace())
 
-    def _learn_context(self, context: torch.Tensor, place: torch.Tensor, dopamine: float) -> None:
+    def _learn_context(
+        self, context: torch.Tensor, place: torch.Tensor, dopamine: float, source_area: str = "prefrontal",
+    ) -> None:
         """
         Путь «память → смысл» учится по совпадению под дофамином:
         связи от активных клеток контекста к месту нового слова крепнут
         пропорционально дофамину. STDP тут не работает: клетки памяти
         стреляют непрерывно, и сбалансированное окно даёт LTP ≈ LTD.
+        Так же учится путь «цель → смысл» (цель горит непрерывно).
         """
 
         rate = self.cfg.context_hebb_rate
@@ -1070,12 +1077,12 @@ class LanguageInterface:
         if rate <= 0 or not self.brain.plasticity:
             return
 
-        proj = next((p for p in self.brain.plastic if p.name == "prefrontal -> association"), None)
+        proj = next((p for p in self.brain.plastic if p.name == f"{source_area} -> association"), None)
 
         if proj is None:
             return
 
-        source = self.context.E.start + context
+        source = self.brain.areas[source_area].E.start + context
         rows = place
         hit = torch.isin(proj.pre[rows], source.to(proj.pre.dtype)).float()
         level = dopamine / self.cfg.surprise_dopamine_gain
@@ -1327,8 +1334,8 @@ class LanguageInterface:
             # встрече неожиданности уже нет, слабые новые синапсы сжимает
             # масштабирование, и перестройка их убивает («мадрид → испании»
             # оставался с 0 синапсов).
-            for held, place, dopamine in self._owed:
-                self._learn_context(held, place, dopamine)
+            for held, place, dopamine, area in self._owed:
+                self._learn_context(held, place, dopamine, area)
 
             for name, pre, post in self._owed_links.values():
                 self._strengthen(name, pre, post)
@@ -1562,8 +1569,13 @@ class LanguageInterface:
                 step.expected, step.expected_score = ranked[0]
                 step.margin = Confidence.margin(ranked, self.semantic.candidates(exclude))
 
-        # Контекст до нового слова: активные клетки рабочей памяти.
+        # Контекст до нового слова: активные клетки рабочей памяти и цели.
         context = None
+        aims = None
+
+        if self.last_rates is not None and self._goal_on():
+            goal = self._area(self.last_rates, self.goal)
+            aims = (goal > 0).nonzero().flatten()
 
         if self.last_rates is not None:
             memory = self._area(self._without_current(self.last_rates), self.context)
@@ -1610,9 +1622,21 @@ class LanguageInterface:
 
                             if held is not None and bool(torch.isin(held, context).any()):
                                 self._growth.append(("prefrontal -> association", held, self._place))
-                                self._owed.append((held, self._place, step.dopamine))
+                                self._owed.append((held, self._place, step.dopamine, "prefrontal"))
 
                         self._learn_context(context, self._place, step.dopamine)
+
+                    if aims is not None and len(aims):
+                        # Цель учится тем же правилом и растит синапсы от
+                        # колонок слов, которые сейчас держит.
+                        for word in dict.fromkeys(self.heard_in_phrase[:-1]):
+                            column = self._goal_place(word, allocate=False, touch=False)
+
+                            if column is not None and bool(torch.isin(column, aims).any()):
+                                self._growth.append(("goal -> association", column, self._place))
+                                self._owed.append((column, self._place, step.dopamine, "goal"))
+
+                        self._learn_context(aims, self._place, step.dopamine, "goal")
 
                 # Неожиданный переход закрепляется: dopamine
                 # превращает eligibility traces только что

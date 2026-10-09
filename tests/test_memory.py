@@ -243,3 +243,26 @@ def test_forgotten_word_releases_synapses(mind):
 
     assert (proj.weight[place] == proj.birth[place].float()).all()
     assert "мяукает" not in language.semantic
+
+
+def test_recall_is_decided_by_rare_words():
+    """
+    Эффект веера: частые «какая», «у», «?» есть во многих эпизодах и почти
+    не различают их — вспоминается эпизод с редким «франции», хотя у чужого
+    совпало больше слов.
+    """
+
+    from brain.hippocampus import Hippocampus
+
+    memory = Hippocampus(capacity=100, priority=0.0)
+    memory.store("столица франции ? париж".split(), 1.0)
+
+    for country in ("германии", "италии", "испании"):
+        memory.store(f"какая столица у {country} ? ответ".split(), 1.0)
+
+    rest, strength = memory.recall("какая столица у франции ?".split())
+
+    assert rest == ["париж"]
+    assert 0.5 < strength < 1.0
+    # Слов, которых гиппокамп не знает, нет ни в одном эпизоде — вспоминать нечего.
+    assert memory.recall(["хромодинамика"]) == ([], 0.0)

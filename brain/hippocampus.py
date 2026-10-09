@@ -72,10 +72,15 @@ class Hippocampus:
 
     def recall(self, cue: list[str], key=lambda t: t) -> tuple[list[str], float]:
         """
-        Достраивание по части (CA3): эпизод, где из слов подсказки
-        встретилось больше всего, — и что в нём шло после последнего из
-        них. Сила — доля слов подсказки, нашедшихся в эпизоде; при равенстве
-        побеждает свежий. Нечего достраивать — ([], 0).
+        Достраивание по части (CA3): эпизод, куда пришло больше всего
+        активации от слов подсказки, — и что в нём шло после последнего из
+        них. Активация слова делится между всеми эпизодами, где оно есть
+        (эффект веера, Anderson 1974): «?» или «что» встречались в сотнях
+        эпизодов и почти не различают их, «франции» — в нескольких, и её
+        голос сильный. Сила — доля от наибольшей возможной активации (эпизод
+        со всеми словами подсказки); слово, которого нет ни в одном эпизоде,
+        связей в CA3 не имеет и никуда активацию не шлёт — в долю не входит.
+        При равенстве побеждает свежий. Нечего достраивать — ([], 0).
         """
 
         words = {key(t) for t in cue}
@@ -83,17 +88,28 @@ class Hippocampus:
         if not words:
             return [], 0.0
 
+        seen = [[key(t) for t in episode.tokens] for episode in self.episodes]
+        fan = dict.fromkeys(words, 0)
+
+        for keys in seen:
+            for word in words & set(keys):
+                fan[word] += 1
+
+        weight = {word: 1.0 / n for word, n in fan.items() if n}
+        total = sum(weight.values())
         best, score = None, 0.0
 
-        for episode in reversed(self.episodes):
-            seen = [key(t) for t in episode.tokens]
-            share = len(words & set(seen)) / len(words)
+        if not total:
+            return [], 0.0
+
+        for episode, keys in zip(reversed(self.episodes), reversed(seen)):
+            share = sum(weight[w] for w in weight.keys() & set(keys)) / total
 
             if share > score:
-                last = max(i for i, t in enumerate(seen) if t in words)
+                last = max(i for i, t in enumerate(keys) if t in words)
 
                 # Достраивать нечего — эпизод кончается на подсказке.
-                if last + 1 < len(seen):
+                if last + 1 < len(keys):
                     best, score = episode.tokens[last + 1:], share
 
         return (list(best), score) if best else ([], 0.0)

@@ -13,7 +13,7 @@ teach-data.txt обычными репликами (`converse` — мозг уч
 Без load= мозг создаётся и читает train-data.md дважды (как brain.measure)
 и сохраняется в data/measure/имя-read.pt — с него можно повторить.
 Расшифровка — в data/measure/имя-teach.txt, мозг после урока и сна —
-в data/measure/имя-taught.pt.
+в data/measure/имя-taught.pt, после всей проверки — имя-tested.pt.
 """
 
 from __future__ import annotations
@@ -253,6 +253,8 @@ def main() -> None:
     hits, answers = teacher.probe(taught, key)
     probes.append(("проба после 50 проверочных вопросов", hits, answers))
     slept_hits, slept_drift = test([(f.question, f) for f in taught], "после сна")
+    # Мозг после всей проверки — разбирать, что сделали с ним 70 вопросов.
+    mind.save(f"data/measure/{name}-tested.pt")
 
     drifts = held_drift + para_drift + slept_drift
     lines = [f"{name:38s} {hits}/{len(taught)}" for name, hits, _ in probes] + [

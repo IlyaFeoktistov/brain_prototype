@@ -493,9 +493,10 @@ class LanguageInterface:
         self._prepared: tuple[list[str], torch.Tensor] | None = None
         self._gate_mv = cfg.speak_gate_mv
         self._own_speech = False
-        # Продолжение вспомненного эпизода: [(место смысла, сила)] — по
-        # одному на каждое слово ответа (см. _recall_episode).
-        self._recall: list[tuple[str, float]] = []
+        # Продолжение вспомненного эпизода (места смысла) и его сила
+        # (см. _recall_episode, _recall_hint).
+        self._recall: list[str] = []
+        self._recall_strength = 0.0
         self.choice: tuple[str, float] | None = None
         self._everyone = torch.arange(self.meaning.E.size, device=self.device)
 
@@ -1041,7 +1042,27 @@ class LanguageInterface:
             return
 
         rest, strength = self.hippocampus.recall(tokens, key=self.word)
-        self._recall = [(self.word(token), strength) for token in rest]
+        # У эпизода есть конец (граница события): после последнего слова
+        # продолжения подсказывается пауза — ответ кончился там же, где
+        # кончилась реплика в эпизоде. Даже если на ней отвечал мозг
+        # (Episode.ended = False): человек-то замолчал.
+        self._recall = [self.word(token) for token in self._ended(rest)]
+        self._recall_strength = strength
+
+    def _recall_hint(self, heard: str) -> str | None:
+        """
+        Какое место подсказывает вспомненный эпизод сейчас. Эпизод идёт за
+        сказанным, а не по счёту слов: сказал слово из продолжения —
+        подсказка перескакивает за него («Европе» без «в» — дальше «.»);
+        сказал чужое — эпизод ждёт, подсказка та же (сказал «в» вместо
+        «лёд» — снова «лёд»). Слова вопроса не сдвигают: продолжение
+        начинается после них.
+        """
+
+        if self._own_speech and self.word(heard) in self._recall:
+            del self._recall[: self._recall.index(self.word(heard)) + 1]
+
+        return self._recall[0] if self._recall else None
 
     def _goal_on(self) -> bool:
         return self.goal is not None and self._goal_cells > 1 and self.cfg.goal_enabled
@@ -1715,12 +1736,11 @@ class LanguageInterface:
             amplitude[place] = self.cfg.concept_mv
 
         # Гиппокамп подсказывает следующее слово вспомненного эпизода.
-        if self._recall:
-            recalled, strength = self._recall.pop(0)
-            hint = self.concepts.get(recalled, allocate=False)
+        recalled = self._recall_hint(token)
+        hint = self.concepts.get(recalled, allocate=False) if recalled else None
 
-            if hint is not None:
-                amplitude[hint] += self.cfg.episode_recall_mv * strength
+        if hint is not None:
+            amplitude[hint] += self.cfg.episode_recall_mv * self._recall_strength
 
         self.brain.feel("association", self._everyone, amplitude)
         rates = self.brain.observe(self.cfg.stimulus_ms, sound)

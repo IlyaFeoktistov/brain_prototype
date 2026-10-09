@@ -266,3 +266,19 @@ def test_recall_is_decided_by_rare_words():
     assert 0.5 < strength < 1.0
     # Слов, которых гиппокамп не знает, нет ни в одном эпизоде — вспоминать нечего.
     assert memory.recall(["хромодинамика"]) == ([], 0.0)
+
+
+def test_novel_word_weakens_recall():
+    """Опечатка «францыи» — новое слово: от одних «столица ?» эпизод уверенно не вспоминается."""
+
+    from brain.hippocampus import Hippocampus
+
+    memory = Hippocampus(capacity=100, priority=0.0)
+
+    for country, city in (("италии", "рим"), ("германии", "берлин"), ("испании", "мадрид")):
+        memory.store(f"столица {country} ? {city}".split(), 1.0)
+
+    # Без новизны «столица ?» достраивается уверенно — последний эпизод.
+    assert memory.recall("столица францыи ?".split()) == (["мадрид"], 1.0)
+    # Новое «францыи» весит как слово одного эпизода: 2/3 против 1 + 2/3.
+    assert memory.recall("столица францыи ?".split(), novel={"францыи"})[1] < 0.5

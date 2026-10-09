@@ -1041,7 +1041,8 @@ class LanguageInterface:
         if not self.cfg.episode_recall or not self.cfg.neural_speech:
             return
 
-        rest, strength = self.hippocampus.recall(tokens, key=self.word)
+        novel = {token for token in tokens if not self.familiar(token)}
+        rest, strength = self.hippocampus.recall(tokens, key=self.word, novel=novel)
         # У эпизода есть конец (граница события): после последнего слова
         # продолжения подсказывается пауза — ответ кончился там же, где
         # кончилась реплика в эпизоде. Даже если на ней отвечал мозг

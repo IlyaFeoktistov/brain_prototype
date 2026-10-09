@@ -70,7 +70,7 @@ class Hippocampus:
 
         self.store(tokens + list(more), salience, ended)
 
-    def recall(self, cue: list[str], key=lambda t: t) -> tuple[list[str], float]:
+    def recall(self, cue: list[str], key=lambda t: t, novel=frozenset()) -> tuple[list[str], float]:
         """
         Достраивание по части (CA3): эпизод, куда пришло больше всего
         активации от слов подсказки, — и что в нём шло после последнего из
@@ -80,6 +80,10 @@ class Hippocampus:
         голос сильный. Сила — доля от наибольшей возможной активации (эпизод
         со всеми словами подсказки); слово, которого нет ни в одном эпизоде,
         связей в CA3 не имеет и никуда активацию не шлёт — в долю не входит.
+        Кроме нового (novel — кора его не знает): новое переключает
+        гиппокамп с вспоминания на запоминание (Hasselmo), оно входит в
+        долю с весом 1 — как слово единственного эпизода, этого. Опечатка
+        «францыи» — новое, и от одних «столица ?» уверенно не вспомнится.
         При равенстве побеждает свежий. Нечего достраивать — ([], 0).
         """
 
@@ -96,10 +100,11 @@ class Hippocampus:
                 fan[word] += 1
 
         weight = {word: 1.0 / n for word, n in fan.items() if n}
-        total = sum(weight.values())
+        found = sum(weight.values())
+        total = found + len({key(t) for t in novel} & words)
         best, score = None, 0.0
 
-        if not total:
+        if not found:
             return [], 0.0
 
         for episode, keys in zip(reversed(self.episodes), reversed(seen)):

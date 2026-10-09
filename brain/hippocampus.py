@@ -30,6 +30,9 @@ class Episode:
     # человека): во сне конец строки после неё не проигрывается, а то
     # мозг выучит «после вопроса — тишина».
     ended: bool = True
+    # Перешёл в кору: во сне сам не проигрывается, но след остаётся —
+    # его будит похожее новое (related), по нему вспоминается при ответе.
+    consolidated: bool = False
 
 
 class Hippocampus:
@@ -120,29 +123,78 @@ class Hippocampus:
         return (list(best), score) if best else ([], 0.0)
 
     def sample(self) -> Episode | None:
-        if not self.episodes:
+        """Эпизод для проигрывания во сне — из тех, что ещё не в коре."""
+
+        fresh = [e for e in self.episodes if not e.consolidated]
+
+        if not fresh:
             return None
 
-        weights = [(e.salience + 0.1) ** self.priority for e in self.episodes]
+        weights = [(e.salience + 0.1) ** self.priority for e in fresh]
 
-        return self.random.choices(self.episodes, weights=weights, k=1)[0]
+        return self.random.choices(fresh, weights=weights, k=1)[0]
 
-    def forget_consolidated(self, threshold: float) -> int:
-        """Забыть эпизоды, которые уже почти не удивляют кору."""
+    def index(self, key=lambda t: t) -> dict[str, list[int]]:
+        """Слово → номера эпизодов с ним (связи слова в CA3)."""
 
-        before = len(self.episodes)
-        self.episodes = [
-            e for e in self.episodes if e.replays == 0 or e.salience > threshold
+        postings: dict[str, list[int]] = {}
+
+        for i, episode in enumerate(self.episodes):
+            for word in {key(t) for t in episode.tokens}:
+                postings.setdefault(word, []).append(i)
+
+        return postings
+
+    def related(self, episode: Episode, postings: dict[str, list[int]], key=lambda t: t) -> Episode | None:
+        """
+        Старый след, который будит проигрывание нового (достраивание в
+        CA3): эпизод, уже перешедший в кору, с наибольшим перекрытием, вес
+        слова — 1 / число эпизодов с ним (эффект веера, как в complete).
+        Общие места — те, через которые новое сдвигает старое, поэтому
+        вместе проигрывается то, что под угрозой. Нет такого — None.
+        """
+
+        score: dict[int, float] = {}
+
+        for word in {key(t) for t in episode.tokens}:
+            linked = postings.get(word, [])
+
+            for i in linked:
+                score[i] = score.get(i, 0.0) + 1.0 / len(linked)
+
+        candidates = [
+            (s, i) for i, s in score.items()
+            if i < len(self.episodes) and self.episodes[i].consolidated and self.episodes[i] is not episode
         ]
 
-        return before - len(self.episodes)
+        # При равенстве — свежий (больший номер).
+        return self.episodes[max(candidates)[1]] if candidates else None
+
+    def forget_consolidated(self, threshold: float, keep: bool = False) -> int:
+        """
+        Эпизоды, которые уже почти не удивляют кору, перешли в неё. keep —
+        след остаётся (теория множественных следов, Nadel & Moscovitch
+        1997), только помечен; иначе забывается. Старый след, снова
+        удививший кору, — опять не в коре. Сколько перешло.
+        """
+
+        moved = [e.replays > 0 and e.salience <= threshold for e in self.episodes]
+
+        if not keep:
+            self.episodes = [e for e, done in zip(self.episodes, moved) if not done]
+            return sum(moved)
+
+        for episode, done in zip(self.episodes, moved):
+            episode.consolidated = done
+
+        return sum(moved)
 
     def state_dict(self) -> dict:
         return {
-            "episodes": [(e.tokens, e.salience, e.replays, e.ended) for e in self.episodes],
+            "episodes": [(e.tokens, e.salience, e.replays, e.ended, e.consolidated) for e in self.episodes],
             "random": self.random.getstate(),
         }
 
     def load_state_dict(self, state: dict) -> None:
-        self.episodes = [Episode(list(e[0]), e[1], e[2], *(e[3:] or [True])) for e in state["episodes"]]
+        self.episodes = [Episode(list(e[0]), e[1], e[2], *e[3:]) for e in state["episodes"]]
         self.random.setstate(state["random"])

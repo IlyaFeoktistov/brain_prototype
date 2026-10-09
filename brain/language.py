@@ -1681,6 +1681,12 @@ class LanguageInterface:
                 # превращает eligibility traces только что
                 # прошедших пар в изменение весов.
                 self.brain.reward(step.dopamine)
+
+                # Бодрствование: гиппокамп записывает услышанное с одного
+                # раза (не сны, не свою речь — как и список эпизодов).
+                if not self.sleeping and not self._own_speech:
+                    self.brain.encode(self.cfg.hippocampus_encode)
+
                 self._feel("heard",
                     step.dopamine,
                     step.expected == token if step.expected is not None else None,
@@ -1977,7 +1983,10 @@ class LanguageInterface:
         Сон: гиппокамп проигрывает коре запомненные фразы, чаще —
         самые неожиданные. Кора учится на них обычным правилом
         (STDP + дофамин от ошибки предсказания). Выученная фраза почти
-        не даёт дофамина — её важность падает, и гиппокамп её забывает.
+        не даёт дофамина — её важность падает, и она переходит в кору.
+        sleep_interleave: след остаётся, и каждое новое будит самый
+        похожий старый — он проигрывается следом (новое вперемешку со
+        старым, McClelland 1995); replays — число новых проигрываний.
         """
 
         report = ReadReport()
@@ -1985,6 +1994,9 @@ class LanguageInterface:
         self.emotions.sleeping = True
         self.brain.modulation = 1.0
         self.brain.consolidating = True
+
+        interleave = self.cfg.sleep_interleave
+        postings = self.hippocampus.index(self.word) if interleave else {}
 
         try:
             for _ in range(replays):
@@ -1996,31 +2008,11 @@ class LanguageInterface:
                 if episode is None:
                     break
 
-                salience = 0.0
-                # Медленная волна: кора замолкает между проигрываниями —
-                # цель прошлого эпизода в следующий не тянется.
-                self.brain.silence("goal")
-                self.last_rates = None
+                self._replay(episode, report)
+                old = self.hippocampus.related(episode, postings, self.word) if interleave else None
 
-                tokens = self._ended(episode.tokens) if episode.ended else episode.tokens
-
-                for step in self.experience(tokens):
-                    report.tokens += step.token != END
-                    report.dopamine += step.dopamine
-                    salience += step.dopamine
-
-                    if step.error is not None:
-                        report.errors.append(step.error)
-                        report.hits += step.expected == step.token
-
-                episode.salience = salience
-                episode.replays += 1
-
-                if self.cfg.base_circuit:
-                    self.brain.downscale(self.cfg.sleep_downscale)
-                self.dreams.append(self.join(episode.tokens))
-                report.sentences += 1
-                self.rest()
+                if old is not None:
+                    self._replay(old, report)
 
                 if progress and report.sentences % 20 == 0:
                     progress(report)
@@ -2029,10 +2021,39 @@ class LanguageInterface:
             self.emotions.sleeping = False
             self.brain.consolidating = False
 
-        self.hippocampus.forget_consolidated(self.cfg.consolidated_salience)
+        self.hippocampus.forget_consolidated(self.cfg.consolidated_salience, keep=interleave)
         self.emotions.sleepy = self.sleep_pressure >= self.cfg.sleepy_after_episodes
 
         return report
+
+    def _replay(self, episode, report: ReadReport) -> None:
+        """Одно проигрывание эпизода во сне: кора учится, как наяву."""
+
+        salience = 0.0
+        # Медленная волна: кора замолкает между проигрываниями —
+        # цель прошлого эпизода в следующий не тянется.
+        self.brain.silence("goal")
+        self.last_rates = None
+
+        tokens = self._ended(episode.tokens) if episode.ended else episode.tokens
+
+        for step in self.experience(tokens):
+            report.tokens += step.token != END
+            report.dopamine += step.dopamine
+            salience += step.dopamine
+
+            if step.error is not None:
+                report.errors.append(step.error)
+                report.hits += step.expected == step.token
+
+        episode.salience = salience
+        episode.replays += 1
+
+        if self.cfg.base_circuit:
+            self.brain.downscale(self.cfg.sleep_downscale)
+        self.dreams.append(self.join(episode.tokens))
+        report.sentences += 1
+        self.rest()
 
     @property
     def sleep_pressure(self) -> int:

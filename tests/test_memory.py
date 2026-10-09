@@ -282,3 +282,25 @@ def test_novel_word_weakens_recall():
     assert memory.recall("столица францыи ?".split()) == (["мадрид"], 1.0)
     # Новое «францыи» весит как слово одного эпизода: 2/3 против 1 + 2/3.
     assert memory.recall("столица францыи ?".split(), novel={"францыи"})[1] < 0.5
+
+
+def test_new_episode_wakes_related_old_trace():
+    """Сон вперемешку: выученное остаётся следом, новое будит похожее старое по редким словам."""
+
+    from brain.hippocampus import Hippocampus
+
+    memory = Hippocampus(capacity=100, priority=0.0)
+    memory.store("столица франции париж".split(), 0.5)
+    memory.store("вода замерзает лёд".split(), 0.5)
+
+    for episode in memory.episodes:
+        episode.replays = 1
+
+    assert memory.forget_consolidated(1.0, keep=True) == 2
+    assert len(memory) == 2 and memory.sample() is None
+
+    memory.store("париж стоит на сене".split(), 5.0)
+    new = memory.sample()
+
+    assert new.tokens[0] == "париж"
+    assert memory.related(new, memory.index()).tokens == "столица франции париж".split()

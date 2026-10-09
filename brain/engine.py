@@ -85,6 +85,10 @@ class Projection:
         self.cap = cap
         self.innate_max = innate_max
         self.innate_mean = float(weight.mean()) if plastic else 0.0
+        # Кто превращает след в вес: "dopamine" — ошибка предсказания
+        # (reward), "acetylcholine" — бодрствование, запись нового в
+        # гиппокамп с одного раза (encode).
+        self.modulator = "dopamine"
         self.eligibility = (
             torch.zeros_like(weight) if plastic else None
         )
@@ -428,6 +432,7 @@ class SpikingBrain:
         weight: tuple[float, float],
         plastic: bool = False,
         cap: float = 0.0,
+        modulator: str = "dopamine",
     ) -> Projection | None:
         k = min(k, pre_pop.size)
 
@@ -458,6 +463,7 @@ class SpikingBrain:
         )
         proj.pre_pop = pre_pop
         proj.innate_range = weight
+        proj.modulator = modulator
         proj.source_kind = next(
             a.kind for a in self.areas.values() if pre_pop in (a.E, a.I)
         )
@@ -503,6 +509,7 @@ class SpikingBrain:
             self._connect(
                 f"{spec.name}: E->E", area.E, area.E, spec.k_ee,
                 spec.ee_weight, plastic=spec.ee_plastic, cap=spec.ee_cap,
+                modulator=spec.ee_modulator,
             )
             if spec.columns > 1:
                 self._wire_columns(spec, area)
@@ -538,6 +545,7 @@ class SpikingBrain:
             proj = self._connect(
                 f"{path.src} -> {path.dst}", src.E, dst.E, path.k,
                 path.weight, plastic=path.plastic, cap=path.cap,
+                modulator=path.modulator,
             )
 
             if proj is not None:
@@ -676,6 +684,16 @@ class SpikingBrain:
             p.early = self.early[
                 p.offset: p.offset + p.weight.numel()
             ].view(p.weight.shape)
+
+        # Пути гиппокампа учатся от ацетилхолина (encode), а не от дофамина.
+        self.encoding = [p for p in self.plastic if p.modulator == "acetylcholine"]
+        self.dopamine_mask = None
+
+        if self.encoding:
+            self.dopamine_mask = torch.ones(self.n_plastic, dtype=torch.float16, device=self.device)
+
+            for p in self.encoding:
+                self.dopamine_mask[p.offset: p.offset + p.weight.numel()] = 0.0
 
         self._build_tables()
 
@@ -1068,6 +1086,11 @@ class SpikingBrain:
 
         plastic = self.net_weight[: self.n_plastic]
         eligibility = self.eligibility[: self.n_plastic]
+
+        if self.dopamine_mask is not None:
+            # Пути гиппокампа дофамин не трогает — их пишет encode.
+            eligibility = eligibility * self.dopamine_mask
+
         before = plastic.clone()
         plastic.add_(eligibility, alpha=gain)
 
@@ -1086,6 +1109,21 @@ class SpikingBrain:
             tag = eligibility.abs()
             tag = tag / tag.max().clamp(min=1e-12)
             self.early.mul_(1.0 - capture * tag)
+
+    def encode(self, gain: float) -> None:
+        """
+        Запись в гиппокамп (ацетилхолин бодрствования): следы STDP путей
+        с modulator = "acetylcholine" сразу становятся весом — эпизод
+        запоминается с одного раза (Hasselmo 2006; быстрая пластичность
+        CA3, BTSP — Bittner 2017). Во сне ацетилхолина нет — не вызывается.
+        """
+
+        if not self.plasticity or gain <= 0 or not self.encoding:
+            return
+
+        for proj in self.encoding:
+            proj.weight.add_(proj.eligibility, alpha=gain)
+            proj.weight.clamp_(0.0, proj.cap)
 
     def forget(self) -> None:
         """

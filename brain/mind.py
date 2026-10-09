@@ -5,7 +5,7 @@ import time
 
 import torch
 
-from brain.config import FEATURES, BrainConfig
+from brain.config import FEATURES, BrainConfig, hippocampus_areas, hippocampus_pathways
 from brain.engine import SpikingBrain
 from brain.language import LanguageInterface
 
@@ -22,6 +22,13 @@ class Mind:
 
     def __init__(self, cfg: BrainConfig):
         self.cfg = cfg
+
+        # Новый мозг с гиппокампом из нейронов: его зоны — часть анатомии
+        # (сохраняются в cfg.areas, загруженный мозг их уже имеет).
+        if cfg.neural_hippocampus and not any(a.name == "ca3" for a in cfg.areas):
+            cfg.areas = cfg.areas + hippocampus_areas()
+            cfg.pathways = cfg.pathways + hippocampus_pathways()
+
         self.brain = SpikingBrain(cfg)
         self.language = LanguageInterface(self.brain, cfg)
 

@@ -35,6 +35,9 @@ REASK_AFTER = 2
 # Человек читает ответ и печатает свой — время тишины перед каждой его
 # репликой, мс (pause=…). 0 — реплики вплотную, как было.
 PAUSE_MS = 0.0
+# Учится ли мозг на проверочных вопросах (test_learns=0 — нет: проверка
+# без следа, чтобы отделить, что стирают сами вопросы).
+TEST_LEARNS = True
 # Верным считается ответ, где ключевое слово среди первых слов: как
 # «в тройке» у экзамена — «в европе», «вокруг солнца» начинаются с предлога.
 FIRST_WORDS = 3
@@ -150,6 +153,9 @@ def main() -> None:
         elif k == "pause":
             global PAUSE_MS
             PAUSE_MS = float(v)
+        elif k == "test_learns":
+            global TEST_LEARNS
+            TEST_LEARNS = v == "1"
         elif k == "facts":
             facts_path = Path(v)
         else:
@@ -240,6 +246,7 @@ def main() -> None:
     hits, answers = teacher.probe(taught, key)
     probes.append(("проба после сна", hits, answers))
 
+    mind.brain.plasticity = TEST_LEARNS
     held_hits, held_drift = test([(f.question, f) for f in held], "отложенный")
     para = [(p, f) for f in taught for p in f.paraphrases]
     para_hits, para_drift = test(para, "иначе")

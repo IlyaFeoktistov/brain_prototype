@@ -100,42 +100,91 @@ class Projection:
 class EventTable:
     """
     Синапсы, сгруппированные по нейрону, без выравнивания (CSR):
-    perm — номера синапсов, отсортированные по нейрону; ptr[i] —
-    начало строки нейрона i в perm. Строку собирают на лету шириной
-    width (наибольшая строка), лишние ячейки — разные фиктивные синапсы.
+    perm — номера синапсов, отсортированные по нейрону; start/count —
+    начало и длина строки нейрона в perm. Строку собирают на лету шириной
+    width, лишние ячейки — разные фиктивные синапсы.
+
+    Хабы — нейроны с ветвлением больше HUB_FACTOR × среднего (клетки CA1:
+    ~600 клеток будят 13 тыс. клеток коры по 200 входов — ~4400 выходов):
+    в общей ширине — только первые width синапсов, остаток строки («хвост»)
+    собирается отдельно и только для выстреливших хабов, не больше
+    hub_capacity за шаг. [замер] без хвоста ширина всех строк стала
+    4672 вместо 448 — чтение втрое медленнее.
 
     [замер] прежняя таблица [нейронов, width] хранила каждую строку
     выровненной под самый разветвлённый нейрон: при 100 тыс. нейронов —
     ширина 384 при среднем 148, 20.5 Б на синапс из 39.7 (две таблицы).
     """
 
+    HUB_FACTOR = 4
+
     def __init__(self, keys: torch.Tensor, n_slots: int, pad: int, dummies: int):
         device = keys.device
         counts = torch.bincount(keys, minlength=n_slots)
-        width = max(1, int(counts.max())) if len(keys) else 1
+        ptr = torch.zeros(n_slots + 1, dtype=torch.int32, device=device)
+        ptr[1:] = torch.cumsum(counts, 0).to(torch.int32)
+        perm = torch.argsort(keys, stable=True).to(torch.int32)
+        # Хотя бы одна ячейка: на пустую таблицу тоже смотрят индексы.
+        perm = perm if len(perm) else torch.full((1,), pad, dtype=torch.int32, device=device)
+        self.ptr = ptr
+        self._setup(ptr[:-1], counts.to(torch.int32), perm, pad, dummies)
+
+    def _setup(self, start, count, perm, pad: int, dummies: int) -> None:
+        device = perm.device
+        self.start, self.count, self.perm = start, count, perm
+        self.pad, self.dummies = pad, dummies
+        used = count[count > 0].float()
+        mean = float(used.mean()) if len(used) else 1.0
+        hub = count > max(64, int(self.HUB_FACTOR * mean))
+        narrow = count[~hub]
+        width = max(1, int(narrow.max())) if len(narrow) else 1
         # Ширина — с запасом до кратного 64: рост синапсов редко меняет
         # форму, и собранный шаг (compile_step) не пересобирается.
         self.width = -(-width // 64) * 64
-        self.ptr = torch.zeros(n_slots + 1, dtype=torch.int32, device=device)
-        self.ptr[1:] = torch.cumsum(counts, 0).to(torch.int32)
-        del counts
-        perm = torch.argsort(keys, stable=True).to(torch.int32)
-        # Хотя бы одна ячейка: на пустую таблицу тоже смотрят индексы.
-        self.perm = perm if len(perm) else torch.full((1,), pad, dtype=torch.int32, device=device)
-        self.pad = pad
-        self.dummies = dummies
         self.cols = torch.arange(self.width, device=device)
+        self.is_hub = hub
+        hubs = int(hub.sum())
 
-    def rows(self, neurons: torch.Tensor) -> torch.Tensor:
-        """Номера синапсов строк neurons: [len(neurons), width]."""
+        if hubs:
+            tail = int(count[hub].max()) - self.width
+            self.tail_width = -(-tail // 64) * 64
+            # Сколько хабов за шаг получают хвост: четверть хабов (зона
+            # хабов разрежена — на шаге стреляют проценты её клеток).
+            self.hub_capacity = max(32, hubs // 4)
+            self.tail_cols = torch.arange(self.tail_width, device=device)
+        else:
+            self.tail_width = self.hub_capacity = 0
 
-        start = self.ptr.index_select(0, neurons).long()
-        count = self.ptr.index_select(0, neurons + 1).long() - start
+    def events(self, neurons: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Синапсы строк neurons и пресинаптический нейрон каждого (плоско)."""
+
+        neurons = neurons.long()
+        start = self.start.index_select(0, neurons).long()
+        count = self.count.index_select(0, neurons).long()
         position = (start[:, None] + self.cols).clamp(max=len(self.perm) - 1)
-        synapses = self.perm.index_select(0, position.flatten()).view_as(position)
-        dummy = self.pad + (neurons.long()[:, None] * self.width + self.cols) % self.dummies
+        synapses = self.perm.index_select(0, position.flatten()).view_as(position).long()
+        dummy = self.pad + (neurons[:, None] * self.width + self.cols) % self.dummies
+        synapses = torch.where(self.cols < count[:, None], synapses, dummy).flatten()
+        pre = neurons[:, None].expand(-1, self.width).flatten()
 
-        return torch.where(self.cols < count[:, None], synapses.long(), dummy)
+        if not self.hub_capacity:
+            return synapses, pre
+
+        # Хвосты выстреливших хабов.
+        which = torch.nonzero_static(
+            self.is_hub.index_select(0, neurons), size=self.hub_capacity, fill_value=-1,
+        ).squeeze(1)
+        hubs = torch.where(which >= 0, neurons.index_select(0, which.clamp(min=0)), neurons[-1:].expand_as(which))
+        h_start = self.start.index_select(0, hubs).long() + self.width
+        h_count = self.count.index_select(0, hubs).long() - self.width
+        h_count = torch.where(which >= 0, h_count, torch.zeros_like(h_count))
+        position = (h_start[:, None] + self.tail_cols).clamp(max=len(self.perm) - 1)
+        tail = self.perm.index_select(0, position.flatten()).view_as(position).long()
+        dummy = self.pad + (hubs[:, None] * self.tail_width + self.tail_cols) % self.dummies
+        tail = torch.where(self.tail_cols < h_count[:, None], tail, dummy).flatten()
+        tail_pre = hubs[:, None].expand(-1, self.tail_width).flatten()
+
+        return torch.cat([synapses, tail]), torch.cat([pre, tail_pre])
 
     def nbytes(self) -> int:
         return self.ptr.numel() * 4 + self.perm.numel() * 4
@@ -151,23 +200,7 @@ class PrefixTable(EventTable):
 
     def __init__(self, table: EventTable, keys: torch.Tensor, n_slots: int, pad: int, dummies: int):
         counts = torch.bincount(keys, minlength=n_slots)
-        width = max(1, int(counts.max())) if len(keys) else 1
-        self.width = -(-width // 64) * 64
-        self.start = table.ptr[:-1]
-        self.count = counts.to(torch.int32)
-        self.perm = table.perm
-        self.pad = pad
-        self.dummies = dummies
-        self.cols = torch.arange(self.width, device=keys.device)
-
-    def rows(self, neurons: torch.Tensor) -> torch.Tensor:
-        start = self.start.index_select(0, neurons).long()
-        count = self.count.index_select(0, neurons).long()
-        position = (start[:, None] + self.cols).clamp(max=len(self.perm) - 1)
-        synapses = self.perm.index_select(0, position.flatten()).view_as(position)
-        dummy = self.pad + (neurons.long()[:, None] * self.width + self.cols) % self.dummies
-
-        return torch.where(self.cols < count[:, None], synapses.long(), dummy)
+        self._setup(table.ptr[:-1], counts.to(torch.int32), table.perm, pad, dummies)
 
     def nbytes(self) -> int:
         return self.count.numel() * 4
@@ -826,8 +859,7 @@ class SpikingBrain:
         # ---- синаптический вход от спайков прошлого шага ----
         fired_before = self._fired()
 
-        rows = self.out_all.rows(fired_before)
-        synapses = rows.flatten()
+        synapses, pre_of = self.out_all.events(fired_before)
         post = self.net_post.index_select(0, synapses)
         weight = self.net_weight.index_select(0, synapses)
 
@@ -838,7 +870,7 @@ class SpikingBrain:
         if cfg.dendritic_context:
             # Рабочая память -> смысл: на дальний дендрит, не в сому.
             to_dendrite = (
-                self.dendrite_pre.index_select(0, fired_before)[:, None].expand_as(rows).flatten()
+                self.dendrite_pre.index_select(0, pre_of)
                 & self.dendrite_post.index_select(0, post)
             )
             branches = max(1, cfg.dendrite_branches)
@@ -849,7 +881,7 @@ class SpikingBrain:
 
         if cfg.base_circuit:
             # Истощение: синапс отдаёт долю оставшегося ресурса пресинапса.
-            weight = weight * self.stp_x.index_select(0, fired_before)[:, None].expand_as(rows).flatten()
+            weight = weight * self.stp_x.index_select(0, pre_of)
             # Торможение к клетке × её усиление (растёт, если клетка
             # стреляет выше нормы).
             weight = torch.where(weight < 0, weight * self.inh_gain.index_select(0, post), weight)
@@ -867,15 +899,13 @@ class SpikingBrain:
         if plastic:
             # LTD: пре пришёл после поста. Нейроны рабочей памяти
             # (ковариационное правило) этой ветки не имеют.
-            rows = self.out_plastic.rows(fired_before)
-            synapses = rows.flatten()
-            post = self.net_post.index_select(0, synapses).view_as(rows)
-            ltd = self.trace_post.index_select(0, post.flatten()).view_as(rows)
-            ltd = ltd * self.ltd_mask.index_select(0, fired_before)[:, None]
+            synapses, pre_of = self.out_plastic.events(fired_before)
+            post = self.net_post.index_select(0, synapses)
+            ltd = self.trace_post.index_select(0, post) * self.ltd_mask.index_select(0, pre_of)
             self.eligibility.index_add_(
                 0,
                 synapses,
-                (ltd.flatten() * (-cfg.stdp_a_minus / self.eligibility_scale)).to(self.eligibility.dtype),
+                (ltd * (-cfg.stdp_a_minus / self.eligibility_scale)).to(self.eligibility.dtype),
             )
 
         self.i_syn.mul_(self.decay_syn).add_(drive * self.syn_scale)
@@ -942,7 +972,7 @@ class SpikingBrain:
         if plastic:
             # LTP: пост выстрелил после пре.
             fired_now = self._fired()
-            synapses = self.in_plastic.rows(fired_now).flatten()
+            synapses, _ = self.in_plastic.events(fired_now)
             pre = self.net_pre.index_select(0, synapses)
             self.eligibility.index_add_(
                 0,

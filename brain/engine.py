@@ -248,6 +248,8 @@ class SpikingBrain:
         torch.manual_seed(cfg.seed)
 
         self.time_ms = 0.0
+        # Когда свежая память затухала в последний раз (forget).
+        self.forgotten_at_ms = 0.0
         self.plasticity = True
         # Норадреналин: множитель пластичности от возбуждения (1 — спокойно).
         # Выставляет язык по эмоциям, во сне — 1.
@@ -1194,16 +1196,23 @@ class SpikingBrain:
     def forget(self) -> None:
         """
         Свежая память затухает: ранняя часть изменений уходит к
-        закреплённому весу с полураспадом early_ltp_half_life фраз.
-        Закреплённое сном (capture) не затухает.
+        закреплённому весу с полураспадом early_ltp_half_life_ms времени
+        мозга, прожитого с прошлого затухания (а не по числу пауз: короткая
+        вспышка сна — не фраза). Закреплённое сном (capture) не затухает.
         """
 
-        half_life = self.cfg.early_ltp_half_life
+        half_life = self.cfg.early_ltp_half_life_ms
 
         if not self.plasticity or not self.cfg.forgetting_enabled or half_life <= 0:
             return
 
-        fade = 1.0 - 0.5 ** (1.0 / half_life)
+        elapsed = self.time_ms - self.forgotten_at_ms
+        self.forgotten_at_ms = self.time_ms
+
+        if elapsed <= 0:
+            return
+
+        fade = 1.0 - 0.5 ** (elapsed / half_life)
         self.net_weight[: self.n_plastic].sub_(self.early, alpha=fade)
         self.early.mul_(1.0 - fade)
 
@@ -1599,6 +1608,7 @@ class SpikingBrain:
         return {
             "dynamic": self._snapshot(),
             "time_ms": self.time_ms,
+            "forgotten_at_ms": self.forgotten_at_ms,
             "synapses_grown": self.synapses_grown,
             "synapses": {
                 "net_pre": self.net_pre,
@@ -1615,6 +1625,7 @@ class SpikingBrain:
     def load_state_dict(self, state: dict) -> None:
         self._restore(state["dynamic"])
         self.time_ms = state["time_ms"]
+        self.forgotten_at_ms = state.get("forgotten_at_ms", self.time_ms)
         self.synapses_grown = state.get("synapses_grown", 0)
 
         synapses = state["synapses"]

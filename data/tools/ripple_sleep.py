@@ -36,5 +36,6 @@ def exam() -> str:
 
 before = exam()
 t = time.time()
+brain_t = mind.brain.time_ms
 mind.language.sleep(int(sys.argv[2]))
-print(f"до {before} → после {exam()}, сон {time.time() - t:.0f} с; приснилось: {' | '.join(list(mind.language.dreams)[-3:])}")
+print(f"до {before} → после {exam()}, сон {time.time() - t:.0f} с ({(mind.brain.time_ms - brain_t) / 1000:.0f} с мозга); приснилось: {' | '.join(list(mind.language.dreams)[-3:])}")

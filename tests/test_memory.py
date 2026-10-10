@@ -160,8 +160,10 @@ def test_fresh_memory_fades_without_sleep(mind):
     fresh = float(brain.early.abs().sum())
     assert fresh > 0
 
-    for _ in range(mind.cfg.early_ltp_half_life):
-        brain.forget()
+    brain.forget()
+    fresh = float(brain.early.abs().sum())
+    brain.time_ms += mind.cfg.early_ltp_half_life_ms
+    brain.forget()
 
     # За полураспад свежая часть уходит вдвое (с поправкой на округление).
     assert float(brain.early.abs().sum()) < fresh * 0.55

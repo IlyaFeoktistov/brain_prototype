@@ -28,12 +28,12 @@ everyone = torch.arange(ca3.size, device=brain.device)
 tokens, cells = lang.concepts.table()
 
 with brain.frozen():
+    # Как во сне: ацетилхолина нет — CA3 и выход гиппокампа свободны.
+    brain.set_acetylcholine(0.0)
     for _ in range(6):
         lang.rest()
-        brain.feel("ca3", everyone, mind.cfg.ripple_mv)
-        rates = brain.observe(mind.cfg.ripple_ms)
-        brain.feel("ca3", None, 0.0)
-        share = {n: float((rates[brain.areas[n].E.slice] > 0).float().mean()) for n in ("ca3", "ca1", "association", "entorhinal")}
+        rates = lang._ripple(ca3, everyone)
+        share = {n: float((rates[brain.areas[n].E.slice] > 0).float().mean()) for n in ("entorhinal", "dentate", "ca3", "ca1", "association")}
         counts = lang._area(rates, lang.meaning)[cells].sum(1)
         top = counts.topk(8)
         words = [f"{tokens[i]}:{int(c)}" for c, i in zip(top.values.tolist(), top.indices.tolist()) if c > 0]

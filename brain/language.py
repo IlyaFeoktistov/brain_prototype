@@ -2057,11 +2057,10 @@ class LanguageInterface:
 
                 self.brain.silence("goal")
                 self.last_rates = None
+                started = self.brain.time_ms
                 rates = self._ripple(ca3, everyone)
                 self.brain.reward(self.cfg.replay_dopamine)
-
-                if self.cfg.base_circuit:
-                    self.brain.downscale(self.cfg.sleep_downscale)
+                self._sleep_downscale(started)
 
                 # Что снилось — какие места слов вспыхнули (только показ).
                 tokens, cells = self.concepts.table()
@@ -2090,12 +2089,21 @@ class LanguageInterface:
 
         return report
 
+    def _sleep_downscale(self, started: float) -> None:
+        """Ослабление сна (Tononi) — пропорционально проспанному времени мозга."""
+
+        if self.cfg.base_circuit:
+            self.brain.downscale(self.cfg.sleep_downscale * (self.brain.time_ms - started) / 1000.0)
+
     def _ripple(self, ca3, everyone: torch.Tensor) -> torch.Tensor:
         """Одна острая волна: возбудимость CA3 поднята, что вспыхнет — решают связи."""
 
+        cortex = torch.arange(self.meaning.E.size, device=self.device)
         self.brain.feel("ca3", everyone, self.cfg.ripple_mv)
+        self.brain.feel(self.meaning.name, cortex, self.cfg.ripple_up_state_mv)
         rates = self.brain.observe(self.cfg.ripple_ms)
         self.brain.feel("ca3", None, 0.0)
+        self.brain.feel(self.meaning.name, None, 0.0)
 
         return rates
 
@@ -2103,6 +2111,7 @@ class LanguageInterface:
         """Одно проигрывание эпизода во сне: кора учится, как наяву."""
 
         salience = 0.0
+        started = self.brain.time_ms
         # Медленная волна: кора замолкает между проигрываниями —
         # цель прошлого эпизода в следующий не тянется.
         self.brain.silence("goal")
@@ -2121,9 +2130,7 @@ class LanguageInterface:
 
         episode.salience = salience
         episode.replays += 1
-
-        if self.cfg.base_circuit:
-            self.brain.downscale(self.cfg.sleep_downscale)
+        self._sleep_downscale(started)
         self.dreams.append(self.join(episode.tokens))
         report.sentences += 1
         self.rest()

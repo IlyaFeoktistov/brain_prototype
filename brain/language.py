@@ -1363,7 +1363,9 @@ class LanguageInterface:
 
         if self._growth and self.sentences_lived % self.cfg.grow_every_sentences == 0:
             self._show_growth(self._growth)
-            self.brain.grow(self._growth, self.cfg.grow_synapses)
+            form = [link for link in self._growth if link[0] == "auditory -> association"]
+            self.brain.grow([link for link in self._growth if link[0] != "auditory -> association"], self.cfg.grow_synapses)
+            self.brain.grow(form, self.cfg.form_grow_synapses)
             self._growth = []
 
             # Выросшие синапсы контекста сразу получают укрепление, которое

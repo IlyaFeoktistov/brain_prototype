@@ -44,9 +44,12 @@ for kv in sys.argv[3:]:
 
 def apply(cfg):
     for k, v in overrides:
-        old = getattr(cfg, k)
-        setattr(cfg, k, (v == "1") if isinstance(old, bool) else type(old)(v))
-        print(f"{k} = {getattr(cfg, k)}")
+        # Вложенное поле: form_pathway.k=64.
+        owner, _, field = k.rpartition(".")
+        target = getattr(cfg, owner) if owner else cfg
+        old = getattr(target, field)
+        setattr(target, field, (v == "1") if isinstance(old, bool) else type(old)(v))
+        print(f"{k} = {getattr(target, field)}")
 
 
 t0 = time.time()

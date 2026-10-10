@@ -1443,7 +1443,21 @@ class SpikingBrain:
             if not len(rows):
                 continue
 
-            cols = proj.weight[rows].argmin(1)
+            # Одна клетка может получить несколько синапсов за раз: i-й
+            # занимает её i-й по слабости вход (иначе все писались в один
+            # самый слабый, и выживал последний).
+            order = torch.argsort(rows, stable=True)
+            rows, new_pre = rows[order], new_pre[order]
+            pair = rows.long() * (1 << 32) + new_pre.long()
+            first = torch.ones_like(rows, dtype=torch.bool)
+            first[1:] = pair[1:] != pair[:-1]
+            rows, new_pre = rows[first], new_pre[first]
+            _, counts = torch.unique_consecutive(rows, return_counts=True)
+            starts = torch.repeat_interleave(torch.cumsum(counts, 0) - counts, counts)
+            nth = torch.arange(len(rows), device=self.device) - starts
+            keep = nth < proj.weight.shape[1]
+            rows, new_pre, nth = rows[keep], new_pre[keep], nth[keep]
+            cols = torch.argsort(proj.weight[rows].float(), dim=1, stable=True).gather(1, nth[:, None]).squeeze(1)
             proj.pre[rows, cols] = new_pre.to(proj.pre.dtype)
             low = float(exact16(torch.tensor(low)))
             proj.weight[rows, cols] = low

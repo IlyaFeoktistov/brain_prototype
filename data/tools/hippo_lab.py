@@ -88,19 +88,39 @@ brain.eligibility.zero_()
 # Запись: каждый эпизод один раз, бодрствование — ацетилхолин высокий.
 brain.set_acetylcholine(1.0)
 log = {n: [] for n in ("entorhinal", "dentate", "ca3", "ca1")}
+# Узор CA3 каждого эпизода — клетки, стрелявшие на любом его слове.
+CA3 = brain.areas["ca3"].E
+traces, answers = [], []
 for episode in episodes:
+    trace = torch.zeros(CA3.size, dtype=torch.bool, device=brain.device)
     for word in episode:
         rates = hear(word, WORD_MS)
         brain.homeostasis(rates)
         brain.encode(cfg.hippocampus_encode)
+        trace |= rates[CA3.slice] > 0
         for n in log:
             log[n].append(share(rates, n))
+    # Узор CA3 на слове-ответе — его и должна достроить подсказка.
+    answers.append(rates[CA3.slice] > 0)
+    traces.append(trace)
     hear(None, REST_MS)
+traces = torch.stack(traces).float()
+
+# Выученные связи CA3 → CA3: вес пар клеток одного эпизода против прочих.
+proj = next(p for p in brain.plastic if p.name == "ca3: E->E")
+pre_local = proj.pre.long() - CA3.start
+member = traces.bool()
+inside = torch.zeros_like(proj.weight, dtype=torch.bool)
+for trace in member:
+    inside |= trace[:, None] & trace[pre_local]
+w = proj.weight.float()
+print(f"CA3 → CA3: вес внутри эпизода {float(w[inside].mean()):.3f} ({int(inside.sum())} синапсов), "
+      f"прочие {float(w[~inside].mean()):.3f}, потолок {proj.cap}")
 print("при записи активны: " + ", ".join(f"{n} {sum(v) / len(v):.1%}" for n, v in log.items()))
 
 # Вспоминание: первые три слова слушает (ацетилхолин высокий), на
 # последнем открывает ворота «говори» — ацетилхолин падает, CA3 и выход свободны.
-ranks, spike_ranks = [], []
+ranks, spike_ranks, completion = [], [], []
 with brain.frozen():
     for episode in episodes[:20]:
         hear(None, REST_MS)
@@ -109,6 +129,12 @@ with brain.frozen():
             hear(word, WORD_MS)
         brain.set_acetylcholine(0.0)
         rates = hear(episode[2], WORD_MS)
+        # Достраивание в CA3: какая доля клеток ответа стреляет на подсказку
+        # (против доли всех клеток CA3 — случайного уровня).
+        fired = rates[CA3.slice] > 0
+        answer = answers[episodes.index(episode)]
+        if answer.any() and fired.any():
+            completion.append(float((fired & answer).sum() / answer.sum()) / float(fired.float().mean()))
         drive = brain.learned_drive(rates, "association", source="ca1")
         score = torch.stack([drive[v].mean() for v in vocab])
         ranks.append(int((score > score[episode[3]]).sum()))
@@ -123,6 +149,8 @@ with brain.frozen():
 top1 = sum(r == 0 for r in ranks)
 print(f"вспоминание по току CA1 (первые 20 эпизодов из {EPISODES}): ответ первым {top1}/20, "
       f"средний ранг {sum(ranks) / 20 + 1:.1f} из {WORDS} (случайно ~{WORDS // 2})")
+print(f"достраивание в CA3: клеток ответа стреляет ×{sum(completion) / max(1, len(completion)):.2f} к случайному "
+      f"(по {len(completion)} эпизодам)")
 print(f"по спайкам коры при воротах «говори»: первым {sum(r == 0 for r in spike_ranks)}/20, "
       f"молчала {sum(r == WORDS for r in spike_ranks)}/20")
 
@@ -132,7 +160,7 @@ ca3 = brain.areas["ca3"].E
 everyone = torch.arange(ca3.size, device=brain.device)
 with brain.frozen():
     for mv in [cfg.ripple_mv * f for f in (0.5, 0.75, 1.0, 1.5)]:
-        stats, pure = {n: [] for n in ("ca3", "ca1", "association")}, []
+        stats, pure, lift = {n: [] for n in ("ca3", "ca1", "association")}, [], []
         for _ in range(5):
             hear(None, REST_MS)
             brain.feel("ca3", everyone, mv)
@@ -143,12 +171,23 @@ with brain.frozen():
             brain.feel("association", None, 0.0)
             for n in stats:
                 stats[n].append(share(rates, n))
+            # CA3: во сколько раз узор вспышки покрывает узор лучшего эпизода
+            # больше, чем случайный набор клеток того же размера.
+            fired = (rates[CA3.slice] > 0).float()
+            if fired.sum() > 0:
+                size = traces.sum(1).clamp(min=1)
+                shuffled = fired[torch.randperm(fired.numel(), device=brain.device)]
+                # Лучший эпизод против лучшего же для перемешанного набора.
+                lift.append(float((traces @ fired / size).max() / ((traces @ shuffled / size).max() + 1e-9)))
+            # Кора — только свои слова эпизодов (без частых и «?»).
             spikes = torch.stack([rates[assoc.start + v].sum() for v in vocab])
-            if spikes.sum() > 0:
-                # Доля спайков коры на словах одного (лучшего) эпизода.
-                pure.append(max(float(spikes[e].sum() / spikes.sum()) for e in episodes))
+            own = spikes.clone()
+            own[: 4] = 0
+            if own.sum() > 0:
+                pure.append(max(float(own[e].sum() / own.sum()) for e in episodes))
         print(f"вспышка {mv:.0f} мВ: " + ", ".join(f"{n} {sum(v) / len(v):.2%}" for n, v in stats.items())
-              + (f" | слова одного эпизода {sum(pure) / len(pure):.0%} (кора стреляла в {len(pure)}/5)" if pure else " | кора молчит"))
+              + (f" | CA3 лучший эпизод ×{sum(lift) / len(lift):.2f} к перемешанному" if lift else "")
+              + (f" | свои слова одного эпизода {sum(pure) / len(pure):.0%} (кора в {len(pure)}/5)" if pure else " | кора молчит"))
 
 print("смещение: " + ", ".join(f"{n} {float(brain.bias[brain.areas[n].E.slice].mean()):.1f}"
                               for n in ("entorhinal", "dentate", "ca3", "ca1")))

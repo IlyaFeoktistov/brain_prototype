@@ -355,6 +355,15 @@ class SpikingBrain:
             }
         )
         self.memory_pops = [a.E for a in self.areas.values() if a.kind == "memory"]
+        # Зоны с симметричным STDP внутри себя (CA3): номер зоны у её E,
+        # 0 у остальных. Синапс симметричен, если пре и пост из одной такой зоны.
+        self.symmetric_area = None
+
+        for number, spec in enumerate(cfg.areas, 1):
+            if spec.ee_symmetric:
+                if self.symmetric_area is None:
+                    self.symmetric_area = torch.zeros(self.n_slots, device=self.device)
+                self.symmetric_area[self.areas[spec.name].E.slice] = number
         self.safe_delta_t = self.delta_t.clamp(min=1e-3)
 
         # Скачок синаптического тока при весе J даёт
@@ -904,10 +913,18 @@ class SpikingBrain:
             synapses, pre_of = self.out_plastic.events(fired_before)
             post = self.net_post.index_select(0, synapses)
             ltd = self.trace_post.index_select(0, post) * self.ltd_mask.index_select(0, pre_of)
+            sign = -cfg.stdp_a_minus
+
+            if self.symmetric_area is not None:
+                # Симметричное окно: пре после поста — тоже потенциация.
+                zone = self.symmetric_area.index_select(0, post)
+                same = (zone > 0) & (zone == self.symmetric_area.index_select(0, pre_of))
+                sign = torch.where(same, cfg.stdp_a_plus, -cfg.stdp_a_minus)
+
             self.eligibility.index_add_(
                 0,
                 synapses,
-                (ltd * (-cfg.stdp_a_minus / self.eligibility_scale)).to(self.eligibility.dtype),
+                (ltd * (sign / self.eligibility_scale)).to(self.eligibility.dtype),
             )
 
         self.i_syn.mul_(self.decay_syn).add_(drive * self.syn_scale)

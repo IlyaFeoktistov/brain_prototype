@@ -452,6 +452,32 @@ class SpikingBrain:
             if spec.background is not None:
                 self.noise_gain[self.areas[spec.name].E.slice] = spec.background
 
+    def _topographic_pre(self, post: Population, k: int, pre_pop: Population, field: float) -> torch.Tensor:
+        """
+        Входы с круга на карте источника: клетки зон лежат сеткой
+        ceil(√n) столбцов (как места слов в Concepts); клетка-получатель
+        проецируется в ту же долю карты источника и берёт k случайных
+        клеток круга площадью field · k вокруг этой точки.
+        """
+
+        def grid(size: int) -> tuple[int, int]:
+            cols = max(1, math.ceil(math.sqrt(size)))
+            return cols, max(1, math.ceil(size / cols))
+
+        post_cols, post_rows = grid(post.size)
+        pre_cols, pre_rows = grid(pre_pop.size)
+        cell = torch.arange(post.size, device=self.device)
+        cx = ((cell % post_cols).float() + 0.5) / post_cols * pre_cols
+        cy = ((cell // post_cols).float() + 0.5) / post_rows * pre_rows
+        radius = math.sqrt(field * k / math.pi)
+        # Равномерно по кругу: r = R·√u, угол равномерный.
+        r = radius * torch.rand((post.size, k), device=self.device, generator=self.generator).sqrt()
+        angle = 2 * math.pi * torch.rand((post.size, k), device=self.device, generator=self.generator)
+        x = (cx[:, None] + r * torch.cos(angle)).round().long().clamp(0, pre_cols - 1)
+        y = (cy[:, None] + r * torch.sin(angle)).round().long().clamp(0, pre_rows - 1)
+
+        return pre_pop.start + (y * pre_cols + x) % pre_pop.size
+
     def _random_pre(self, post: Population, k: int, pre_pop: Population) -> torch.Tensor:
         pre = torch.randint(
             pre_pop.start,
@@ -486,14 +512,16 @@ class SpikingBrain:
         cap: float = 0.0,
         modulator: str = "dopamine",
         ach_suppressed: bool = False,
+        topographic: float = 0.0,
     ) -> Projection | None:
         k = min(k, pre_pop.size)
 
         if k <= 0:
             return None
 
-        # Врождённый путь с постоянным весом — не храним, а вычисляем.
-        if self.cfg.procedural_wiring and not plastic and weight[0] == weight[1] != 0:
+        # Врождённый путь с постоянным весом — не храним, а вычисляем
+        # (топографический хранится: хеш получателей не знает карты).
+        if self.cfg.procedural_wiring and not plastic and weight[0] == weight[1] != 0 and not topographic:
             proj = ProceduralProjection(
                 name, pre_pop, post, k, weight[0],
                 seed=self.cfg.seed * 1009 + len(self.projections), device=self.device,
@@ -504,10 +532,14 @@ class SpikingBrain:
             self.projections.append(proj)
             return proj
 
+        pre = (
+            self._topographic_pre(post, k, pre_pop, topographic) if topographic > 0
+            else self._random_pre(post, k, pre_pop)
+        )
         proj = Projection(
             name,
             "net",
-            self._random_pre(post, k, pre_pop),
+            pre,
             post,
             self._uniform((post.size, k), *weight),
             plastic=plastic,
@@ -600,6 +632,7 @@ class SpikingBrain:
                 f"{path.src} -> {path.dst}", src.E, dst.E, path.k,
                 path.weight, plastic=path.plastic, cap=path.cap,
                 modulator=path.modulator, ach_suppressed=path.ach_suppressed,
+                topographic=path.topographic,
             )
 
             if proj is not None:

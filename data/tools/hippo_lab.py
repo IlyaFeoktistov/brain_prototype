@@ -18,6 +18,7 @@ import time
 import torch
 
 from brain.config import AreaSpec, BrainConfig, hippocampus_areas, hippocampus_pathways
+from brain.concepts import Concepts
 from brain.engine import SpikingBrain
 
 total = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 20000
@@ -49,14 +50,18 @@ rng = random.Random(1)
 assoc = brain.areas["association"].E
 CELLS, WORD_MS, REST_MS, WORD_MV = cfg.concept_cells, cfg.stimulus_ms, cfg.rest_ms, cfg.concept_mv
 
-# Словарь: места слов не пересекаются.
-order = list(range(assoc.size))
-rng.shuffle(order)
+# Словарь: места слов — компактные пятна на карте смысловой коры, как в
+# мозге (Concepts), но не рядом с прозвучавшим перед ним: иначе ответ
+# лежит на карте возле «?», и топографический вход EC смешивает их коды
+# без всякой памяти ([замер] без записи CA1 давала узор ответа ×17).
 WORDS = 4 + 2 * EPISODES
-vocab = [torch.tensor(order[i * CELLS:(i + 1) * CELLS], device=brain.device) for i in range(WORDS)]
 common = [0, 1, 2]
 QUESTION = 3
 episodes = [[common[i % 3], 4 + i, QUESTION, 4 + EPISODES + i] for i in range(EPISODES)]
+places = Concepts(assoc.size, CELLS, cfg.seed, brain.device)
+for i in rng.sample(range(WORDS), WORDS):
+    places.get(str(i), allocate=True)
+vocab = [places.get(str(i), allocate=False).to(brain.device) for i in range(WORDS)]
 
 
 def hear(word: int | None, ms: float) -> torch.Tensor:
@@ -90,7 +95,8 @@ brain.set_acetylcholine(1.0)
 log = {n: [] for n in ("entorhinal", "dentate", "ca3", "ca1")}
 # Узор CA3 каждого эпизода — клетки, стрелявшие на любом его слове.
 CA3 = brain.areas["ca3"].E
-traces, answers = [], []
+traces, answers, answers1 = [], [], []
+CA1 = brain.areas["ca1"].E
 for episode in episodes:
     trace = torch.zeros(CA3.size, dtype=torch.bool, device=brain.device)
     for word in episode:
@@ -102,6 +108,7 @@ for episode in episodes:
             log[n].append(share(rates, n))
     # Узор CA3 на слове-ответе — его и должна достроить подсказка.
     answers.append(rates[CA3.slice] > 0)
+    answers1.append(rates[CA1.slice] > 0)
     traces.append(trace)
     hear(None, REST_MS)
 traces = torch.stack(traces).float()
@@ -120,7 +127,7 @@ print("при записи активны: " + ", ".join(f"{n} {sum(v) / len(v):
 
 # Вспоминание: первые три слова слушает (ацетилхолин высокий), на
 # последнем открывает ворота «говори» — ацетилхолин падает, CA3 и выход свободны.
-ranks, spike_ranks, completion = [], [], []
+ranks, spike_ranks, completion, completion1 = [], [], [], []
 with brain.frozen():
     for episode in episodes[:20]:
         hear(None, REST_MS)
@@ -129,15 +136,21 @@ with brain.frozen():
             hear(word, WORD_MS)
         brain.set_acetylcholine(0.0)
         rates = hear(episode[2], WORD_MS)
-        # Достраивание в CA3: какая доля клеток ответа стреляет на подсказку
-        # (против доли всех клеток CA3 — случайного уровня).
-        fired = rates[CA3.slice] > 0
-        answer = answers[episodes.index(episode)]
-        if answer.any() and fired.any():
-            completion.append(float((fired & answer).sum() / answer.sum()) / float(fired.float().mean()))
+        # Достраивание: доля клеток своего ответа, стреляющих на подсказку,
+        # против той же доли для ответов других эпизодов (специфичность;
+        # просто «против случайного» завышали самые возбудимые клетки зоны).
+        index = episodes.index(episode)
+        for zone, store, out in ((CA3, answers, completion), (CA1, answers1, completion1)):
+            fired = (rates[zone.slice] > 0).float()
+            patterns = torch.stack(store).float()
+            if fired.sum() == 0 or patterns[index].sum() == 0:
+                continue
+            hit = (patterns @ fired) / patterns.sum(1).clamp(min=1)
+            others = torch.cat([hit[:index], hit[index + 1:]])
+            out.append(float(hit[index] / (others.mean() + 1e-3)))
         drive = brain.learned_drive(rates, "association", source="ca1")
         score = torch.stack([drive[v].mean() for v in vocab])
-        ranks.append(int((score > score[episode[3]]).sum()))
+        ranks.append(float((score > score[episode[3]]).sum() + 0.5 * ((score == score[episode[3]]).sum() - 1)))
         # После вопроса открыты ворота «говори» (ровный ток на всю кору, как
         # при ответе): что вспыхнет само — с подсказкой CA1.
         brain.feel("association", torch.arange(assoc.size, device=brain.device), cfg.speak_gate_mv)
@@ -149,8 +162,8 @@ with brain.frozen():
 top1 = sum(r == 0 for r in ranks)
 print(f"вспоминание по току CA1 (первые 20 эпизодов из {EPISODES}): ответ первым {top1}/20, "
       f"средний ранг {sum(ranks) / 20 + 1:.1f} из {WORDS} (случайно ~{WORDS // 2})")
-print(f"достраивание в CA3: клеток ответа стреляет ×{sum(completion) / max(1, len(completion)):.2f} к случайному "
-      f"(по {len(completion)} эпизодам)")
+print(f"достраивание: клеток своего ответа стреляет ×{sum(completion) / max(1, len(completion)):.2f} к чужим ответам в CA3 "
+      f"(по {len(completion)} эпизодам); в CA1 ×{sum(completion1) / max(1, len(completion1)):.2f} (по {len(completion1)})")
 print(f"по спайкам коры при воротах «говори»: первым {sum(r == 0 for r in spike_ranks)}/20, "
       f"молчала {sum(r == WORDS for r in spike_ranks)}/20")
 

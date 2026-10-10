@@ -4,7 +4,7 @@
     .venv/bin/python data/tools/variant.py "ca3.inhibition=6,entorhinal-ca1.w=2:2,ca1-association.k=100" data/tools/hippo_lab.py 20000 [key=value ...]
 
 Ключи: <зона>.inhibition / .kind / .background / .k_ee / .feedback / .target / любое поле AreaSpec;
-<откуда>-<куда>.w=низ:верх / .k / .iw (вес торможения).
+<откуда>-<куда>.w=низ:верх / .k / .iw (вес торможения) / .topo (топографический, площадь круга × k).
 """
 import runpy, sys
 import brain.config as C
@@ -34,6 +34,8 @@ def paths():
             lo, hi = map(float, spec[key + ".w"].split(":")); p.weight = (lo, hi)
         if key + ".k" in spec: p.k = int(spec[key + ".k"])
         if key + ".iw" in spec: p.inhibitory_weight = float(spec[key + ".iw"])
+        if key + ".topo" in spec: p.topographic = float(spec[key + ".topo"])
+        if key + ".cap" in spec: p.cap = float(spec[key + ".cap"])
     return out
 C.hippocampus_areas, C.hippocampus_pathways = areas, paths
 import brain.mind as M

@@ -825,7 +825,8 @@ class SpikingBrain:
 
     # Нейромодуляторы: имя → ядро-источник (зона, чьи E-клетки выбрасывают);
     # None — все нейроны (аденозин — продукт обмена веществ любой клетки).
-    MODULATORS = {"dopamine": "vta", "noradrenaline": "lc", "adenosine": None}
+    # Галанин (с ГАМК) — выброс VLPO: сон, когда его больше норадреналина.
+    MODULATORS = {"dopamine": "vta", "noradrenaline": "lc", "adenosine": None, "galanin": "vlpo"}
 
     def _init_chemistry(self) -> None:
         """
@@ -855,6 +856,22 @@ class SpikingBrain:
             size = area.E.size if area is not None else self.n
             self.chemistry_source[i, cells] = 1.0 / size
 
+        # Рецепторы: клетки зоны чувствуют вещество — ток (мВ) при полной
+        # занятости, знак — возбуждает или тормозит (cfg.receptors).
+        self.chemistry_half = torch.tensor(
+            [getattr(self.cfg, f"{n}_half") for n in names], device=self.device, dtype=torch.float64,
+        )
+        self.receptor_mv = torch.zeros(len(names), self.n_slots, device=self.device)
+
+        for name, area_name, mv in self.cfg.receptors:
+            area = self.areas.get(area_name)
+
+            if area is not None and name in names:
+                self.receptor_mv[names.index(name), area.E.slice] = mv
+
+        # Часы (SCN): ток клеткам часов по фазе суток — молекулярный цикл
+        # клетки, выставляется set_clock (copy_ — для CUDA Graph).
+        self.clock_mv = torch.zeros(self.n_slots, device=self.device)
         self.sleep_chemistry(False)
 
     def _chemistry_rates(self, asleep: bool) -> tuple[list[float], list[float], list[float]]:
@@ -889,6 +906,27 @@ class SpikingBrain:
         self.chemistry_release.copy_(f64(release))
         self.chemistry_basal.copy_(f64(basal))
         self._asleep = asleep
+
+    def set_clock(self) -> None:
+        """
+        Суточные часы: клетки SCN получают ток по фазе суток (днём выше —
+        у SCN пик активности в середине дня). Время суток — время мозга
+        от рождения плюс час рождения.
+        """
+
+        area = self.areas.get("scn")
+
+        if area is None:
+            return
+
+        hour = (self.cfg.birth_hour + self.time_ms / 3_600_000.0) % 24.0
+        day = 0.5 * (1.0 + math.cos(2.0 * math.pi * (hour - self.cfg.scn_peak_hour) / 24.0))
+        self.clock_mv[area.E.slice] = self.cfg.scn_mv * day
+
+    def hour(self) -> float:
+        """Время суток мозга, ч."""
+
+        return (self.cfg.birth_hour + self.time_ms / 3_600_000.0) % 24.0
 
     def level(self, name: str) -> float:
         """Концентрация вещества (см. _init_chemistry)."""
@@ -1128,9 +1166,13 @@ class SpikingBrain:
         if cfg.pool_inhibition_mv > 0:
             synaptic = synaptic - cfg.pool_inhibition_mv * self.pool * self.pool_mask
 
+        # Вещества через рецепторы: занятость c / (c + K) × ток клетки.
+        occupancy = (self.chemistry / (self.chemistry + self.chemistry_half)).to(torch.float32)
+        modulated = occupancy @ self.receptor_mv
+
         dv = (
             cfg.v_rest - self.v + exp_term - self.adapt
-            + synaptic + self.bias + self.interoception
+            + synaptic + self.bias + self.interoception + modulated + self.clock_mv
         ) * self.decay_m
         v = torch.where(self.refractory <= 0, self.v + dv, self.v)
         self.refractory.sub_(cfg.dt_ms)
@@ -1270,6 +1312,7 @@ class SpikingBrain:
         steps = int(round(duration_ms / self.cfg.dt_ms))
         chunks = max(1, round(steps / self.CHUNK))
         use_graph = self.device.type == "cuda"
+        self.set_clock()
 
         key = self.plasticity
 

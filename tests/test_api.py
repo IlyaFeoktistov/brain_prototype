@@ -126,10 +126,14 @@ def test_falls_asleep_only_when_tired(client):
     try:
         # Аденозина мало (утро) — не хочет спать, даже в долгой тишине.
         brain.chemistry[adenosine] = 0.0
+        for _ in range(5):
+            host.mind.language.pass_time(1.0)
         assert not host._should_fall_asleep(last_activity=0)
 
-        # Вечер: рецепторы заняты — в тишине засыпает.
+        # Вечер: рецепторы заняты — в тишине VLPO побеждает, засыпает.
         brain.chemistry[adenosine] = 10 * cfg.adenosine_half
+        for _ in range(5):
+            host.mind.language.pass_time(1.0)
         assert host._should_fall_asleep(last_activity=0)
         # Сразу после сообщения — не засыпает.
         assert not host._should_fall_asleep(last_activity=__import__("time").time())

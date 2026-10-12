@@ -198,8 +198,9 @@ def test_forgetting_can_be_switched_off(mind):
 
 def test_long_reading_naps_to_keep_memory(mind):
     language = mind.language
-    # Устал (аденозин): посреди чтения засыпает и читает дальше.
-    mind.cfg.sleepy_occupancy = 0.0
+    # Устал (аденозина много — VLPO побеждает): посреди чтения засыпает
+    # и читает дальше.
+    mind.brain.chemistry[mind.brain.chemistry_names.index("adenosine")] = 50 * mind.cfg.adenosine_half
     text = "\n".join(f"Слово{i} идёт за словом{i + 1}." for i in range(20))
 
     report = language.read_text(text)

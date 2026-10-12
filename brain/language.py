@@ -2162,7 +2162,15 @@ class LanguageInterface:
 
     @property
     def drowsy(self) -> bool:
-        """Хочет спать: рецепторы аденозина заняты (см. sleepy_occupancy)."""
+        """
+        Хочет спать: переключатель сна перешёл на сторону VLPO — его
+        выброс (галанин, ГАМК) больше норадреналина голубого пятна
+        (Saper 2001). Мозг без VLPO (старые сохранения) — по занятости
+        рецепторов аденозина (sleepy_occupancy).
+        """
+
+        if "vlpo" in self.brain.areas:
+            return self.brain.level("galanin") > self.brain.level("noradrenaline")
 
         return self.brain.occupancy("adenosine") >= self.cfg.sleepy_occupancy
 
@@ -2381,9 +2389,22 @@ class LanguageInterface:
             self.emotions.arousal = self.brain.occupancy("noradrenaline")
 
     def pass_time(self, seconds: float) -> None:
-        """Тишина без симуляции: время идёт, вещества убывают, потребности растут."""
+        """
+        Тишина: время идёт, вещества убывают, потребности растут. Мозг в
+        тишине живёт: последние idle_live_ms секунды — настоящая симуляция
+        без обучения (ядра сна и бодрствования успевают переключиться),
+        остальное проматывается.
+        """
 
-        self.brain.pass_time(seconds)
+        live = min(seconds * 1000.0, self.cfg.idle_live_ms)
+        self.brain.pass_time(seconds - live / 1000.0)
+        plasticity = self.brain.plasticity
+        self.brain.plasticity = False
+
+        try:
+            self.brain.run(live)
+        finally:
+            self.brain.plasticity = plasticity
 
         if self.cfg.emotions_enabled:
             self.emotions.relax(seconds)

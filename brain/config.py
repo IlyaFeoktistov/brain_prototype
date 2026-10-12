@@ -227,6 +227,18 @@ def default_areas() -> list[AreaSpec]:
             0.005, k_ee=10, ee_plastic=False, target_activity=0.0,
             adapt_b=10.0, adapt_tau=5000.0,
         ),
+        # Переключатель сна (Saper 2001): VLPO (сон) и ядра бодрствования
+        # (голубое пятно) тормозят друг друга — спит тот мозг, где VLPO
+        # победило. Аденозин будит VLPO и глушит голубое пятно (receptors),
+        # часы (SCN) днём будят голубое пятно. [не подбиралось] доли 0.3%.
+        AreaSpec(
+            "vlpo", "VLPO гипоталамуса (сон)",
+            0.003, k_ee=10, ee_plastic=False, target_activity=0.0,
+        ),
+        AreaSpec(
+            "scn", "супрахиазматическое ядро (суточные часы)",
+            0.003, k_ee=10, ee_plastic=False, target_activity=0.0,
+        ),
     ]
 
 
@@ -391,6 +403,12 @@ def default_pathways() -> list[PathwaySpec]:
         # Смысл -> миндалина: какие слова к добру, какие к худу. Учится не
         # STDP, а на похвалу/ругань (language._learn_value); при рождении
         # пустой.
+        # Переключатель сна: VLPO и голубое пятно тормозят друг друга (через
+        # тормозные клетки получателя), часы днём будят голубое пятно.
+        # [не подбиралось] — стенд data/tools/sleep_switch.py.
+        PathwaySpec("vlpo", "lc", k=0, weight=(0.0, 0.0), k_inhibitory=20, inhibitory_weight=3.0),
+        PathwaySpec("lc", "vlpo", k=0, weight=(0.0, 0.0), k_inhibitory=20, inhibitory_weight=3.0),
+        PathwaySpec("scn", "lc", k=20, weight=(9.0, 9.0), k_inhibitory=0),
         PathwaySpec("association", "amygdala", k=50, weight=(0.0, 0.0),
                     k_inhibitory=0, predictive=False),
         # Слово -> категория (членство) и категория -> слово (что она
@@ -1050,6 +1068,10 @@ class BrainConfig:
     dopamine_half: float = 5.0
     noradrenaline_tau_ms: float = 2000.0
     noradrenaline_half: float = 4.0
+    # Галанин и ГАМК клеток VLPO — в тех же единицах, что норадреналин:
+    # мозг спит, когда VLPO выбрасывает больше, чем голубое пятно.
+    galanin_tau_ms: float = 2000.0
+    galanin_half: float = 4.0
     # Аденозин — давление сна (процесс S, Borbély 1982): средняя частота
     # всех нейронов плюс обмен веществ покоя за τ. Наяву копится с
     # τ 18 ч, во сне вымывается с τ 4 ч (Daan, Beersma & Borbély 1984).
@@ -1069,6 +1091,23 @@ class BrainConfig:
     adenosine_sleep_basal_hz: float = 0.0
     adenosine_half: float = 0.21
     sleep_compression: float = 20.0
+    # Рецепторы: (вещество, зона, ток E-клеток при полной занятости, мВ).
+    # Аденозин возбуждает VLPO (A2A) и тормозит ядра бодрствования (A1)
+    # (Porkka-Heiskanen 1997; Scammell 2001). [не подбиралось] —
+    # стенд data/tools/sleep_switch.py.
+    receptors: tuple[tuple[str, str, float], ...] = (
+        ("adenosine", "vlpo", 35.0),
+        ("adenosine", "lc", -15.0),
+    )
+    # Суточные часы: клетки SCN получают ток scn_mv × (1 + cos)/2 с пиком
+    # в scn_peak_hour (у SCN пик активности днём); мозг «рождается» утром.
+    birth_hour: float = 8.0
+    # Сколько мс из каждой секунды тишины мозг живёт по-настоящему (без
+    # обучения). [замер] переключатель сна (стенд sleep_switch.py) за
+    # 1 с выходит на свои частоты; 200 мс в секунду — ~20 мс счёта.
+    idle_live_ms: float = 200.0
+    scn_peak_hour: float = 14.0
+    scn_mv: float = 30.0
     # Врождённый канал поощрения/наказания — только кнопки «Верно» и
     # «Неверно» (шлют «+» и «−»), как улыбка или тон голоса. Слова
     # («молодец», «нет») мозг учит сам: миндалина связывает их с наградой,
@@ -1427,6 +1466,9 @@ class BrainConfig:
             {"predictive": p["src"] != "limbic", **p} for p in data.get("pathways", [])
         ]
         data["pathways"] = [PathwaySpec(**p) for p in pathways] or default_pathways()
+
+        if "receptors" in data:
+            data["receptors"] = tuple(tuple(r) for r in data["receptors"])
 
         for key in ("praise_words", "blame_words", "homeostasis_bias_range"):
             if key in data:

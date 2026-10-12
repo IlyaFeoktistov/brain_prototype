@@ -444,6 +444,16 @@ class SpikingBrain:
             if spec.adapt_tau is not None:
                 E = self.areas[spec.name].E
                 self.decay_adapt[E.slice] = math.exp(-dt / spec.adapt_tau)
+
+        # Медленная следовая гиперполяризация (sAHP) — своя у зоны.
+        self.slow_ahp_b = torch.zeros(self.n_slots, device=self.device)
+        self.decay_slow_ahp = torch.ones(self.n_slots, device=self.device)
+
+        for spec in cfg.areas:
+            if getattr(spec, "slow_ahp_b", 0.0) > 0:
+                E = self.areas[spec.name].E
+                self.slow_ahp_b[E.slice] = spec.slow_ahp_b
+                self.decay_slow_ahp[E.slice] = math.exp(-dt / spec.slow_ahp_tau)
         self.decay_plus = math.exp(-dt / cfg.stdp_tau_plus)
         # Ядро LTP со сдвигом: exp(-t/τ+) - exp(-t/τrise), нормировано
         # на пик 1. Одновременные спайки (одно слово) почти не
@@ -1009,6 +1019,7 @@ class SpikingBrain:
         # Пул торможения смысловой коры: отфильтрованное число её спайков.
         self.pool = torch.zeros(1, device=self.device)
         self.adapt = z()
+        self.adapt_slow = z()
         self.refractory = z()
         self.spikes = z()
         # STDP-следы: пре (LTP) и пост (LTD).
@@ -1184,7 +1195,7 @@ class SpikingBrain:
         modulated = occupancy @ self.receptor_mv
 
         dv = (
-            cfg.v_rest - self.v + exp_term - self.adapt
+            cfg.v_rest - self.v + exp_term - self.adapt - self.adapt_slow
             + synaptic + self.bias + self.interoception + modulated + self.clock_mv
         ) * self.decay_m
         v = torch.where(self.refractory <= 0, self.v + dv, self.v)
@@ -1199,6 +1210,7 @@ class SpikingBrain:
         self.v.copy_(torch.where(fired, cfg.v_reset, v))
         self.refractory.copy_(torch.where(fired, cfg.refractory_ms, self.refractory))
         self.adapt.mul_(self.decay_adapt).add_(self.adapt_b * self.spikes)
+        self.adapt_slow.mul_(self.decay_slow_ahp).add_(self.slow_ahp_b * self.spikes)
 
         if cfg.base_circuit:
             # Ресурс восстанавливается к 1, спайк тратит долю stp_u.
@@ -1839,7 +1851,7 @@ class SpikingBrain:
     # читает и пишет по фиксированным адресам. Поэтому их
     # всегда восстанавливают через copy_, а не присваиванием.
     _DYNAMIC = (
-        "v", "i_syn", "i_slow", "i_dend", "pool", "adapt", "refractory", "spikes",
+        "v", "i_syn", "i_slow", "i_dend", "pool", "adapt", "adapt_slow", "refractory", "spikes",
         "trace_pre", "trace_pre_rise", "ltp_kernel", "trace_post", "counts", "eligibility",
         "eligibility_scale", "dropped", "bias", "interoception", "stp_x", "inh_gain",
         "chemistry",
@@ -1907,6 +1919,7 @@ class SpikingBrain:
             self.i_syn[pop.slice] = 0.0
             self.i_slow[pop.slice] = 0.0
             self.adapt[pop.slice] = 0.0
+            self.adapt_slow[pop.slice] = 0.0
             self.v[pop.slice] = self.cfg.v_rest
 
     def quiet(self, area: str) -> None:

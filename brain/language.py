@@ -2139,11 +2139,14 @@ class LanguageInterface:
 
         return report
 
-    def _sleep_downscale(self, started: float) -> None:
-        """Ослабление сна (Tononi) — пропорционально проспанному времени мозга."""
+    def _sleep_downscale(self, started: float, compression: float = 1.0) -> None:
+        """
+        Ослабление сна (Tononi) — пропорционально проспанному времени мозга
+        (сжатое проигрывание — × compression: столько прожито бы наяву).
+        """
 
         if self.cfg.base_circuit:
-            self.brain.downscale(self.cfg.sleep_downscale * (self.brain.time_ms - started) / 1000.0)
+            self.brain.downscale(self.cfg.sleep_downscale * compression * (self.brain.time_ms - started) / 1000.0)
 
     def _ripple(self, ca3, everyone: torch.Tensor) -> torch.Tensor:
         """Одна острая волна: возбудимость CA3 поднята, что вспыхнет — решают связи."""
@@ -2168,22 +2171,32 @@ class LanguageInterface:
         self.last_rates = None
 
         tokens = self._ended(episode.tokens) if episode.ended else episode.tokens
+        # Проигрывание сжато во времени (Nádasdy 1999; Lee & Wilson 2002):
+        # слово и пауза короче, чем наяву.
+        compression = self.cfg.replay_compression
+        cfg = self.cfg
+        stimulus, pause = cfg.stimulus_ms, cfg.rest_ms
+        cfg.stimulus_ms, cfg.rest_ms = stimulus / compression, pause / compression
 
-        for step in self.experience(tokens):
-            report.tokens += step.token != END
-            report.dopamine += step.dopamine
-            salience += step.dopamine
+        try:
+            for step in self.experience(tokens):
+                report.tokens += step.token != END
+                report.dopamine += step.dopamine
+                salience += step.dopamine
 
-            if step.error is not None:
-                report.errors.append(step.error)
-                report.hits += step.expected == step.token
+                if step.error is not None:
+                    report.errors.append(step.error)
+                    report.hits += step.expected == step.token
 
-        episode.salience = salience
-        episode.replays += 1
-        self._sleep_downscale(started)
-        self.dreams.append(self.join(episode.tokens))
-        report.sentences += 1
-        self.rest()
+            episode.salience = salience
+            episode.replays += 1
+            # Ослабление сна — по прожитому сну, а не по сжатому проигрыванию.
+            self._sleep_downscale(started, compression)
+            self.dreams.append(self.join(episode.tokens))
+            report.sentences += 1
+            self.rest()
+        finally:
+            cfg.stimulus_ms, cfg.rest_ms = stimulus, pause
 
     @property
     def drowsy(self) -> bool:

@@ -75,8 +75,9 @@ def test_arousal_strengthens_learning(mind):
     language.read_text("Столица Франции Париж.")
     eligibility = brain.eligibility.clone()
 
-    def change(arousal):
-        language.emotions.arousal = arousal
+    # Возбуждение — норадреналин: задаётся концентрацией вещества.
+    def change(level):
+        brain.chemistry[brain.chemistry_names.index("noradrenaline")] = level
         language._feel("relax", 0.0)
         before = brain.net_weight.clone()
         brain.eligibility.copy_(eligibility)
@@ -85,7 +86,7 @@ def test_arousal_strengthens_learning(mind):
         brain.net_weight.copy_(before)
         return float(delta)
 
-    calm, excited = change(0.0), change(1.0)
+    calm, excited = change(0.0), change(10.0)
     assert excited > calm * 1.5
 
 

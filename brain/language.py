@@ -762,6 +762,11 @@ class LanguageInterface:
             self._message_value += value
 
             if value:
+                # Центральное ядро миндалины будит голубое пятно: слово,
+                # предвещающее хорошее или плохое, возбуждает.
+                if self._has_nuclei() and not self.sleeping:
+                    self._alarm(abs(value))
+
                 self._feel("anticipate", self.cfg.value_mood * value)
 
 
@@ -1540,9 +1545,11 @@ class LanguageInterface:
         drive = (cfg.vta_tonic_mv + cfg.nucleus_mv * level) * gains
         self.brain.feel("vta", torch.arange(cells["vta"].size, device=self.device), drive)
 
-        if lc and level > 0:
+        if lc and level != 0:
+            # Голубое пятно отвечает на значимое любого знака: и на
+            # награду, и на ругань (Aston-Jones & Cohen 2005).
             E = cells["lc"] = self.brain.areas["lc"].E
-            amplitude = cfg.nucleus_mv * level * self._nucleus_gains("lc")
+            amplitude = cfg.nucleus_mv * abs(level) * self._nucleus_gains("lc")
             self.brain.feel("lc", torch.arange(E.size, device=self.device), amplitude)
 
         rates = self.brain.observe(cfg.nucleus_ms)
@@ -1556,6 +1563,15 @@ class LanguageInterface:
         scale = (1.0 - base) if delta >= 0 else base
 
         return cfg.surprise_dopamine_gain * delta / max(scale, 1e-3), fired.get("lc", 0.0)
+
+    def _alarm(self, level: float) -> None:
+        """Залп одного голубого пятна силы level (вход от миндалины)."""
+
+        E = self.brain.areas["lc"].E
+        amplitude = self.cfg.nucleus_mv * level * self._nucleus_gains("lc")
+        self.brain.feel("lc", torch.arange(E.size, device=self.device), amplitude)
+        self.brain.run(self.cfg.nucleus_ms)
+        self.brain.feel("lc", None, 0.0)
 
     def _vta_base(self) -> float:
         """Доля клеток VTA, стреляющих на одном тоническом фоне (замер один раз)."""
@@ -1582,7 +1598,7 @@ class LanguageInterface:
         if not self._has_nuclei():
             return amplitude
 
-        dopamine, _ = self._nucleus_burst(amplitude / self.cfg.surprise_dopamine_gain, lc=False)
+        dopamine, _ = self._nucleus_burst(amplitude / self.cfg.surprise_dopamine_gain)
 
         return dopamine
 
@@ -2343,7 +2359,23 @@ class LanguageInterface:
         if self.cfg.emotions_enabled and not self.sleeping:
             getattr(self.emotions, event)(*args)
 
+        self._sense_chemistry()
         self.brain.modulation = self._arousal_gain()
+
+    def _sense_chemistry(self) -> None:
+        """Возбуждение — занятость рецепторов норадреналина (если есть ядра)."""
+
+        self.emotions.chemical = self._has_nuclei()
+
+        if self.emotions.chemical and self.cfg.emotions_enabled:
+            self.emotions.arousal = self.brain.occupancy("noradrenaline")
+
+    def pass_time(self, seconds: float) -> None:
+        """Тишина без симуляции: вещества убывают, потребности растут."""
+
+        self.brain.clear_chemistry(seconds)
+        self.emotions.relax(seconds)
+        self._sense_chemistry()
 
     def _arousal_gain(self) -> float:
         """Норадреналин: во сне и без эмоций — 1."""

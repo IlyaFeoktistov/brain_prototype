@@ -136,6 +136,9 @@ class Emotions:
         # Выставляет язык: спит ли и накопилось ли «давление сна».
         self.sleeping = False
         self.sleepy = False
+        # Возбуждение — занятость рецепторов норадреналина (химия мозга,
+        # выставляет язык): формулы событий его не трогают.
+        self.chemical = False
 
         # Потребности (см. шапку модуля).
         self.novelty_hunger = 0.0
@@ -171,7 +174,9 @@ class Emotions:
             # Привыкание — в самих нейронах голубого пятна (адаптация).
             news = noradrenaline
 
-        self.arousal = self.arousal * AROUSAL_DECAY + news * 0.35
+        if not self.chemical:
+            self.arousal = self.arousal * AROUSAL_DECAY + news * 0.35
+
         self.confusion *= CONFUSION_DECAY
         self.valence *= VALENCE_DECAY
         self.frustration *= FRUSTRATION_DECAY
@@ -208,7 +213,9 @@ class Emotions:
             self.social_need += 0.2
             self.frustration += 0.2 + 0.6 * self.last_sure
 
-        self.arousal += 0.3
+        if not self.chemical:
+            self.arousal += 0.3
+
         self.confusion *= 0.5
         self._clip()
 
@@ -231,13 +238,18 @@ class Emotions:
         """Миндалина: услышанное предвещает хорошее (+) или плохое (−)."""
 
         self.valence += value
-        self.arousal += 0.5 * abs(value)
+
+        if not self.chemical:
+            self.arousal += 0.5 * abs(value)
+
         self._clip()
 
     def curious(self) -> None:
         """Услышал незнакомое слово и спрашивает о нём."""
 
-        self.arousal = max(self.arousal, 0.45)
+        if not self.chemical:
+            self.arousal = max(self.arousal, 0.45)
+
         self.confusion *= 0.3
         self.novelty_hunger *= 0.7
         self.valence += 0.05
@@ -246,7 +258,9 @@ class Emotions:
     def relax(self, seconds: float) -> None:
         """В тишине возбуждение и растерянность спадают, настроение — медленнее."""
 
-        self.arousal *= 0.97 ** seconds
+        if not self.chemical:
+            self.arousal *= 0.97 ** seconds
+
         self.confusion *= 0.97 ** seconds
         self.valence *= 0.995 ** seconds
         self.frustration *= 0.97 ** seconds

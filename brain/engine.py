@@ -823,6 +823,53 @@ class SpikingBrain:
 
         self.acetylcholine.fill_(level)
 
+    # Нейромодуляторы: имя → ядро-источник (зона, чьи E-клетки выбрасывают).
+    MODULATORS = {"dopamine": "vta", "noradrenaline": "lc"}
+
+    def _init_chemistry(self) -> None:
+        """
+        Химия как концентрации (объёмная передача): каждый спайк клетки
+        ядра выбрасывает вещество, оно убывает со своим временем
+        (обратный захват). Концентрация — «спайков на клетку ядра за
+        последнее τ»: залп, где выстрелила половина ядра, — 0.5.
+        Действие на клетки — через занятость рецепторов c / (c + K), а не
+        через формулы на события.
+        """
+
+        cfg = self.cfg
+        names = list(self.MODULATORS)
+        self.chemistry_names = names
+        self.chemistry = torch.zeros(len(names), device=self.device)
+        tau = torch.tensor([getattr(cfg, f"{n}_tau_ms") for n in names], device=self.device)
+        self.chemistry_decay = torch.exp(-cfg.dt_ms / tau)
+        # Ядро-источник: доля его клеток, выстреливших на шаге, — выброс.
+        self.chemistry_source = torch.zeros(len(names), self.n_slots, device=self.device)
+
+        for i, name in enumerate(names):
+            area = self.areas.get(self.MODULATORS[name])
+
+            if area is not None:
+                self.chemistry_source[i, area.E.slice] = 1.0 / area.E.size
+
+    def level(self, name: str) -> float:
+        """Концентрация вещества (спайков на клетку ядра за τ)."""
+
+        return float(self.chemistry[self.chemistry_names.index(name)])
+
+    def occupancy(self, name: str) -> float:
+        """Занятость рецепторов: c / (c + K), K — полунасыщение вещества."""
+
+        c = self.level(name)
+        k = getattr(self.cfg, f"{name}_half")
+
+        return c / (c + k)
+
+    def clear_chemistry(self, seconds: float) -> None:
+        """Время без симуляции (тишина): вещества убывают, как убывали бы."""
+
+        tau = torch.tensor([getattr(self.cfg, f"{n}_tau_ms") for n in self.chemistry_names], device=self.device)
+        self.chemistry.mul_(torch.exp(-seconds * 1000.0 / tau))
+
     def _build_tables(self, refill: bool = False) -> None:
         P, S = self.n_plastic, self.n_synapses
         table = lambda keys, pad: EventTable(keys, self.n_slots, pad, self.DUMMY_SYNAPSES)
@@ -888,6 +935,7 @@ class SpikingBrain:
         self.eligibility_scale = torch.ones(1, device=self.device)
         # Спайки, не влезшие в таблицу шага (должно быть 0).
         self.dropped = torch.zeros(1, device=self.device)
+        self._init_chemistry()
         # Базовый контур (base_circuit): ресурс пресинапса (истощение,
         # 1 — полный) и усиление торможения, приходящего к клетке (1 — норма).
         self.stp_x = torch.ones(self.n_slots, device=self.device)
@@ -1036,6 +1084,8 @@ class SpikingBrain:
 
         fired = v >= self.v_peak
         self.spikes.copy_(fired)
+        # Выброс веществ ядрами: доля выстреливших клеток каждого ядра.
+        self.chemistry.mul_(self.chemistry_decay).add_(self.chemistry_source @ self.spikes)
 
         self.v.copy_(torch.where(fired, cfg.v_reset, v))
         self.refractory.copy_(torch.where(fired, cfg.refractory_ms, self.refractory))
@@ -1650,6 +1700,7 @@ class SpikingBrain:
         "v", "i_syn", "i_slow", "i_dend", "pool", "adapt", "refractory", "spikes",
         "trace_pre", "trace_pre_rise", "ltp_kernel", "trace_post", "counts", "eligibility",
         "eligibility_scale", "dropped", "bias", "interoception", "stp_x", "inh_gain",
+        "chemistry",
     )
 
     def _snapshot(self) -> dict:

@@ -303,7 +303,7 @@ class BrainHost:
 
                 # В тишине эмоции успокаиваются.
                 if self.mind.cfg.emotions_enabled:
-                    self.mind.language.emotions.relax(1.0)
+                    self.mind.language.pass_time(1.0)
 
                 # Живой режим: заговорить первым (повод — эмоция)
                 # или подумать про себя.

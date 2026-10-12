@@ -1717,6 +1717,38 @@ class SpikingBrain:
 
         return scaled
 
+    def presynaptic_scaling(self, names: tuple[str, ...], budget: float) -> int:
+        """
+        Гетеросинаптическая пластичность (Chistiakova et al. 2014): ресурс
+        исходящих синапсов клетки ограничен — суммарный выход клетки по пути
+        не больше budget × врождённой суммы. Клетка, связанная со многими
+        продолжениями («столица» → Берлин, Мадрид, Москва), даёт каждому
+        меньше; связанная с одним («франции» → Париж) — полный вес (эффект
+        веера в коре). Возвращает число урезанных клеток.
+        """
+
+        if not self.plasticity:
+            return 0
+
+        scaled = 0
+
+        for proj in self.plastic:
+            if proj.name not in names:
+                continue
+
+            pre = proj.pre.flatten().long()
+            weight = proj.weight.float().flatten()
+            total = torch.zeros(self.n_slots, device=self.device).index_add_(0, pre, weight)
+            count = torch.zeros(self.n_slots, device=self.device).index_add_(0, pre, torch.ones_like(weight))
+            limit = count * proj.innate_mean * budget
+            factor = (limit / total.clamp(min=1e-9)).clamp(max=1.0)
+            per_synapse = factor[pre].view_as(proj.weight).to(proj.weight.dtype)
+            proj.weight.mul_(per_synapse)
+            proj.early.mul_(per_synapse.to(proj.early.dtype))
+            scaled += int((factor < 1.0).sum())
+
+        return scaled
+
     # ==============================================================
     # ЧТЕНИЕ СОСТОЯНИЯ
     # ==============================================================

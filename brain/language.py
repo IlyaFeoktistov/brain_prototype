@@ -1400,6 +1400,9 @@ class LanguageInterface:
         ):
             self.brain.synaptic_scaling()
 
+            if self.cfg.presynaptic_budget > 0:
+                self.brain.presynaptic_scaling(self.cfg.presynaptic_paths, self.cfg.presynaptic_budget)
+
         if (
             self.cfg.structural_plasticity_enabled
             and self.sentences_lived % self.cfg.rewire_every_sentences == 0

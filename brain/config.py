@@ -126,7 +126,11 @@ class PathwaySpec:
     # не входит (его читают отдельно, как «чувство -> слова о нём»).
     predictive: bool = True
     # Кто превращает след STDP в вес: "dopamine" — ошибка предсказания;
-    # "acetylcholine" — бодрствование: запись с одного раза (гиппокамп).
+    # "acetylcholine" — бодрствование: запись с одного раза (гиппокамп);
+    # "coincidence" — никто: путь из зоны, стреляющей непрерывно (ПФК,
+    # цель), учится только совпадением под дофамином (language._learn_context),
+    # и во сне его метку ставит то же совпадение (DESIGN «Общее слово
+    # богатело во сне»).
     modulator: str = "dopamine"
     # Передачу по пути подавляет ацетилхолин (выход гиппокампа при записи).
     ach_suppressed: bool = False
@@ -440,7 +444,7 @@ def default_pathways() -> list[PathwaySpec]:
         # [замер] k=20: при k=50-60 ожидания сильнее зашумлены.
         # Вклад в ожидание — context_gain, режим gain (конъюнкция).
         PathwaySpec("prefrontal", "association", k=20, weight=(0.02, 0.10),
-                    plastic=True, cap=2.0, k_inhibitory=0),
+                    plastic=True, cap=2.0, k_inhibitory=0, modulator="coincidence"),
         # Чувство -> слова о нём. Учится, как и контекст.
         # [замер] predictive=False: чувство держится всю реплику, и его
         # выученный вклад добавлялся к ожиданию после КАЖДОГО слова —
@@ -452,7 +456,7 @@ def default_pathways() -> list[PathwaySpec]:
         # Цель -> смысл: учится, как контекст; на дендриты (как всё из
         # зон памяти) — цель выбирает среди того, что предлагает слово.
         PathwaySpec("goal", "association", k=20, weight=(0.02, 0.10),
-                    plastic=True, cap=2.0, k_inhibitory=0),
+                    plastic=True, cap=2.0, k_inhibitory=0, modulator="coincidence"),
         PathwaySpec("limbic", "association", k=8, weight=(0.02, 0.10),
                     plastic=True, cap=2.0, k_inhibitory=0, predictive=False),
         # Смысл -> миндалина: какие слова к добру, какие к худу. Учится не

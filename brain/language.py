@@ -1098,8 +1098,12 @@ class LanguageInterface:
             if len(columns) < total:
                 column = len(columns)
             else:
-                # Колонку отдаёт слово, звучавшее давнее всех.
+                # Колонку отдаёт слово, звучавшее давнее всех; её выученные
+                # синапсы — к врождённым, как у забытого места смысла:
+                # иначе новое слово голосует за продолжения старого.
                 column = columns.pop(next(iter(columns)))
+                start = column * self._goal_cells
+                self.brain.reset_cells(self.goal.E, torch.arange(start, start + self._goal_cells, device=self.device))
 
         columns[token] = column
         start = column * self._goal_cells
@@ -1139,6 +1143,28 @@ class LanguageInterface:
         proj.weight[rows] += delta
         # Как всё выученное — сначала свежее (не поспал — забыл).
         proj.early[rows] += delta.to(proj.early.dtype)
+
+    def _capture_context(self, context: torch.Tensor, place: torch.Tensor, source_area: str) -> None:
+        """
+        Synaptic tagging & capture для путей контекста (Frey & Morris 1997):
+        метку ставит само совпадение — клетки контекста горят, место
+        звучащего слова стреляет, — и помеченные синапсы закрепляют долю
+        sleep_capture свежего. Метка по следу STDP (как у прочих путей) у
+        клеток, стреляющих непрерывно, есть на всём, что они предсказывают:
+        «столица» горит в каждом эпизоде о столицах, и закреплялись её
+        связи со всеми столицами, а не «италии → Рим».
+        """
+
+        capture = self.cfg.sleep_capture
+        proj = next((p for p in self.brain.plastic if p.name == f"{source_area} -> association"), None)
+
+        if capture <= 0 or proj is None or proj.modulator != "coincidence":
+            return
+
+        source = self.brain.areas[source_area].E.start + context
+        hit = torch.isin(proj.pre[place], source.to(proj.pre.dtype))
+        early = proj.early[place]
+        proj.early[place] = early * (1.0 - capture * hit.to(early.dtype))
 
     # ==============================================================
     # МИНДАЛИНА: какие слова к добру, какие к худу
@@ -1648,6 +1674,15 @@ class LanguageInterface:
             context = context[memory[context] > 0]
 
         rates = self.perceive(token, learn_forms=learn, form=form)
+
+        if learn and self.brain.consolidating and self._place is not None:
+            # Сон: синапсы контекста, совпавшие в проигрывании со звучащим
+            # словом, закрепляют свою свежую часть.
+            if context is not None and len(context):
+                self._capture_context(context, self._place, "prefrontal")
+
+            if aims is not None and len(aims):
+                self._capture_context(aims, self._place, "goal")
 
         if (expected_state is not None or neural) and token in self.semantic:
             if not neural:

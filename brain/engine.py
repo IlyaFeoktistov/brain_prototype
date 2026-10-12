@@ -800,12 +800,16 @@ class SpikingBrain:
         # (D2-рецептор: LTP при паузе дофамина, Frank 2005; Shen 2008).
         self.encoding = [p for p in self.plastic if p.modulator == "acetylcholine"]
         inverted = [p for p in self.plastic if p.modulator == "dopamine_d2"]
+        # Пути из зон, стреляющих непрерывно: след STDP там ни о чём не
+        # говорит (LTP ≈ LTD), а во сне раздувал общее слово — учит их
+        # совпадение (language._learn_context).
+        coincidence = [p for p in self.plastic if p.modulator == "coincidence"]
         self.dopamine_mask = None
 
-        if self.encoding or inverted:
+        if self.encoding or inverted or coincidence:
             self.dopamine_mask = torch.ones(self.n_plastic, dtype=torch.float16, device=self.device)
 
-            for p in self.encoding:
+            for p in self.encoding + coincidence:
                 self.dopamine_mask[p.offset: p.offset + p.weight.numel()] = 0.0
 
             for p in inverted:

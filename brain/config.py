@@ -205,6 +205,14 @@ def default_areas() -> list[AreaSpec]:
         AreaSpec(
             "vta", "дофаминовое ядро (VTA)",
             0.005, k_ee=10, ee_plastic=False, target_activity=0.0,
+            # Пейсмейкер: [биология] дофаминовые клетки сами стреляют
+            # ~4–5 Гц — тонический дофамин (держит «иди» в стриатуме).
+            # [замер] фон 0.7 / 0.8 / 0.9 — 2.9 / 3.9 / 4.6 Гц; 0.8 с током
+            # залпа vta_tonic_mv 55 — база залпа 0.36, как до пейсмейкера
+            # (дофамин неожиданности при чтении тот же). Фон 1.1 без тока
+            # залпа: мелкие неожиданности почти без дофамина — экзамен
+            # 30/30 → 28/22.
+            background=0.8, tonic=True,
         ),
         # Голубое пятно привыкает за секунды: после серии неожиданностей
         # стихает, после затишья снова отвечает полностью.
@@ -464,6 +472,21 @@ def default_pathways() -> list[PathwaySpec]:
         # GPi на пределе, и D1 ничего не добавлял (GPi 8–20 Гц, таламус 0).
         # [не подбиралось] — стенд data/tools/bg_gate.py.
         PathwaySpec("offset", "striatum_d1", k=20, weight=(1.5, 1.5), k_inhibitory=0),
+        # Окончание реплики приходит в обе половины стриатума (в мозге оба
+        # пути получают одинаковый вход из коры); «иди» побеждает фоном
+        # дофамина (receptors: D1 возбуждает, D2 тормозит).
+        PathwaySpec("offset", "striatum_d2", k=20, weight=(1.0, 1.0), k_inhibitory=0),
+        # Когда говорить — учится (правило трёх факторов, Reynolds &
+        # Wickens 2002): вопрос в ПФК и чувство → D1 крепнут от награды
+        # после сказанного, → D2 — от провала дофамина (ругань).
+        PathwaySpec("prefrontal", "striatum_d1", k=40, weight=(0.02, 0.10), plastic=True, cap=2.0,
+                    k_inhibitory=0, predictive=False),
+        PathwaySpec("prefrontal", "striatum_d2", k=40, weight=(0.02, 0.10), plastic=True, cap=2.0,
+                    k_inhibitory=0, predictive=False, modulator="dopamine_d2"),
+        PathwaySpec("limbic", "striatum_d1", k=20, weight=(0.02, 0.10), plastic=True, cap=2.0,
+                    k_inhibitory=0, predictive=False),
+        PathwaySpec("limbic", "striatum_d2", k=20, weight=(0.02, 0.10), plastic=True, cap=2.0,
+                    k_inhibitory=0, predictive=False, modulator="dopamine_d2"),
         PathwaySpec("striatum_d1", "gpi", k=40, weight=(-4.0, -4.0), k_inhibitory=0),
         PathwaySpec("striatum_d2", "gpe", k=40, weight=(-3.0, -3.0), k_inhibitory=0),
         PathwaySpec("gpe", "gpi", k=20, weight=(-1.0, -1.0), k_inhibitory=0),
@@ -1103,10 +1126,11 @@ class BrainConfig:
     form_grow_synapses: int = 8
     form_cap: float = 1.0
 
-    # Тонический фон VTA (мВ × чувствительность клетки): часть клеток
-    # стреляет и без событий; дофамин — отклонение от фона, ругань —
-    # пауза ниже фона. [не подбиралось] 55 мВ: при порогe ~40 мВ за 20 мс
-    # на фоне стреляют клетки с чувствительностью > 0.73 (~36%).
+    # Ток VTA (мВ × чувствительность клетки) на время залпа: залп идёт по
+    # клеткам, уже подтянутым фоном; дофамин — отклонение от фона, ругань
+    # — пауза ниже фона. [не подбиралось] 55 мВ: при порогe ~40 мВ за 20 мс
+    # стреляют клетки с чувствительностью > 0.73 (~36%). Сам фон дофамина
+    # между залпами — пейсмейкер VTA (AreaSpec background).
     vta_tonic_mv: float = 55.0
 
     # Миндалина: на похвалу/ругань места слов последнего обмена репликами
@@ -1136,7 +1160,8 @@ class BrainConfig:
     # стреляет на каждом втором слове — занятость 0.75–0.82 всегда,
     # возбуждение ничего не различает (формула давала 0.05–0.18).
     dopamine_tau_ms: float = 1000.0
-    dopamine_half: float = 5.0
+    # Фон — пейсмейкер VTA 3.9 Гц × 1 с (замер, см. зону vta).
+    dopamine_half: float = 4.0
     noradrenaline_tau_ms: float = 2000.0
     noradrenaline_half: float = 4.0
     # Галанин и ГАМК клеток VLPO — в тех же единицах, что норадреналин:
@@ -1169,6 +1194,10 @@ class BrainConfig:
     receptors: tuple[tuple[str, str, float], ...] = (
         ("adenosine", "vlpo", 35.0),
         ("adenosine", "lc", -15.0),
+        # Дофамин в стриатуме: D1-рецепторы возбуждают «иди», D2 тормозят
+        # «стой» (Gerfen & Surmeier 2011). [не подбиралось] — bg_learn.py.
+        ("dopamine", "striatum_d1", 10.0),
+        ("dopamine", "striatum_d2", -25.0),
         # α2-ауторецепторы: норадреналин тормозит голубое пятно
         # (Aghajanian 1977) — привыкание к серии неожиданностей.
         ("noradrenaline", "lc", -40.0),

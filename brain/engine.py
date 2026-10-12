@@ -796,14 +796,20 @@ class SpikingBrain:
             ].view(p.weight.shape)
 
         # Пути гиппокампа учатся от ацетилхолина (encode), а не от дофамина.
+        # Пути в стриатум D2 («стой») — от провала дофамина: знак −1
+        # (D2-рецептор: LTP при паузе дофамина, Frank 2005; Shen 2008).
         self.encoding = [p for p in self.plastic if p.modulator == "acetylcholine"]
+        inverted = [p for p in self.plastic if p.modulator == "dopamine_d2"]
         self.dopamine_mask = None
 
-        if self.encoding:
+        if self.encoding or inverted:
             self.dopamine_mask = torch.ones(self.n_plastic, dtype=torch.float16, device=self.device)
 
             for p in self.encoding:
                 self.dopamine_mask[p.offset: p.offset + p.weight.numel()] = 0.0
+
+            for p in inverted:
+                self.dopamine_mask[p.offset: p.offset + p.weight.numel()] = -1.0
 
         # Пути, передачу по которым подавляет ацетилхолин: доля подавления
         # на каждом синапсе (0 — не подавляется).

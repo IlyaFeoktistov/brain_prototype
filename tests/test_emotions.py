@@ -191,7 +191,9 @@ def test_praise_bursts_and_blame_pauses_dopamine_cells():
 
     mind = make_mind("small")
     language, brain = mind.language, mind.brain
-    assert 0.1 < language._vta_base() < 0.7
+    # Фон — пейсмейкер VTA (~4–6 Гц): за окно залпа (20 мс) стреляют
+    # проценты клеток — есть от чего проваливаться при ругани.
+    assert 0.02 < language._vta_base() < 0.7
 
     brain.run(300)
     praise = language._dopamine(+6.0)

@@ -1577,18 +1577,16 @@ class LanguageInterface:
         """Доля клеток VTA, стреляющих на одном тоническом фоне (замер один раз)."""
 
         if getattr(self, "_base", None) is None:
-            self._base = 0.0
-
-            if self.cfg.vta_tonic_mv > 0:
-                E = self.brain.areas["vta"].E
-                drive = self.cfg.vta_tonic_mv * self._nucleus_gains("vta")
-                self.brain.feel("vta", torch.arange(E.size, device=self.device), drive)
-                rates = self.brain.observe(self.cfg.nucleus_ms)
-                self.brain.feel("vta", None, 0.0)
-                self._base = float((rates[E.slice] > 0).float().mean())
-                # Клетки, выстрелившие на замере, восстанавливаются — иначе
-                # следующий залп сразу за ним был бы ниже фона.
-                self.brain.run(200.0)
+            # Фон — собственный (пейсмейкер) плюс ток vta_tonic_mv, если задан.
+            E = self.brain.areas["vta"].E
+            drive = self.cfg.vta_tonic_mv * self._nucleus_gains("vta")
+            self.brain.feel("vta", torch.arange(E.size, device=self.device), drive)
+            rates = self.brain.observe(self.cfg.nucleus_ms)
+            self.brain.feel("vta", None, 0.0)
+            self._base = float((rates[E.slice] > 0).float().mean())
+            # Клетки, выстрелившие на замере, восстанавливаются — иначе
+            # следующий залп сразу за ним был бы ниже фона.
+            self.brain.run(200.0)
 
         return self._base
 

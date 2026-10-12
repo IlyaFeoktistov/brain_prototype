@@ -93,8 +93,7 @@ def _idle(session: Session, live: Liveliness, idle_since: float, sleep_left: int
     mind = session.mind
     language = mind.language
 
-    if mind.cfg.emotions_enabled:
-        language.pass_time(1.0)
+    language.pass_time(1.0)
 
     if not sleep_left and live.should_speak_up(mind, idle_since, True, False):
         live.spoke_up_at = time.time()

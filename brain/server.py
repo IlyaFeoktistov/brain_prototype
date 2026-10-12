@@ -289,10 +289,10 @@ class BrainHost:
                     language = self.mind.language
                     cfg = self.mind.cfg
 
-                    if cfg.nap_while_reading and language.sleep_pressure >= cfg.nap_after_episodes:
+                    if cfg.nap_while_reading and language.drowsy:
                         self.sleep_left = language.sleep_pressure * cfg.replays_per_episode
                         self._out(
-                            f"Устал читать: новых впечатлений {language.sleep_pressure}, "
+                            f"Хочу спать (аденозин): новых впечатлений {language.sleep_pressure}, "
                             f"посплю ({self.sleep_left} проигрываний) и продолжу",
                             "info",
                         )
@@ -301,9 +301,9 @@ class BrainHost:
                         self._execute(lambda session: self._read_portion(session), Future(), None, quiet=True)
                         continue
 
-                # В тишине эмоции успокаиваются.
-                if self.mind.cfg.emotions_enabled:
-                    self.mind.language.pass_time(1.0)
+                # В тишине мозг живёт: время идёт, вещества убывают,
+                # эмоции успокаиваются.
+                self.mind.language.pass_time(1.0)
 
                 # Живой режим: заговорить первым (повод — эмоция)
                 # или подумать про себя.

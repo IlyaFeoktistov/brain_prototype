@@ -141,7 +141,8 @@ def test_terminal_sleeps_in_silence_and_wakes_up(mind):
 
     session, _ = make_session(mind)
     session.handle("/read: Кошка мяукает. Собака лает. Солнце светит.")
-    mind.cfg.sleepy_after_episodes = 1
+    # Устал: аденозина много.
+    mind.brain.chemistry[mind.brain.chemistry_names.index("adenosine")] = 1.0
     mind.cfg.autosave = False
     pressure = mind.language.sleep_pressure
     assert pressure > 0

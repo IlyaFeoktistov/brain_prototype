@@ -120,20 +120,21 @@ def test_falls_asleep_only_when_tired(client):
     from brain.server import host
 
     cfg = host.mind.cfg
-    threshold = cfg.sleepy_after_episodes
-    pressure = host.mind.language.sleep_pressure
+    brain = host.mind.brain
+    adenosine = brain.chemistry_names.index("adenosine")
+    level = float(brain.chemistry[adenosine])
     try:
-        cfg.sleepy_after_episodes = pressure + 1
-        # Пара новых реплик — ещё не устал, даже в долгой тишине.
+        # Аденозина мало (утро) — не хочет спать, даже в долгой тишине.
+        brain.chemistry[adenosine] = 0.0
         assert not host._should_fall_asleep(last_activity=0)
 
-        cfg.sleepy_after_episodes = max(1, pressure)
-        if pressure:
-            assert host._should_fall_asleep(last_activity=0)
+        # Вечер: рецепторы заняты — в тишине засыпает.
+        brain.chemistry[adenosine] = 10 * cfg.adenosine_half
+        assert host._should_fall_asleep(last_activity=0)
         # Сразу после сообщения — не засыпает.
         assert not host._should_fall_asleep(last_activity=__import__("time").time())
     finally:
-        cfg.sleepy_after_episodes = threshold
+        brain.chemistry[adenosine] = level
 
 
 def test_neuron_card(client):

@@ -54,5 +54,5 @@ class Liveliness:
             not reading
             and cfg.sleep_when_idle
             and time.time() - idle_since >= cfg.idle_sleep_seconds
-            and mind.language.sleep_pressure >= cfg.sleepy_after_episodes
+            and mind.language.drowsy
         )

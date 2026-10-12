@@ -1954,7 +1954,7 @@ class LanguageInterface:
                 progress(report)
 
             # Устал читать — поспать и продолжить (см. nap_while_reading).
-            if nap and self.cfg.nap_while_reading and self.sleep_pressure >= self.cfg.nap_after_episodes:
+            if nap and self.cfg.nap_while_reading and self.drowsy:
                 self.sleep_until_rested(stop)
                 report.naps += 1
 
@@ -1997,7 +1997,7 @@ class LanguageInterface:
             if self.cfg.emotions_enabled:
                 salience *= 1.0 + self.cfg.arousal_salience * self.emotions.arousal
             self.hippocampus.store(tokens, salience, ended)
-            self.emotions.sleepy = self.sleep_pressure >= self.cfg.sleepy_after_episodes
+            self.emotions.sleepy = self.drowsy
 
     def sleep(
         self,
@@ -2020,6 +2020,8 @@ class LanguageInterface:
         self.emotions.sleeping = True
         self.brain.modulation = 1.0
         self.brain.consolidating = True
+        # Во сне аденозин вымывается.
+        self.brain.sleep_chemistry(True)
 
         if self.cfg.neural_hippocampus and self.cfg.neural_replay:
             return self._sleep_ripples(replays, report, progress, stop)
@@ -2049,9 +2051,10 @@ class LanguageInterface:
             self.sleeping = False
             self.emotions.sleeping = False
             self.brain.consolidating = False
+            self.brain.sleep_chemistry(False)
 
         self.hippocampus.forget_consolidated(self.cfg.consolidated_salience, keep=interleave)
-        self.emotions.sleepy = self.sleep_pressure >= self.cfg.sleepy_after_episodes
+        self.emotions.sleepy = self.drowsy
 
         return report
 
@@ -2101,6 +2104,7 @@ class LanguageInterface:
             self.sleeping = False
             self.emotions.sleeping = False
             self.brain.consolidating = False
+            self.brain.sleep_chemistry(False)
 
         # Счётчик впечатлений (давление сна — пока список, «Честный мозг» 5):
         # проспанное больше не давит.
@@ -2155,6 +2159,12 @@ class LanguageInterface:
         self.dreams.append(self.join(episode.tokens))
         report.sentences += 1
         self.rest()
+
+    @property
+    def drowsy(self) -> bool:
+        """Хочет спать: рецепторы аденозина заняты (см. sleepy_occupancy)."""
+
+        return self.brain.occupancy("adenosine") >= self.cfg.sleepy_occupancy
 
     @property
     def sleep_pressure(self) -> int:
@@ -2371,10 +2381,13 @@ class LanguageInterface:
             self.emotions.arousal = self.brain.occupancy("noradrenaline")
 
     def pass_time(self, seconds: float) -> None:
-        """Тишина без симуляции: вещества убывают, потребности растут."""
+        """Тишина без симуляции: время идёт, вещества убывают, потребности растут."""
 
-        self.brain.clear_chemistry(seconds)
-        self.emotions.relax(seconds)
+        self.brain.pass_time(seconds)
+
+        if self.cfg.emotions_enabled:
+            self.emotions.relax(seconds)
+
         self._sense_chemistry()
 
     def _arousal_gain(self) -> float:

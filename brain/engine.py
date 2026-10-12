@@ -823,36 +823,75 @@ class SpikingBrain:
 
         self.acetylcholine.fill_(level)
 
-    # Нейромодуляторы: имя → ядро-источник (зона, чьи E-клетки выбрасывают).
-    MODULATORS = {"dopamine": "vta", "noradrenaline": "lc"}
+    # Нейромодуляторы: имя → ядро-источник (зона, чьи E-клетки выбрасывают);
+    # None — все нейроны (аденозин — продукт обмена веществ любой клетки).
+    MODULATORS = {"dopamine": "vta", "noradrenaline": "lc", "adenosine": None}
 
     def _init_chemistry(self) -> None:
         """
         Химия как концентрации (объёмная передача): каждый спайк клетки
         ядра выбрасывает вещество, оно убывает со своим временем
-        (обратный захват). Концентрация — «спайков на клетку ядра за
-        последнее τ»: залп, где выстрелила половина ядра, — 0.5.
-        Действие на клетки — через занятость рецепторов c / (c + K), а не
-        через формулы на события.
+        (обратный захват). Концентрация дофамина и норадреналина — «спайков
+        на клетку ядра за последнее τ»: залп, где выстрелила половина ядра,
+        — 0.5. Аденозин — средняя частота всех нейронов плюс обмен веществ
+        покоя, усреднённая за τ (Гц): копится, пока мозг бодрствует, и
+        вымывается во сне. Действие на клетки — через занятость рецепторов
+        c / (c + K), а не через формулы на события.
         """
 
-        cfg = self.cfg
         names = list(self.MODULATORS)
         self.chemistry_names = names
-        self.chemistry = torch.zeros(len(names), device=self.device)
-        tau = torch.tensor([getattr(cfg, f"{n}_tau_ms") for n in names], device=self.device)
-        self.chemistry_decay = torch.exp(-cfg.dt_ms / tau)
-        # Ядро-источник: доля его клеток, выстреливших на шаге, — выброс.
+        # float64: аденозин копится часами — прибавки за шаг ~1e-10.
+        self.chemistry = torch.zeros(len(names), device=self.device, dtype=torch.float64)
+        self.chemistry_decay = torch.zeros(len(names), device=self.device, dtype=torch.float64)
+        # Выброс на спайк (доля клеток источника) и постоянный выброс за шаг.
+        self.chemistry_release = torch.zeros(len(names), device=self.device, dtype=torch.float64)
+        self.chemistry_basal = torch.zeros(len(names), device=self.device, dtype=torch.float64)
         self.chemistry_source = torch.zeros(len(names), self.n_slots, device=self.device)
 
         for i, name in enumerate(names):
             area = self.areas.get(self.MODULATORS[name])
+            cells = area.E.slice if area is not None else slice(0, self.n)
+            size = area.E.size if area is not None else self.n
+            self.chemistry_source[i, cells] = 1.0 / size
 
-            if area is not None:
-                self.chemistry_source[i, area.E.slice] = 1.0 / area.E.size
+        self.sleep_chemistry(False)
+
+    def _chemistry_rates(self, asleep: bool) -> tuple[list[float], list[float], list[float]]:
+        """τ (мс), выброс на долю выстреливших, постоянный выброс за шаг — по веществам."""
+
+        cfg, dt = self.cfg, self.cfg.dt_ms
+        tau, release, basal = [], [], []
+
+        for name in self.chemistry_names:
+            if name == "adenosine":
+                # Сон у нас сжат, как проигрывание у грызунов: τ вымывания
+                # делится на sleep_compression (DESIGN «Сон по аденозину»).
+                t = cfg.adenosine_sleep_tau_ms / cfg.sleep_compression if asleep else cfg.adenosine_tau_ms
+                hz = cfg.adenosine_sleep_basal_hz if asleep else cfg.adenosine_basal_hz
+                # Среднее за τ в Гц: доля за шаг × 1000 / dt, вес dt / τ.
+                tau.append(t)
+                release.append((dt / t) * 1000.0 / dt)
+                basal.append((dt / t) * hz)
+            else:
+                tau.append(getattr(cfg, f"{name}_tau_ms"))
+                release.append(1.0)
+                basal.append(0.0)
+
+        return tau, release, basal
+
+    def sleep_chemistry(self, asleep: bool) -> None:
+        """Сон и бодрствование: аденозин вымывается во сне (copy_ — для CUDA Graph)."""
+
+        tau, release, basal = self._chemistry_rates(asleep)
+        f64 = lambda xs: torch.tensor(xs, device=self.device, dtype=torch.float64)
+        self.chemistry_decay.copy_(torch.exp(-self.cfg.dt_ms / f64(tau)))
+        self.chemistry_release.copy_(f64(release))
+        self.chemistry_basal.copy_(f64(basal))
+        self._asleep = asleep
 
     def level(self, name: str) -> float:
-        """Концентрация вещества (спайков на клетку ядра за τ)."""
+        """Концентрация вещества (см. _init_chemistry)."""
 
         return float(self.chemistry[self.chemistry_names.index(name)])
 
@@ -864,11 +903,25 @@ class SpikingBrain:
 
         return c / (c + k)
 
-    def clear_chemistry(self, seconds: float) -> None:
-        """Время без симуляции (тишина): вещества убывают, как убывали бы."""
+    def pass_time(self, seconds: float) -> None:
+        """
+        Время без симуляции (тишина): мозг живёт — часы идут, свежее
+        забывается, вещества убывают к уровню покоя (нейроны в тишине
+        молчат — остаётся обмен веществ покоя).
+        """
 
-        tau = torch.tensor([getattr(self.cfg, f"{n}_tau_ms") for n in self.chemistry_names], device=self.device)
-        self.chemistry.mul_(torch.exp(-seconds * 1000.0 / tau))
+        if seconds <= 0:
+            return
+
+        self.time_ms += seconds * 1000.0
+        tau, release, basal = self._chemistry_rates(self._asleep)
+        dt = self.cfg.dt_ms
+
+        for i in range(len(tau)):
+            fade = math.exp(-seconds * 1000.0 / tau[i])
+            # Постоянный выброс за шаг в равновесии: basal / (1 − decay).
+            rest = basal[i] / (1.0 - math.exp(-dt / tau[i]))
+            self.chemistry[i] = self.chemistry[i] * fade + rest * (1.0 - fade)
 
     def _build_tables(self, refill: bool = False) -> None:
         P, S = self.n_plastic, self.n_synapses
@@ -1085,7 +1138,8 @@ class SpikingBrain:
         fired = v >= self.v_peak
         self.spikes.copy_(fired)
         # Выброс веществ ядрами: доля выстреливших клеток каждого ядра.
-        self.chemistry.mul_(self.chemistry_decay).add_(self.chemistry_source @ self.spikes)
+        released = (self.chemistry_source @ self.spikes).to(torch.float64)
+        self.chemistry.mul_(self.chemistry_decay).add_(released * self.chemistry_release + self.chemistry_basal)
 
         self.v.copy_(torch.where(fired, cfg.v_reset, v))
         self.refractory.copy_(torch.where(fired, cfg.refractory_ms, self.refractory))

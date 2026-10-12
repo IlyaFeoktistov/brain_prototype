@@ -386,46 +386,54 @@ export function Microscope({ anatomy, fluo, onActivity, growth }: Props) {
     };
   }, [anatomy, fluo, onActivity]);
 
+  const section = (area: Area) => (
+    <figure key={area.name} className={`section section-${PLACES[area.name] ?? "other"}`}>
+      <div className="section-glass">
+        <canvas
+          ref={(node) => {
+            if (node) canvases.current.set(area.name, node);
+            else canvases.current.delete(area.name);
+          }}
+          role="img"
+          aria-label={`${area.title}: активность нейронов; наведи на клетку — что она знает`}
+          onPointerMove={(event) => setHover(locate(area, event))}
+          onPointerLeave={() => setHover(null)}
+          onClick={(event) => setPinned(locate(area, event))}
+        />
+        {[hover, pinned].map(
+          (mark, i) =>
+            mark?.area === area.name && (
+              <span
+                key={i}
+                className={`neuron-mark${i ? " neuron-mark-pinned" : ""}`}
+                style={{
+                  left: `${mark.box.left * 100}%`,
+                  top: `${mark.box.top * 100}%`,
+                  width: `${mark.box.width * 100}%`,
+                  height: `${mark.box.height * 100}%`,
+                }}
+              />
+            ),
+        )}
+      </div>
+      <figcaption>
+        <span className="section-title">{area.title}</span>
+        <span className="section-count">
+          {(area.E.size + area.I.size).toLocaleString("ru")} нейронов
+        </span>
+      </figcaption>
+    </figure>
+  );
+  // Старые зоны — на своих местах сетки; остальные ядра (цель, сон,
+  // базальные ганглии) — своей сеткой ниже, иначе они вставали в неявные
+  // строки, а заданные схлопывались и подписи наезжали друг на друга.
+  const placed = anatomy.areas.filter((area) => PLACES[area.name]);
+  const rest = anatomy.areas.filter((area) => !PLACES[area.name]);
+
   return (
     <div className="slide" ref={slide}>
-      {anatomy.areas.map((area) => (
-        <figure key={area.name} className={`section section-${PLACES[area.name] ?? "other"}`}>
-          <div className="section-glass">
-            <canvas
-              ref={(node) => {
-                if (node) canvases.current.set(area.name, node);
-                else canvases.current.delete(area.name);
-              }}
-              role="img"
-              aria-label={`${area.title}: активность нейронов; наведи на клетку — что она знает`}
-              onPointerMove={(event) => setHover(locate(area, event))}
-              onPointerLeave={() => setHover(null)}
-              onClick={(event) => setPinned(locate(area, event))}
-            />
-            {[hover, pinned].map(
-              (mark, i) =>
-                mark?.area === area.name && (
-                  <span
-                    key={i}
-                    className={`neuron-mark${i ? " neuron-mark-pinned" : ""}`}
-                    style={{
-                      left: `${mark.box.left * 100}%`,
-                      top: `${mark.box.top * 100}%`,
-                      width: `${mark.box.width * 100}%`,
-                      height: `${mark.box.height * 100}%`,
-                    }}
-                  />
-                ),
-            )}
-          </div>
-          <figcaption>
-            <span className="section-title">{area.title}</span>
-            <span className="section-count">
-              {(area.E.size + area.I.size).toLocaleString("ru")} нейронов
-            </span>
-          </figcaption>
-        </figure>
-      ))}
+      <div className="slide-main">{placed.map(section)}</div>
+      {rest.length > 0 && <div className="slide-extra">{rest.map(section)}</div>}
       {arcs.length > 0 && (
         <svg className="growth" aria-hidden="true">
           {arcs.map((arc) => (

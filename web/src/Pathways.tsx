@@ -7,39 +7,66 @@ interface Props {
   emotion: EmotionState | null;
 }
 
-// Схема проводящих путей: ухо -> зоны -> рот.
+// Схема проводящих путей: ухо -> зоны -> рот; ниже — сон и петля
+// базальных ганглиев (окончание звука -> стриатум -> GPe/GPi -> таламус).
 const POSITION: Record<string, [number, number]> = {
   ear: [30, 70],
   auditory: [120, 70],
   association: [250, 70],
   prefrontal: [360, 28],
+  goal: [470, 28],
   motor: [360, 112],
-  mouth: [470, 136],
+  mouth: [560, 112],
   limbic: [250, 136],
   // Ядра нейромедиаторов: действуют химически, путей у них нет.
   vta: [36, 136],
   lc: [128, 136],
-  amygdala: [420, 70],
+  amygdala: [470, 70],
   category: [250, 22],
+  // Сон: VLPO и голубое пятно тормозят друг друга, часы будят.
+  vlpo: [36, 186],
+  scn: [36, 222],
+  // Базальные ганглии.
+  offset: [128, 200],
+  striatum_d1: [230, 186],
+  striatum_d2: [230, 222],
+  gpe: [330, 222],
+  gpi: [400, 186],
+  thalamus: [470, 160],
 };
 
-// Подписи сбоку: справа от схемы и у нижнего ряда.
-const SIDE = new Set(["limbic", "vta", "lc", "amygdala", "category"]);
+// Подписи сбоку: справа от схемы и у нижних рядов.
+const SIDE = new Set([
+  "limbic", "vta", "lc", "amygdala", "category", "goal",
+  "vlpo", "scn", "offset", "striatum_d1", "striatum_d2", "gpe", "gpi", "thalamus",
+]);
+// Маленькие кружки — ядра.
+const SMALL = new Set(["vta", "lc", "amygdala", "category", "vlpo", "scn", "offset", "striatum_d1", "striatum_d2", "gpe", "gpi", "thalamus"]);
 
 const SHORT: Record<string, string> = {
   auditory: "слух",
   association: "смысл",
   prefrontal: "раб. память",
+  goal: "цель",
   motor: "речь",
   limbic: "чувства",
   vta: "дофамин",
   lc: "норадр.",
   amygdala: "миндалина",
   category: "категории",
+  vlpo: "сон",
+  scn: "часы",
+  offset: "конец звука",
+  striatum_d1: "D1 «иди»",
+  striatum_d2: "D2 «стой»",
+  gpe: "GPe",
+  gpi: "GPi",
+  thalamus: "таламус",
 };
 
+// Зоны без своего места (гиппокамп и будущие) — рядом справа внизу, в кадре.
 function place(name: string, index: number): [number, number] {
-  return POSITION[name] ?? [80 + index * 90, 150];
+  return POSITION[name] ?? [560, 160 + (index % 4) * 22];
 }
 
 export function Pathways({ anatomy, status, activity, emotion }: Props) {
@@ -53,7 +80,7 @@ export function Pathways({ anatomy, status, activity, emotion }: Props) {
   };
 
   return (
-    <svg className="pathways" viewBox="0 0 500 160" role="img" aria-label="Схема проводящих путей между зонами">
+    <svg className="pathways" viewBox="0 0 620 240" role="img" aria-label="Схема проводящих путей между зонами">
       <defs>
         <marker id="tip" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
           <path d="M0,0 L10,5 L0,10 z" className="tip" />
@@ -100,7 +127,7 @@ export function Pathways({ anatomy, status, activity, emotion }: Props) {
           <g key={area.name} transform={`translate(${x},${y})`}>
             <circle r={13 + level * 6} className="node-halo" style={{ opacity: level * 0.3 }} />
             <circle
-              r={["vta", "lc", "amygdala", "category"].includes(area.name) ? 8 : 13}
+              r={SMALL.has(area.name) ? 8 : 13}
               className={area.kind === "memory" ? "node node-memory" : "node"}
             />
             {local && <circle r={16} className="node-plastic" />}

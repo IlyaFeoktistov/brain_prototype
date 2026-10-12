@@ -27,6 +27,7 @@ import torch
 
 from brain.commands import Session
 from brain.config import BrainConfig
+from brain.language import SILENT
 from brain.mind import Mind
 
 # Через сколько реплик переспросить поправленный вопрос: «понял» должно
@@ -126,7 +127,7 @@ class Teacher:
             said = [t for t, _ in self.language.generate(fact.question) if t[0].isalnum()]
             hit = any(same_word(word, key(fact)) for word in said[:FIRST_WORDS])
             hits += hit
-            answers.append(f"{fact.question} → {' '.join(said) or 'не знаю'} {'✓' if hit else '✗'}")
+            answers.append(f"{fact.question} → {' '.join(said) or SILENT} {'✓' if hit else '✗'}")
 
         return hits, answers
 

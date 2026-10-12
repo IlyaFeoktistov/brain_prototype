@@ -213,7 +213,7 @@ class Emotions:
         self._clip()
 
     def answered(self, confidence: list[float]) -> None:
-        """Ответил: насколько был уверен (пусто — «не знаю»)."""
+        """Ответил: насколько был уверен (пусто — промолчал)."""
 
         if not confidence:
             self.last_sure = 0.0

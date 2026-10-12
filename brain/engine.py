@@ -189,6 +189,29 @@ class EventTable:
     def nbytes(self) -> int:
         return self.ptr.numel() * 4 + self.perm.numel() * 4
 
+    TENSORS = ("ptr", "start", "count", "perm", "cols", "is_hub", "tail_cols")
+
+    def refill(self, new: "EventTable") -> bool:
+        """
+        Переписать таблицу содержимым new на месте, если форма та же:
+        записанный CUDA Graph смотрит на адреса — он остаётся годным.
+        Форма другая — False (таблицу надо заменить, граф записать заново).
+        """
+
+        if (self.width, self.tail_width, self.hub_capacity) != (new.width, new.tail_width, new.hub_capacity):
+            return False
+
+        pairs = [(getattr(self, k, None), getattr(new, k, None)) for k in self.TENSORS]
+
+        if any((a is None) != (b is None) or (a is not None and a.shape != b.shape) for a, b in pairs):
+            return False
+
+        for old, fresh in pairs:
+            if old is not None:
+                old.copy_(fresh)
+
+        return True
+
 
 class PrefixTable(EventTable):
     """
@@ -800,11 +823,23 @@ class SpikingBrain:
 
         self.acetylcholine.fill_(level)
 
-    def _build_tables(self) -> None:
+    def _build_tables(self, refill: bool = False) -> None:
         P, S = self.n_plastic, self.n_synapses
         table = lambda keys, pad: EventTable(keys, self.n_slots, pad, self.DUMMY_SYNAPSES)
-        self.out_all = table(self.net_pre[:S], S)
-        self.out_plastic = PrefixTable(self.out_all, self.net_pre[:P], self.n_slots, P, self.DUMMY_SYNAPSES)
+        out_all = table(self.net_pre[:S], S)
+        out_plastic = PrefixTable(out_all, self.net_pre[:P], self.n_slots, P, self.DUMMY_SYNAPSES)
+
+        # Рост синапсов меняет только пре-нейроны (post и число синапсов те
+        # же): таблицы той же формы переписываются на месте, и CUDA Graph
+        # не записывается заново. [замер] 20 тыс., чтение: 12 ростов на 364
+        # слова — 2.9 с из 11 (перестройка, запись графа, gc).
+        # Входящие (in_plastic) по post — от роста не меняются.
+        if refill and hasattr(self, "out_all"):
+            # Начала строк префикса — вид на ptr общей таблицы: сперва общая.
+            if self.out_all.refill(out_all) and self.out_plastic.refill(out_plastic):
+                return
+
+        self.out_all, self.out_plastic = out_all, out_plastic
         self.in_plastic = table(self.net_post[:P], P)
         # Таблицы — новые тензоры: старые CUDA Graph на них не смотрят.
         self._graphs = {}
@@ -1317,7 +1352,7 @@ class SpikingBrain:
             grown += count
 
         if grown:
-            self._build_tables()
+            self._build_tables(refill=True)
             self.synapses_grown += grown
 
         return grown
@@ -1419,26 +1454,47 @@ class SpikingBrain:
             return 0
 
         grown = 0
+        # Связи одной проекции растут одним проходом: по связи на вызов —
+        # ~1.3 мс, а их сотни за раз. [замер] 20 тыс., чтение быта: 400
+        # связей — 500 мс на рост, рост — четверть всего чтения.
+        groups: dict[str, list] = {}
 
         for link in links:
-            name, pre, post = link[:3]
-            # Четвёртое — ветка дендрита: выросшие на одной неожиданности
-            # синапсы ложатся на одну ветку.
-            branch = link[3] if len(link) > 3 else None
+            if len(link[1]) and len(link[2]):
+                groups.setdefault(link[0], []).append(link)
+
+        for name, group in groups.items():
             proj = next((p for p in self.projections if p.name == name), None)
 
-            if proj is None or not len(pre) or not len(post):
+            if proj is None:
                 continue
 
-            low = proj.innate_range[0] if proj.plastic else 0.0
-            start = proj.pre_pop.start
-            pick = torch.randint(0, len(post), (count,), device=self.device, generator=self.generator)
-            rows = post[pick]
-            which = torch.randint(0, len(pre), (count,), device=self.device, generator=self.generator)
-            new_pre = pre[which] + start
+            # count случайных пар (pre, post) на каждую связь: номер связи
+            # у каждой пары и случайная доля длины её pre и post.
+            n_pre = torch.tensor([len(link[1]) for link in group], device=self.device)
+            n_post = torch.tensor([len(link[2]) for link in group], device=self.device)
+            pre_at = torch.cumsum(n_pre, 0) - n_pre
+            post_at = torch.cumsum(n_post, 0) - n_post
+            all_pre = torch.cat([link[1] for link in group])
+            all_post = torch.cat([link[2] for link in group])
+            link_of = torch.arange(len(group), device=self.device).repeat_interleave(count)
+            u = torch.rand((2, len(link_of)), device=self.device, generator=self.generator)
+            pick = post_at[link_of] + (u[0] * n_post[link_of]).long().clamp(max=n_post[link_of] - 1)
+            which = pre_at[link_of] + (u[1] * n_pre[link_of]).long().clamp(max=n_pre[link_of] - 1)
+            rows = all_post[pick]
+            new_pre = all_pre[which] + proj.pre_pop.start
+            # Четвёртое в связи — ветка дендрита: выросшие на одной
+            # неожиданности синапсы ложатся на одну ветку.
+            # Нет ветки — -1: такой синапс ветку не меняет.
+            branches = [int(link[3]) if len(link) > 3 and link[3] is not None else -1 for link in group]
+            branch = (
+                torch.tensor(branches, device=self.device)[link_of]
+                if hasattr(proj, "branch") and max(branches) >= 0 else None
+            )
             # Уже есть такая связь — не дублировать.
             fresh = ~(proj.pre[rows] == new_pre[:, None].to(proj.pre.dtype)).any(1)
             rows, new_pre = rows[fresh], new_pre[fresh]
+            branch = branch[fresh] if branch is not None else None
 
             if not len(rows):
                 continue
@@ -1448,22 +1504,26 @@ class SpikingBrain:
             # самый слабый, и выживал последний).
             order = torch.argsort(rows, stable=True)
             rows, new_pre = rows[order], new_pre[order]
+            branch = branch[order] if branch is not None else None
             pair = rows.long() * (1 << 32) + new_pre.long()
             first = torch.ones_like(rows, dtype=torch.bool)
             first[1:] = pair[1:] != pair[:-1]
             rows, new_pre = rows[first], new_pre[first]
+            branch = branch[first] if branch is not None else None
             _, counts = torch.unique_consecutive(rows, return_counts=True)
             starts = torch.repeat_interleave(torch.cumsum(counts, 0) - counts, counts)
             nth = torch.arange(len(rows), device=self.device) - starts
             keep = nth < proj.weight.shape[1]
             rows, new_pre, nth = rows[keep], new_pre[keep], nth[keep]
+            branch = branch[keep] if branch is not None else None
             cols = torch.argsort(proj.weight[rows].float(), dim=1, stable=True).gather(1, nth[:, None]).squeeze(1)
             proj.pre[rows, cols] = new_pre.to(proj.pre.dtype)
-            low = float(exact16(torch.tensor(low)))
+            low = float(exact16(torch.tensor(proj.innate_range[0] if proj.plastic else 0.0)))
             proj.weight[rows, cols] = low
 
-            if branch is not None and hasattr(proj, "branch"):
-                proj.branch[rows, cols] = branch
+            if branch is not None:
+                on = branch >= 0
+                proj.branch[rows[on], cols[on]] = branch[on].to(proj.branch.dtype)
 
             if proj.plastic:
                 proj.birth[rows, cols] = low
@@ -1473,7 +1533,7 @@ class SpikingBrain:
             grown += len(rows)
 
         if grown:
-            self._build_tables()
+            self._build_tables(refill=True)
             self.synapses_grown += grown
 
         return grown

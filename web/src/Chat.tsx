@@ -181,7 +181,7 @@ export function Chat({ header, thoughts, entries, progress, busy, reading, sleep
                 {entry.reply.praised > 0 ? "понял похвалу — закрепил прошлый ответ" : "понял, что ругают — ослабил прошлый ответ"}
               </small>
             ) : null}
-            {entry === lastBrain && !entry.streaming && !entry.rated && !entry.initiative && entry.text !== "не знаю" && !busy && (
+            {entry === lastBrain && !entry.streaming && !entry.rated && !entry.initiative && entry.text !== "*Промолчал*" && !busy && (
               <div className="feedback">
                 <button type="button" onClick={() => actions.feedback(1)}>
                   Верно

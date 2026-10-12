@@ -26,6 +26,9 @@ from brain.limbic import FACES, Emotions
 # кончилась» (здесь замолкают). Точка, «?», «!» — обычные символы со
 # своими местами: что они значат, мозг учит сам.
 END = "\n"
+# Техническая подпись, когда ответа нет: ни одно место слова не выстрелило.
+# Не слова мозга — показать, что он промолчал, а не завис.
+SILENT = "*Промолчал*"
 
 
 def _cosine(a: torch.Tensor, b: torch.Tensor) -> float:
@@ -2308,7 +2311,7 @@ class LanguageInterface:
             self.asked.update(self.word(word) for word in worth_asking)
             self._feel("curious")
 
-        text = " … ".join(part for part in (answer, question) if part) or "не знаю"
+        text = " … ".join(part for part in (answer, question) if part) or SILENT
         self._remember_with_previous(user_text, report.dopamine)
         self.dialog.append({"who": "человек", "text": user_text})
         self.dialog.append({"who": "мозг", "text": text, "answer": answer, "rating": 0})

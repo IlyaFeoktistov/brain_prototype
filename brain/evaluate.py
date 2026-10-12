@@ -22,6 +22,7 @@ import argparse
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from brain.language import SILENT
 from brain.mind import Mind
 
 
@@ -108,7 +109,7 @@ def run(mind: Mind, questions: list[Question], show: int) -> dict[str, Score]:
 
         if len(score.examples) < show:
             score.examples.append(
-                f"  {q.prompt} → {' '.join(said) or 'не знаю'}   (надо: {' '.join(q.answer[:6])})"
+                f"  {q.prompt} → {' '.join(said) or SILENT}   (надо: {' '.join(q.answer[:6])})"
             )
 
     return scores

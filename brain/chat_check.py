@@ -25,7 +25,7 @@ from pathlib import Path
 
 import torch
 
-from brain.commands import Session
+from brain.commands import Session, deliberation_line
 from brain.config import BrainConfig
 from brain.mind import Mind
 from brain.teach import FIRST_WORDS, same_word
@@ -70,6 +70,7 @@ class Human:
         self.language = mind.language
         self.session = Session(mind, lambda text, kind: None)
         self.transcript = transcript
+        self.thoughts: list[str] = []
         self.previous = ""
 
     def words(self, text: str) -> list[str]:
@@ -79,6 +80,12 @@ class Human:
         self.mind.brain.run(PAUSE_MS)
         reply = self.session.say(text)
         self.transcript.append(f"я: {text}\n   мозг: {reply.text}")
+        thought = deliberation_line(reply)
+
+        if thought:
+            self.thoughts.append(f"   ({thought})")
+        else:
+            self.thoughts.append("")
 
         return self.words(self.language.dialog[-1].get("answer", "")), reply.text
 
@@ -111,6 +118,10 @@ class Human:
             self.transcript[-1] += "   ✓" if hit else "   ✗"
         if mixed:
             self.transcript[-1] += "   (подмешал прошлую реплику)"
+
+        # О чём подумал и что сказал (строка «подумал» — только наблюдение).
+        if self.thoughts and self.thoughts[-1]:
+            self.transcript[-1] += "\n" + self.thoughts[-1]
 
         return hit, mixed, drift
 

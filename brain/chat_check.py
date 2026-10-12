@@ -1,7 +1,7 @@
 """
 Чат-минимум: можно ли с мозгом поговорить (ROADMAP «Ближайшая цель»).
 
-    python -m brain.chat_check размер имя [key=value ...] [load=путь] [scenario=файл]
+    python -m brain.chat_check размер имя [key=value ...] [load=путь] [scenario=файл] [read=файл,…]
 
 Скрипт играет человека (это не код мозга): говорит реплики из
 chat-scenario.txt обычным чатом (`Session.say` — мозг учится, как в
@@ -121,6 +121,7 @@ def main() -> None:
     load = None
     scenario = Path("chat-scenario.txt")
     overrides = []
+    extra: list[Path] = []
 
     for kv in sys.argv[3:]:
         k, v = kv.split("=", 1)
@@ -129,6 +130,8 @@ def main() -> None:
             load = v
         elif k == "scenario":
             scenario = Path(v)
+        elif k == "read":
+            extra.extend(Path(f) for f in v.split(","))
         else:
             overrides.append((k, v))
 
@@ -158,6 +161,10 @@ def main() -> None:
 
         for _ in range(2):
             reader.read_text("train-data", text)
+
+            # Ещё тексты (read=файл,файл): читаются так же, вперемешку с train-data.
+            for path in extra:
+                reader.read_text(path.stem, path.read_text(encoding="utf-8"))
 
         mind.language.sleep_until_rested()
         mind.save(f"data/measure/{name}-read.pt")

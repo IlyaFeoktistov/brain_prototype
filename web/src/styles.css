@@ -123,32 +123,37 @@ textarea {
   min-height: 0;
 }
 
+/* Колонка: срез, схема, лента слов, справка — каждый своей высоты, ничто
+   не сжимается в остаток экрана (сетка строк сжимала срез, и схема
+   ложилась поверх зон); не влезло — прокрутка. */
 .stage {
-  display: grid;
-  /* Срез не сжимается в остаток экрана: выше — прокрутка. */
-  grid-template-rows: minmax(360px, auto) auto auto auto;
+  display: flex;
+  flex-direction: column;
   gap: 14px;
   padding: 18px 24px;
   min-height: 0;
   overflow: auto;
 }
 
+.stage > * {
+  flex-shrink: 0;
+}
+
 .slide {
   position: relative;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 14px;
 }
 
-/* Строки не схлопываются до нуля: у каждой зоны есть высота под стекло и подпись. */
+/* Строки фиксированной высоты: с долями (fr) при низком окне родитель
+   отводил сетке только её min-height, и нижние зоны налезали на ядра ниже. */
 .slide-main,
 .slide-placeholder {
   display: grid;
   grid-template-columns: 1fr 1.7fr 1fr;
-  grid-template-rows:
-    minmax(110px, 1fr) minmax(110px, 1fr) minmax(90px, 0.7fr)
-    minmax(80px, 0.45fr) minmax(80px, 0.45fr);
+  grid-template-rows: 150px 150px 120px 96px 96px;
   gap: 14px;
-  min-height: 360px;
 }
 
 /* Остальные ядра — ровной сеткой под основными зонами. */
@@ -822,7 +827,6 @@ textarea {
   }
 
   .stage {
-    grid-template-rows: auto;
     overflow: visible;
   }
 

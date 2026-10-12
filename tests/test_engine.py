@@ -27,7 +27,13 @@ def test_word_activates_sparse_ensemble():
     mind.language.read_text("Столица Франции Париж.")
     probe = mind.language.probe("париж")
 
+    tonic = {spec.name for spec in mind.cfg.areas if spec.tonic}
+
     for area in mind.brain.areas.values():
+        # Пейсмейкеры (GPe, GPi) стреляют всегда — это не взрыв.
+        if area.name in tonic:
+            continue
+
         active = float((probe["rates"][area.E.slice] > 0).float().mean())
         # Разреженный код: отвечает малая часть зоны, но не ноль.
         assert active < 0.20, f"{area.name}: {active:.1%} — зона взорвалась"

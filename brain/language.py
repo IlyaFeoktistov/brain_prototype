@@ -1763,7 +1763,20 @@ class LanguageInterface:
         (self.choice). Обучение идёт как на любом слове.
         """
 
-        amplitude = torch.full((self.meaning.E.size,), float(self._gate_mv), device=self.device)
+        # С базальными ганглиями ворота открывают нейроны: звук кончился —
+        # клетки окончания будят стриатум D1, GPi отпускает таламус, таламус
+        # будит смысловую кору. Без них — ровный ток кодом (старые мозги).
+        basal = self._has_basal_ganglia()
+        gate = 0.0 if basal else float(self._gate_mv)
+        amplitude = torch.full((self.meaning.E.size,), gate, device=self.device)
+
+        if basal:
+            # Свой голос слуховая кора слышит приглушённо (копия команды
+            # рту гасит ответ, Houde et al. 2002): окончание своего слова —
+            # слабое «иди», продолжить речь может только сильное предсказание.
+            offset = self.brain.areas["offset"].E
+            strength = self.cfg.offset_mv * (self.cfg.own_speech_offset if self._own_speech else 1.0)
+            self.brain.feel("offset", torch.arange(offset.size, device=self.device), strength)
 
         if place is not None:
             amplitude[place] = self.cfg.concept_mv
@@ -1777,9 +1790,21 @@ class LanguageInterface:
 
         self.brain.feel("association", self._everyone, amplitude)
         rates = self.brain.observe(self.cfg.stimulus_ms, sound)
-        self.choice = self._spoken(rates, token)
+
+        if basal:
+            # Пауза смены реплики: звук кончился, петля базальных ганглиев
+            # открывает таламус — слово выбирается в паузе, а не пока звучит
+            # последнее слово.
+            gap = self.brain.observe(self.cfg.turn_gap_ms)
+            self.brain.feel("offset", None, 0.0)
+            self.choice = self._spoken(gap, token)
+        else:
+            self.choice = self._spoken(rates, token)
 
         return rates
+
+    def _has_basal_ganglia(self) -> bool:
+        return "thalamus" in self.brain.areas and "offset" in self.brain.areas
 
     def _spontaneous(self, ms: float) -> tuple[str, float] | None:
         """

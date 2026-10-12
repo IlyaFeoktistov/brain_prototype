@@ -64,6 +64,8 @@ class Health:
         self.names = list(brain.areas)
         self.targets = {spec.name: spec.target_activity for spec in cfg.areas}
         self.kinds = {name: area.kind for name, area in brain.areas.items()}
+        # Пейсмейкеры (GPe, GPi) стреляют всегда — в тишине это норма.
+        self.tonic = {spec.name for spec in brain.cfg.areas if spec.tonic}
         # Каждому нейрону — номер группы: зона × {E, I}.
         group = torch.full((brain.n,), -1, dtype=torch.long, device=self.device)
 
@@ -156,7 +158,7 @@ class Health:
         problems = []
 
         for name, (active, rate, _, _) in snap.pause.items():
-            if self.kinds[name] in QUIET_KINDS and name not in QUIET_SKIP and rate > PAUSE_RATE_MAX:
+            if self.kinds[name] in QUIET_KINDS and name not in QUIET_SKIP and name not in self.tonic and rate > PAUSE_RATE_MAX:
                 problems.append(f"{name}: в тишине активно {active:.1%} клеток ({rate:.1f} Гц в среднем) — очаг?")
 
         for name, (active, _, _, _) in snap.word.items():

@@ -35,7 +35,7 @@ print(f"покой: VTA {hz(rest, 'vta'):.1f} Гц, дофамин {brain.level(
       f"(рецепторы {brain.occupancy('dopamine'):.2f}), GPi {hz(rest, 'gpi'):.0f} Гц, таламус {hz(rest, 'thalamus'):.1f} Гц")
 
 gaps = []
-spoken = lang._spoken
+spoken = lang._articulated
 
 
 def traced(rates, heard):
@@ -44,7 +44,7 @@ def traced(rates, heard):
     return choice
 
 
-lang._spoken = traced
+lang._articulated = traced
 
 
 def ask(question):

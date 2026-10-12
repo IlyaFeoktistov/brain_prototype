@@ -142,6 +142,7 @@ def build_router(host) -> APIRouter:
                 prompt_seconds=reply.prompt_seconds,
                 generate_seconds=reply.generate_seconds,
                 thoughts=reply.thoughts,
+                deliberation=reply.deliberation,
                 unknown=reply.unknown,
                 praised=reply.praised,
             )

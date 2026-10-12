@@ -35,7 +35,7 @@ else:
 
 mind.cfg.autosave = False
 lang, brain = mind.language, mind.brain
-AREAS = ("offset", "striatum_d1", "striatum_d2", "gpe", "gpi", "thalamus")
+AREAS = ("offset", "striatum_d1", "striatum_d2", "gpe", "gpi", "thalamus", "motor")
 seen = []
 original = lang._listen_and_prepare
 

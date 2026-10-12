@@ -59,6 +59,22 @@ function averageConfidence(words: { confidence: number }[]): number {
 }
 
 const THOUGHTS_MIN = 60;
+// «подумал: париж 44% · рим 20% → сказал «Париж»» — по шагам ответа.
+const deliberation = (steps: NonNullable<ReplyEvent["deliberation"]>) =>
+  "подумал: " +
+  steps
+    .map(({ thought, said, suppressed }) => {
+      const words = thought.map(([word, share]) => `${word.replace("\n", "↵")} ${Math.round(share * 100)}%`).join(" · ") || "ничего";
+      const word = said?.replace("\n", "↵");
+      const outcome = !said
+        ? "промолчал"
+        : suppressed
+          ? `сказал бы «${word}» — заглушено кодом (последнее слово незнакомое)`
+          : `сказал «${word}»`;
+      return `${words} → ${outcome}`;
+    })
+    .join(" | ");
+
 const thoughtsMax = () => Math.max(THOUGHTS_MIN, window.innerHeight * 0.6);
 
 export function Chat({ header, thoughts, entries, progress, busy, reading, sleeping, connected, actions }: Props) {
@@ -173,6 +189,11 @@ export function Chat({ header, thoughts, entries, progress, busy, reading, sleep
             )}
             {entry.who === "brain" && !entry.streaming && entry.words?.length ? (
               <small>уверен на {percent(averageConfidence(entry.words))}</small>
+            ) : null}
+            {entry.reply?.deliberation?.length ? (
+              <small className="deliberation" title="о чём подумал (места слов в смысловой коре) и что произнесла моторная зона">
+                {deliberation(entry.reply.deliberation)}
+              </small>
             ) : null}
             {entry.reply && entry.reply.promptTokens > 0 && <small>{speed(entry.reply)}</small>}
             {entry.initiative && <small>заговорил сам: {entry.initiative}</small>}

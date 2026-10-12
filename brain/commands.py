@@ -106,6 +106,22 @@ def speed_line(reply: Reply) -> str | None:
     )
 
 
+def deliberation_line(reply: Reply) -> str:
+    """«подумал: париж 44% · рим 20% → сказал «Париж»» — по шагам ответа."""
+
+    steps = []
+
+    for step in reply.deliberation:
+        thought = " · ".join(f"{word.replace(chr(10), '↵')} {100 * share:.0f}%" for word, share in step["thought"]) or "ничего"
+        said = f"сказал «{step['said'].replace(chr(10), '↵')}»" if step["said"] else "промолчал"
+
+        if step.get("suppressed") and step["said"]:
+            said = f"сказал бы «{step['said'].replace(chr(10), '↵')}» — заглушено кодом (последнее слово незнакомое)"
+        steps.append(f"{thought} → {said}")
+
+    return ("подумал: " + " | ".join(steps)) if steps else ""
+
+
 class Session:
     """
     Один собеседник мозга.
@@ -152,6 +168,10 @@ class Session:
             self.language.on_think = None
 
         self.out(reply.text, "brain")
+        thought = deliberation_line(reply)
+
+        if thought:
+            self.out(thought, "info")
 
         if self.mind.cfg.emotions_enabled:
             self.out(self.language.emotions.state()["face"], "face")

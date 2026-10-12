@@ -163,9 +163,13 @@ def default_areas() -> list[AreaSpec]:
             0.10, kind="memory", k_ee=20, ee_plastic=False,
             ee_weight=(0.05, 0.05), target_activity=0.08,
         ),
+        # Моторная зона без гомеостаза: стреляет, только когда таламус
+        # (ворота базальных ганглиев) добавляет ток к входу от смысла —
+        # подумать о слове ещё не значит сказать. [не подбиралось] —
+        # стенд data/tools/bg_gate.py.
         AreaSpec(
             "motor", "моторная речевая зона / зона Брока (рот)",
-            0.05, k_ee=30, ee_plastic=False,
+            0.05, k_ee=30, ee_plastic=False, target_activity=0.0,
         ),
         # Цель (ПФК): держит слова вопроса, пока их не вытеснят новые, —
         # сама сеть, а не след из кода. Врождённые колонки по 4 клетки
@@ -232,7 +236,7 @@ def default_areas() -> list[AreaSpec]:
         AreaSpec(
             "lc", "голубое пятно (норадреналин)",
             0.005, k_ee=10, ee_plastic=False, target_activity=0.0,
-            adapt_b=4.0, adapt_tau=2000.0,
+            adapt_b=4.0, adapt_tau=2000.0, tonic=True,
         ),
         # Переключатель сна (Saper 2001): VLPO (сон) и ядра бодрствования
         # (голубое пятно) тормозят друг друга — спит тот мозг, где VLPO
@@ -483,7 +487,15 @@ def default_pathways() -> list[PathwaySpec]:
         PathwaySpec("striatum_d2", "gpe", k=40, weight=(-3.0, -3.0), k_inhibitory=0),
         PathwaySpec("gpe", "gpi", k=20, weight=(-1.0, -1.0), k_inhibitory=0),
         PathwaySpec("gpi", "thalamus", k=30, weight=(-2.0, -2.0), k_inhibitory=0),
+        # Таламус возвращает петлю базальных ганглиев в лобную кору: в
+        # смысловую (выбрать, что ответить) и в моторную (разрешить
+        # произнести — VA/VL → моторная и премоторная кора).
         PathwaySpec("thalamus", "association", k=20, weight=(0.8, 0.8), k_inhibitory=0),
+        # [замер] вес 3: в паузе моторная зона 1–3 Гц, считывание по редким
+        # спайкам шумное — экзамен 23/29 (место смысла на тех же мозгах —
+        # 27/28); ×1.67 — 25/27, ×2.67 — 27/28, ×4 и ×6 — 27/28 и 27/27.
+        # При слушании таламус закрыт — моторная зона молчит при любом весе.
+        PathwaySpec("thalamus", "motor", k=20, weight=(8.0, 8.0), k_inhibitory=0),
         PathwaySpec("association", "amygdala", k=50, weight=(0.0, 0.0),
                     k_inhibitory=0, predictive=False),
         # Слово -> категория (членство) и категория -> слово (что она

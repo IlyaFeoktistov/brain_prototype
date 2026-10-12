@@ -432,6 +432,10 @@ class Reply:
     # Слова реплики сами были наградой (+) или наказанием (−): условная
     # награда через миндалину, 0 — нет.
     praised: float = 0.0
+    # Подумал и сказал — по шагам ответа: какие места слов загорелись в
+    # смысловой коре в паузе ([слово, доля спайков]) и что произнесла
+    # моторная зона (None — промолчал). Только наблюдение.
+    deliberation: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -1794,10 +1798,10 @@ class LanguageInterface:
         if basal:
             # Пауза смены реплики: звук кончился, петля базальных ганглиев
             # открывает таламус — слово выбирается в паузе, а не пока звучит
-            # последнее слово.
+            # последнее слово. Сказано то, что выстрелило в моторной зоне.
             gap = self.brain.observe(self.cfg.turn_gap_ms)
             self.brain.feel("offset", None, 0.0)
-            self.choice = self._spoken(gap, token)
+            self.choice = self._articulated(gap, token)
         else:
             self.choice = self._spoken(rates, token)
 
@@ -1888,6 +1892,73 @@ class LanguageInterface:
             return None
 
         return tokens[best], float(counts[best]) / total
+
+    def _articulated(self, rates: torch.Tensor, heard: str) -> tuple[str, float] | None:
+        """
+        Что сказал рот: моторная зона стреляет, только когда таламус
+        (ворота базальных ганглиев) добавляет свой ток к входу от смысла —
+        подумать о слове ещё не значит его сказать. Слово — активное место
+        смысла, которое сильнее всех питает выстрелившие моторные клетки
+        (по синапсам «смысл → моторная зона»), кроме звучащего. Моторная
+        зона молчит — молчание.
+        """
+
+        tokens, cells = self.concepts.table()
+        proj = next((p for p in self.brain.projections if p.name == "association -> motor"), None)
+
+        if not tokens or proj is None:
+            return None
+
+        fired = (self._area(rates, self.motor) > 0).float()
+
+        if not bool(fired.any()):
+            return None
+
+        # Какая доля выхода каждой клетки смысла в моторную зону пришлась на
+        # выстрелившие клетки (её артикуляция выстрелила), × сколько она
+        # стреляла. [замер] без деления на весь выход побеждали места с
+        # большим числом синапсов к моторной зоне: «Солнечной» вместо
+        # «Солнца» — экзамен 31/29 → 29/24.
+        pre = proj.pre.flatten().long()
+        weight = proj.weight.float()
+        feeds = torch.zeros(self.brain.n_slots, device=self.device).index_add_(0, pre, (weight * fired[:, None]).flatten())
+        out = torch.zeros(self.brain.n_slots, device=self.device).index_add_(0, pre, weight.flatten())
+        share = feeds[self.meaning.E.slice] / out[self.meaning.E.slice].clamp(min=1e-6)
+        meaning = share * self._area(rates, self.meaning)
+        scores = meaning[cells].sum(1)
+
+        if heard in self.concepts:
+            scores[tokens.index(heard)] = 0.0
+
+        total = float(scores.sum())
+        said = (tokens[int(scores.argmax())], float(scores.max()) / total) if total > 0 else None
+        self._note_deliberation(rates, heard, said)
+
+        return said
+
+    def _note_deliberation(self, rates: torch.Tensor, heard: str, said: tuple[str, float] | None) -> None:
+        """Для наблюдателя: о чём подумал (места в смысловой коре) и что сказал."""
+
+        tokens, cells = self.concepts.table()
+        counts = self._area(rates, self.meaning)[cells].sum(1)
+
+        if heard in self.concepts:
+            counts[tokens.index(heard)] = 0.0
+
+        total = float(counts.sum())
+        top = counts.topk(min(3, len(tokens)))
+        thought = [
+            [self.concepts.form(tokens[i]), round(float(c) / total, 3)]
+            for c, i in zip(top.values.tolist(), top.indices.tolist()) if c > 0
+        ] if total > 0 else []
+        word = self.concepts.form(said[0]) if said else None
+        log = getattr(self, "_deliberation", None)
+
+        if log is not None:
+            log.append({"thought": thought, "said": word})
+
+        if self.on_choice:
+            self.on_choice(word or "(промолчал)", [(w, p) for w, p in thought])
 
     def _speak(self, max_tokens: int | None = None) -> list[tuple[str, float]]:
         """
@@ -2259,6 +2330,7 @@ class LanguageInterface:
         """
 
         self.dialog_turns += 1
+        self._deliberation: list[dict] = []
         user_text = text
         # Человек ответил — ожидание сбылось.
         self._feel("replied")
@@ -2345,7 +2417,12 @@ class LanguageInterface:
         self.recall_conversation()
 
         if last in {self.word(token) for token in unknown}:
+            # Долг (ROADMAP «Честный мозг» 7): решение нейронов стирает код —
+            # после незнакомого слова ответа нет. Наблюдателю — честно.
             produced = []
+
+            for step in getattr(self, "_deliberation", []):
+                step["suppressed"] = True
         elif self.cfg.thinking_enabled:
             produced, thoughts = self.think()
 
@@ -2399,6 +2476,7 @@ class LanguageInterface:
             unknown=unknown,
             thoughts=thoughts,
             praised=praised,
+            deliberation=list(getattr(self, "_deliberation", [])),
         )
 
     def familiar(self, token: str) -> bool:

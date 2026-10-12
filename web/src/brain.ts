@@ -124,6 +124,10 @@ export interface ReplyEvent {
   confidence: number[];
   // Слова реплики сами были наградой (+) или наказанием (−) — выучено.
   praised?: number;
+  // Подумал и сказал — по шагам ответа: места слов в смысловой коре
+  // ([слово, доля спайков]) и что произнесла моторная зона (null — промолчал).
+  // suppressed — решение нейронов стёр код (последнее слово незнакомое).
+  deliberation?: { thought: [string, number][]; said: string | null; suppressed?: boolean }[];
 }
 
 export interface SpeakEvent {

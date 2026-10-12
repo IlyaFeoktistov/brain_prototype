@@ -1169,9 +1169,12 @@ class SpikingBrain:
                 plateau = torch.sigmoid(
                     (branch - cfg.dendrite_threshold_mv) / cfg.dendrite_slope_mv
                 ).amax(1)
+                # Плато ветки деполяризует и сому (см. dendrite_soma_mv).
+                somatic = cfg.dendrite_soma_mv * plateau
             else:
                 plateau = self.i_dend / (self.i_dend + cfg.dendrite_half_mv)
-            synaptic = synaptic + cfg.dendrite_gain * plateau * synaptic.clamp(min=0.0)
+                somatic = 0.0
+            synaptic = synaptic + cfg.dendrite_gain * plateau * synaptic.clamp(min=0.0) + somatic
 
         if cfg.pool_inhibition_mv > 0:
             synaptic = synaptic - cfg.pool_inhibition_mv * self.pool * self.pool_mask

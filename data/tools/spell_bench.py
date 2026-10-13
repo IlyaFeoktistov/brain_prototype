@@ -3,7 +3,7 @@
 (рот повторяет услышанное про себя, ПФК → рот на дендриты, буква → буква
 внутри рта) и произносится из рабочей памяти.
 
-    PYTHONPATH=. .venv/bin/python data/tools/spell_bench.py [reads=3] [go=6] [save=путь | load=путь] [show=N — окна рта у N слов] [ahp=мВ/мс — усталость рта] [inh=× торможение рта] [place=мВ — место слова в смысле] [pulse=период/ширина[/1 — нарастающий] мс — ритм толчков] [plan=× план → выбор] [key=value ...]
+    PYTHONPATH=. .venv/bin/python data/tools/spell_bench.py [reads=3] [go=6] [save=путь | load=путь] [show=N — окна рта у N слов] [ahp=мВ/мс — усталость рта] [inh=× торможение рта] [place=мВ — место слова в смысле] [pulse=период/ширина[/1 — нарастающий] мс — ритм толчков] [plan=× план → выбор] [nostp=1 — проверка: смысл без истощения] [key=value ...]
 
 Новый мозг small: лепет (5 кругов) → чтение train-data reads раз без сна →
 проверка: в ПФК — только слово (без звука), рту — ровный ток go мВ (роль
@@ -27,6 +27,7 @@ inh = 1.0
 place_mv = 30.0
 pulse = None
 plan_gain = 1.0
+no_stp = False
 load = save = None
 overrides = []
 
@@ -47,6 +48,8 @@ for kv in sys.argv[1:]:
         place_mv = float(v)
     elif k == "plan":
         plan_gain = float(v)
+    elif k == "nostp":
+        no_stp = v == "1"
     elif k == "pulse":
         pulse = [float(x) for x in v.split("/")]
     elif k == "ahp":
@@ -180,12 +183,20 @@ def say(word: str) -> str:
                     for i in range(steps):
                         brain.feel(GO, everyone, go * (i + 1) / steps)
                         brain.run(4.0)
+
+                        if no_stp:
+                            # Проверка гипотезы: ресурс синапсов смысла не истощается.
+                            brain.stp_x[lang.meaning.E.slice] = 1.0
                 else:
                     brain.feel(GO, everyone, go)
                     brain.run(width)
 
                 brain.feel(GO, None, 0.0)
                 brain.run(period - width)
+
+                if no_stp:
+                    brain.stp_x[lang.meaning.E.slice] = 1.0
+
                 t += period
         else:
             brain.feel(GO, everyone, go)

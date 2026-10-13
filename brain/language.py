@@ -636,6 +636,8 @@ class LanguageInterface:
             # пейсмейкеров): горят сами, пока буквы их не погасят.
             pause = self.articulators.code(Articulators.PAUSE)
             self.brain.bias[self.motor.E.start + pause] = cfg.pause_tonic_mv
+        # Слоговарь (рот по буквам): клетки сочетаний звуков.
+        self.syllables = self.brain.areas.get("syllable")
         # Клетки последовательности (пре-SMA / Брока): фраза как целое.
         self.sequence = self.brain.areas.get("sequence")
 
@@ -882,6 +884,9 @@ class LanguageInterface:
             self._learn_mouth(rates, place)
             self._learn_spelling(rates, held, token)
             self._learn_primacy(place, token)
+
+            if self.syllables is not None:
+                self._learn_primacy(place, token, "association -> syllable", self.syllables)
 
         if learn_forms and self.articulators is not None and not self._own_speech:
             # Цепочка звуков: соседние буквы повтора про себя — чистый STDP.
@@ -1518,29 +1523,32 @@ class LanguageInterface:
         proj.weight[fired] += delta
         proj.early[fired] += delta.to(proj.early.dtype)
 
-    def _learn_primacy(self, place: torch.Tensor | None, token: str) -> None:
+    def _learn_primacy(
+        self, place: torch.Tensor | None, token: str, path: str = "association -> motor", target=None,
+    ) -> None:
         """
-        Место слова → рот с градиентом первичности: клетки рта, стрелявшие на
-        слове, связываются с местом слова пропорционально спайкам, взвешенным
-        усталостью синапса от начала звука (engine.primacy_counts) — первая
-        буква сильнее второй. Синапсы растут от места к этим клеткам.
+        Место слова → рот (или слоговарь) с градиентом первичности: клетки,
+        стрелявшие на слове, связываются с местом слова пропорционально
+        спайкам, взвешенным усталостью синапса от начала звука
+        (engine.primacy_counts) — первая буква (слог) сильнее второй.
+        Синапсы растут от места к этим клеткам.
         """
 
         if self.articulators is None or place is None or not self.brain.plasticity:
             return
 
-        proj = next((p for p in self.brain.plastic if p.name == "association -> motor"), None)
+        proj = next((p for p in self.brain.plastic if p.name == path), None)
 
         if proj is None:
             return
 
-        weight = self._area(self.brain.primacy_counts[: self.brain.n], self.motor)
+        weight = self._area(self.brain.primacy_counts[: self.brain.n], target or self.motor)
         fired = (weight > 0).nonzero().flatten()
 
         if not len(fired):
             return
 
-        self.brain.grow([("association -> motor", place, fired)], len(fired) * len(place))
+        self.brain.grow([(path, place, fired)], len(fired) * len(place))
         source = self.meaning.E.start + place
         hit = torch.isin(proj.pre[fired], source.to(proj.pre.dtype)).float()
         # Instar: вес идёт к cap × доля (доля — от самой ранней, сильной

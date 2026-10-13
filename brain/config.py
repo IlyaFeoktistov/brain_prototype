@@ -649,6 +649,14 @@ def letter_mouth(areas: list[AreaSpec], pathways: list[PathwaySpec], articulator
             0.03, k_ee=10, ee_plastic=False, ee_weight=(0.0, 0.0),
             target_activity=0.02, cell_homeostasis=True, inhibition_adapts=False,
             stdp_tau_plus=20.0, stdp_ltp_rise=0.0, stdp_tau_minus=20.0,
+            # Торможение и подстройка возбудимости — общие. [замер] ×3 / ×0.1 и
+            # ×1.5 / ×0.1: слоговарь молчит — калибровка (до лепета, зона
+            # молчит) поднимает возбудимость всех клеток до +10 мВ, при
+            # медленной подстройке так и остаётся, а торможение не даёт
+            # проснуться. С общими: захват слогов 50% / 4% (syllable_bench).
+            # Сказанный слог устаёт до конца слова (как выбор букв; слушая,
+            # ацетилхолин усталость снимает). [не подбиралось] — как у выбора.
+            slow_ahp_b=24.0, slow_ahp_tau=2000.0,
         ),
     ]
     pathways = pathways + [
@@ -658,6 +666,12 @@ def letter_mouth(areas: list[AreaSpec], pathways: list[PathwaySpec], articulator
         # [не подбиралось]
         PathwaySpec("articulator", "syllable", k=400, weight=(0.0, 0.5), plastic=True, cap=3.0,
                     k_inhibitory=0, predictive=False, modulator="hebbian"),
+        # Слово → очередь слогов: место слова тянет свои слоги с градиентом
+        # первичности (language._learn_primacy в слоговарь) — как буквы, но
+        # очередь короче (2–4 слога вместо ~9 букв, по которым градиент
+        # тонул). Потолок 2, как у пути смысл → рот. [не подбиралось]
+        PathwaySpec("association", "syllable", k=400, weight=(0.0, 0.05), plastic=True, cap=2.0,
+                    k_inhibitory=0, predictive=False, modulator="coincidence", scaled=False),
     ]
 
     return areas, pathways + letter_mouth_pathways()

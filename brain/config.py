@@ -121,6 +121,10 @@ class AreaSpec:
     # Сколько плато дендрита поднимает сому, мВ (None — общее dendrite_soma_mv).
     # У плана рта плато слова держит его буквы (BAC firing, Larkum 1999).
     dendrite_soma_mv: float | None = None
+    # Пул торможения зоны (корзинчатые клетки, k-WTA): каждый спайк E-клетки
+    # зоны на ~pool_inhibition_tau_ms тормозит все её E-клетки на столько мВ —
+    # побеждают немногие самые возбуждённые, зона не глохнет целиком. 0 — нет.
+    pool_mv: float = 0.0
 
 
 @dataclass
@@ -649,6 +653,9 @@ def letter_mouth(areas: list[AreaSpec], pathways: list[PathwaySpec], articulator
             0.03, k_ee=10, ee_plastic=False, ee_weight=(0.0, 0.0),
             target_activity=0.02, cell_homeostasis=True, inhibition_adapts=False,
             stdp_tau_plus=20.0, stdp_ltp_rise=0.0, stdp_tau_minus=20.0,
+            # Разреженность — пулом (k-WTA): ~8 победителей (2% от 421) × 2 мВ
+            # ≈ 16–20 мВ — расстояние до порога. [не подбиралось] — по правилу.
+            pool_mv=2.0,
             # Торможение и подстройка возбудимости — общие. [замер] ×3 / ×0.1 и
             # ×1.5 / ×0.1: слоговарь молчит — калибровка (до лепета, зона
             # молчит) поднимает возбудимость всех клеток до +10 мВ, при

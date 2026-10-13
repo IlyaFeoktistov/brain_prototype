@@ -1076,6 +1076,12 @@ class SpikingBrain:
         self.i_dend = torch.zeros(self.n_slots * max(1, cfg.dendrite_branches), device=self.device)
         # Пул торможения смысловой коры: отфильтрованное число её спайков.
         self.pool = torch.zeros(1, device=self.device)
+        # Пулы торможения отдельных зон (AreaSpec.pool_mv): срез E и мВ на спайк.
+        self.area_pools = [
+            (self.areas[a.name].E.slice, float(a.pool_mv))
+            for a in cfg.areas if getattr(a, "pool_mv", 0.0) > 0
+        ]
+        self.area_pool = torch.zeros(max(1, len(self.area_pools)), device=self.device)
         self.adapt = z()
         self.adapt_slow = z()
         self.refractory = z()
@@ -1256,6 +1262,12 @@ class SpikingBrain:
         if cfg.pool_inhibition_mv > 0:
             synaptic = synaptic - cfg.pool_inhibition_mv * self.pool * self.pool_mask
 
+        if self.area_pools:
+            synaptic = synaptic.clone()
+
+            for i, (cells, mv) in enumerate(self.area_pools):
+                synaptic[cells] = synaptic[cells] - mv * self.area_pool[i]
+
         # Вещества через рецепторы: занятость c / (c + K) × ток клетки.
         occupancy = (self.chemistry / (self.chemistry + self.chemistry_half)).to(torch.float32)
         modulated = occupancy @ self.receptor_mv
@@ -1291,6 +1303,9 @@ class SpikingBrain:
 
         if cfg.pool_inhibition_mv > 0:
             self.pool.mul_(self.decay_pool).add_((self.spikes * self.pool_mask).sum())
+
+        for i, (cells, _mv) in enumerate(self.area_pools):
+            self.area_pool[i] = self.area_pool[i] * self.decay_pool + self.spikes[cells].sum()
         self.counts.add_(self.spikes)
 
         if self.track_primacy:
@@ -1713,6 +1728,13 @@ class SpikingBrain:
             if self.cfg.memory_places and spec.name == "prefrontal":
                 continue
 
+            # Своя у клетки подстройка — не до рождения: вход такой зоны
+            # (слоговарь — повтор про себя) появляется лишь после лепета, на
+            # калибровке она молчит, и подстройка выкручивала бы возбудимость
+            # всех клеток (+10 мВ) под вход, которого не будет.
+            if spec.cell_homeostasis and self.developing:
+                continue
+
             E = self.areas[spec.name].E
             active = (rates[E.slice] > 0).float().mean()
             error = (spec.target_activity - active) / spec.target_activity
@@ -1970,7 +1992,7 @@ class SpikingBrain:
     # читает и пишет по фиксированным адресам. Поэтому их
     # всегда восстанавливают через copy_, а не присваиванием.
     _DYNAMIC = (
-        "v", "i_syn", "i_slow", "i_dend", "pool", "adapt", "adapt_slow", "refractory", "spikes",
+        "v", "i_syn", "i_slow", "i_dend", "pool", "area_pool", "adapt", "adapt_slow", "refractory", "spikes",
         "trace_pre", "trace_pre_rise", "ltp_kernel", "trace_post", "counts", "eligibility",
         "eligibility_scale", "dropped", "bias", "interoception", "stp_x", "inh_gain",
         "chemistry",

@@ -584,6 +584,7 @@ class SpikingBrain:
         ach_suppressed: bool = False,
         topographic: float = 0.0,
         blocks: int = 0,
+        shift: int = 0,
     ) -> Projection | None:
         if blocks > 0:
             k = blocks
@@ -609,19 +610,28 @@ class SpikingBrain:
         if blocks > 0:
             # Блок в блок: клетка получателя — от всех клеток блока того же
             # номера у источника (колонка → колонка, как столбики артикуляций).
-            first = torch.arange(post.size, device=self.device) // blocks * blocks
+            # shift — со сдвигом: блок b получает от блока b − shift (цепочка
+            # часов: группа → следующая группа).
+            first = (torch.arange(post.size, device=self.device) // blocks - shift) * blocks
             pre = first[:, None] + torch.arange(blocks, device=self.device)[None, :]
-            pre = pre_pop.start + pre.clamp(max=pre_pop.size - 1)
+            pre = pre_pop.start + pre.clamp(min=0, max=pre_pop.size - 1)
         elif topographic > 0:
             pre = self._topographic_pre(post, k, pre_pop, topographic)
         else:
             pre = self._random_pre(post, k, pre_pop)
+        initial = self._uniform((post.size, k), *weight)
+
+        if blocks > 0 and shift > 0:
+            # Первым блокам цепочки предшественника нет — входа нет.
+            row_block = torch.arange(post.size, device=self.device) // blocks
+            initial[row_block < shift] = 0.0
+
         proj = Projection(
             name,
             "net",
             pre,
             post,
-            self._uniform((post.size, k), *weight),
+            initial,
             plastic=plastic,
             cap=cap,
             innate_max=weight[1],
@@ -711,10 +721,11 @@ class SpikingBrain:
             dst = self.areas[path.dst]
 
             proj = self._connect(
-                f"{path.src} -> {path.dst}", src.E, dst.E, path.k,
+                getattr(path, "name", "") or f"{path.src} -> {path.dst}", src.E, dst.E, path.k,
                 path.weight, plastic=path.plastic, cap=path.cap,
                 modulator=path.modulator, ach_suppressed=path.ach_suppressed,
                 topographic=path.topographic, blocks=getattr(path, "blocks", 0),
+                shift=getattr(path, "shift", 0),
             )
 
             if proj is not None:
@@ -1113,6 +1124,10 @@ class SpikingBrain:
         # Сигнал «изнутри тела» (мВ): чувство возбуждает свой набор
         # нейронов лимбической зоны — как ухо возбуждает слуховую кору.
         self.interoception = z()
+        # Короткий толчок (kick): ток на несколько шагов — сигнал начала
+        # звука или команда «начать»; гаснет сам.
+        self.kick_current = z()
+        self.kick_left = torch.zeros(1, device=self.device)
         # Истинная eligibility = eligibility * eligibility_scale:
         # затухание всех следов — одно умножение скаляра.
         self.eligibility_scale = torch.ones(1, device=self.device)
@@ -1275,6 +1290,7 @@ class SpikingBrain:
         dv = (
             cfg.v_rest - self.v + exp_term - self.adapt - self.adapt_slow
             + synaptic + self.bias + self.interoception + modulated + self.clock_mv
+            + self.kick_current * (self.kick_left > 0)
         ) * self.decay_m
         v = torch.where(self.refractory <= 0, self.v + dv, self.v)
         self.refractory.sub_(cfg.dt_ms)
@@ -1307,6 +1323,7 @@ class SpikingBrain:
         for i, (cells, _mv) in enumerate(self.area_pools):
             self.area_pool[i] = self.area_pool[i] * self.decay_pool + self.spikes[cells].sum()
         self.counts.add_(self.spikes)
+        self.kick_left.sub_(1.0).clamp_(min=0.0)
 
         if self.track_primacy:
             self.primacy_counts.add_(self.spikes * self.primacy_gain)
@@ -1994,7 +2011,7 @@ class SpikingBrain:
     _DYNAMIC = (
         "v", "i_syn", "i_slow", "i_dend", "pool", "area_pool", "adapt", "adapt_slow", "refractory", "spikes",
         "trace_pre", "trace_pre_rise", "ltp_kernel", "trace_post", "counts", "eligibility",
-        "eligibility_scale", "dropped", "bias", "interoception", "stp_x", "inh_gain",
+        "eligibility_scale", "dropped", "bias", "interoception", "kick_current", "kick_left", "stp_x", "inh_gain",
         "chemistry",
     )
 
@@ -2046,6 +2063,17 @@ class SpikingBrain:
 
         if neurons is not None:
             self.interoception[E.start + neurons] = amplitude
+
+    def kick(self, area: str, neurons: torch.Tensor, amplitude: float, ms: float) -> None:
+        """Толчок E-клеткам зоны на ms миллисекунд (сигнал начала)."""
+
+        if area not in self.areas:
+            return
+
+        E = self.areas[area].E
+        self.kick_current.zero_()
+        self.kick_current[E.start + neurons] = amplitude
+        self.kick_left.fill_(max(1.0, round(ms / self.cfg.dt_ms)))
 
     def silence(self, area: str) -> None:
         """

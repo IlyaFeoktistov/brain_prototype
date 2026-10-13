@@ -173,6 +173,11 @@ class PathwaySpec:
     # Блок в блок: клетка получателя берёт все blocks клеток блока с тем же
     # номером у источника (колонки артикуляций плана → выбора). 0 — нет.
     blocks: int = 0
+    # Сдвиг блоков: блок b получателя — от блока b − shift источника.
+    shift: int = 0
+    # Своё имя пути (по умолчанию «src -> dst») — когда между зонами два пути
+    # или путь внутри зоны.
+    name: str = ""
 
 
 
@@ -554,7 +559,10 @@ def learned_mouth(areas: list[AreaSpec], pathways: list[PathwaySpec]) -> tuple[l
     return areas, out
 
 
-def letter_mouth(areas: list[AreaSpec], pathways: list[PathwaySpec], articulator_cells: int = 8) -> tuple[list, list]:
+def letter_mouth(
+    areas: list[AreaSpec], pathways: list[PathwaySpec], articulator_cells: int = 8,
+    timing_cells: int = 5, timing_link: float = 6.0,
+) -> tuple[list, list]:
     """
     Рот по буквам целиком: моторная зона учит переходы буква → буква
     (свои связи, STDP с дофамином, как смысловая кора), а какое слово
@@ -679,6 +687,38 @@ def letter_mouth(areas: list[AreaSpec], pathways: list[PathwaySpec], articulator
         # тонул). Потолок 2, как у пути смысл → рот. [не подбиралось]
         PathwaySpec("association", "syllable", k=400, weight=(0.0, 0.05), plastic=True, cap=2.0,
                     k_inhibitory=0, predictive=False, modulator="coincidence", scaled=False),
+    ]
+
+    # Часы последовательности (клетки времени — как HVC певчих птиц: группы
+    # стреляют строго по очереди, каждая в свой момент песни, моторная зона
+    # учит, какой звук когда; Hahnloser 2002, Long & Fee 2008). Запуск —
+    # толчок группе 0 в начале звука слова (детектор начала звука) или по
+    # команде «начать». Группы по timing_cells клеток подряд, цепочка
+    # группа → следующая (блоки со сдвигом). Позиция буквы в слове —
+    # какая группа горит. [замер] без позиции цепочка «буква → следующая»
+    # путала продолжения своего слова по частоте («берлин» → б л…).
+    areas = areas + [
+        AreaSpec(
+            "timing", "часы последовательности (клетки времени)",
+            0.03, k_ee=timing_cells, ee_plastic=False, ee_weight=(0.0, 0.0), target_activity=0.0,
+            stdp_tau_plus=20.0, stdp_ltp_rise=0.0, stdp_tau_minus=20.0,
+        ),
+    ]
+    pathways = pathways + [
+        # Группа будит следующую: timing_cells входов по timing_link мВ.
+        # [не подбиралось] — скорость цепочки мерит стенд timing_bench.
+        PathwaySpec("timing", "timing", k=timing_cells, weight=(timing_link, timing_link), k_inhibitory=0,
+                    blocks=timing_cells, shift=1, name="timing: цепочка"),
+        # Часы → план букв: какая буква обычно в этот момент слова — чистый
+        # STDP (группа стреляла перед буквой). Ворота слова на дендритах
+        # оставляют буквы этого слова. Потолок 0.3: [замер] spell_bench, с
+        # потолком 1 вход часов в одиночку выше порога — все слова с «к» /
+        # «о» (small: первая буква 2/20); ×0.3 — 8/20 (без часов 11/20);
+        # medium: 1.0 — первая 14/20, целиком 0; 0.3 — 7/20, 1/20; без —
+        # 8/20, 2/20 («на», «он»). Общая позиция почти не помогает — нужна
+        # позиция внутри слова (DESIGN «Часы последовательности»).
+        PathwaySpec("timing", "motor", k=200, weight=(0.0, 0.05), plastic=True, cap=0.3,
+                    k_inhibitory=0, predictive=False, modulator="hebbian", scaled=False),
     ]
 
     return areas, pathways + letter_mouth_pathways()
@@ -1789,6 +1829,15 @@ class BrainConfig:
     # клетки начала и конца последовательности). [не подбиралось] 22 мВ —
     # чуть выше порога (20 мВ над покоем).
     pause_tonic_mv: float = 22.0
+    # Часы последовательности: клеток в группе, вес связи группа → следующая
+    # (мВ), толчок начала (мВ / мс). [замер] стенд timing_bench: толчок 30 мВ
+    # / 4 мс — группа 0 молчит (подъём ~5 мВ при τ 20 мс); 80 / 8 — бежит
+    # одна волна. Связь 6 мВ — чистая волна, ~11–13 мс на группу (2 группы
+    # на букву 25 мс), 82 группы ≈ 1 с; 10 и 16 — волна размыта на 3–6 групп.
+    timing_cells: int = 5
+    timing_link: float = 6.0
+    timing_kick_mv: float = 80.0
+    timing_kick_ms: float = 8.0
     # Градиент первичности (рот по буквам): спайки рта на слове весят
     # exp(−t / primacy_tau_ms) от начала звука — синапс слова устаёт за
     # время звучания (кратковременная депрессия), и ранние буквы связываются

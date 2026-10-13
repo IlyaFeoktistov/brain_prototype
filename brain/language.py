@@ -836,6 +836,7 @@ class LanguageInterface:
             self.brain.feel("goal", aim, self.cfg.goal_load_mv)
 
         sound = self.ear.encode(form)
+        self._start_clock()
 
         if gate:
             rates = self._listen_and_prepare(sound, place, token)
@@ -1488,6 +1489,22 @@ class LanguageInterface:
                 said += 1
 
         return said
+
+    def _start_clock(self) -> None:
+        """
+        Начало звука слова (детектор начала звука) запускает часы
+        последовательности заново: прошлая волна гаснет, группа 0 получает
+        толчок, дальше группы бегут сами.
+        """
+
+        timing = self.brain.areas.get("timing")
+
+        if timing is None:
+            return
+
+        self.brain.silence("timing")
+        group = torch.arange(self.cfg.timing_cells, device=self.device)
+        self.brain.kick("timing", group, self.cfg.timing_kick_mv, self.cfg.timing_kick_ms)
 
     def _learn_spelling(self, rates: torch.Tensor, held: torch.Tensor | None, token: str) -> None:
         """

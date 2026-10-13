@@ -3,7 +3,7 @@
 (рот повторяет услышанное про себя, ПФК → рот на дендриты, буква → буква
 внутри рта) и произносится из рабочей памяти.
 
-    PYTHONPATH=. .venv/bin/python data/tools/spell_bench.py [reads=3] [size=small] [go=6] [save=путь | load=путь] [show=N — окна рта у N слов] [ahp=мВ/мс — усталость рта] [inh=× торможение рта] [place=мВ — место слова в смысле] [pulse=период/ширина[/1 — нарастающий] мс — ритм толчков] [plan=× план → выбор] [nostp=1 — проверка: смысл без истощения] [dsoma=мВ — плато слова → сома плана] [chain=× цепочка выбор → план] [key=value ...]
+    PYTHONPATH=. .venv/bin/python data/tools/spell_bench.py [reads=3] [size=small] [go=6] [save=путь | load=путь] [show=N — окна рта у N слов] [ahp=мВ/мс — усталость рта] [inh=× торможение рта] [place=мВ — место слова в смысле] [pulse=период/ширина[/1 — нарастающий] мс — ритм толчков] [plan=× план → выбор] [nostp=1 — проверка: смысл без истощения] [dsoma=мВ — плато слова → сома плана] [chain=× цепочка выбор → план] [timing=× часы → план] [key=value ...]
 
 Новый мозг small: лепет (5 кругов) → чтение train-data reads раз без сна →
 проверка: в ПФК — только слово (без звука), рту — ровный ток go мВ (роль
@@ -30,6 +30,7 @@ plan_gain = 1.0
 no_stp = False
 dsoma = None
 chain = 1.0
+timing_gain = 1.0
 load = save = None
 overrides = []
 
@@ -56,6 +57,8 @@ for kv in sys.argv[1:]:
         dsoma = float(v)
     elif k == "chain":
         chain = float(v)
+    elif k == "timing":
+        timing_gain = float(v)
     elif k == "pulse":
         pulse = [float(x) for x in v.split("/")]
     elif k == "ahp":
@@ -104,6 +107,10 @@ if ahp:
 if chain != 1.0 and "articulator" in brain.areas:
     # Цепочка выбор → план × chain (стенд): в одиночку ниже порога?
     brain.projection("articulator -> motor").weight.mul_(chain)
+
+if timing_gain != 1.0 and "timing" in brain.areas:
+    # Часы → план × timing (стенд): в одиночку ниже порога?
+    brain.projection("timing -> motor").weight.mul_(timing_gain)
 
 if dsoma is not None:
     # Плато слова → сома плана, мВ (стенд).
@@ -182,6 +189,8 @@ def say(word: str) -> str:
             brain.feel("association", place, place_mv)
 
         everyone = torch.arange(OUT.size, device=brain.device)
+        # Команда «начать»: часы последовательности запускаются заново.
+        lang._start_clock()
 
         if pulse:
             # Ритм «давай» на стенде: толчок go мВ шириной pulse[1] мс каждые

@@ -37,7 +37,9 @@ class Mind:
             cfg.pathways = cfg.pathways + sequence_pathways()
 
         if cfg.mouth_letters and not any(p.src == "auditory" and p.dst == "motor" for p in cfg.pathways):
-            cfg.areas, cfg.pathways = letter_mouth(cfg.areas, cfg.pathways, cfg.articulator_cells)
+            cfg.areas, cfg.pathways = letter_mouth(
+                cfg.areas, cfg.pathways, cfg.articulator_cells, cfg.timing_cells, cfg.timing_link,
+            )
 
         # Рот учится: только новому мозгу (у загруженного рот уже есть).
         if cfg.mouth_learns and not any(p.dst == "motor" and p.plastic for p in cfg.pathways):

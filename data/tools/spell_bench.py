@@ -3,7 +3,7 @@
 (рот повторяет услышанное про себя, ПФК → рот на дендриты, буква → буква
 внутри рта) и произносится из рабочей памяти.
 
-    PYTHONPATH=. .venv/bin/python data/tools/spell_bench.py [reads=3] [size=small] [go=6] [save=путь | load=путь] [show=N — окна рта у N слов] [ahp=мВ/мс — усталость рта] [inh=× торможение рта] [place=мВ — место слова в смысле] [pulse=период/ширина[/1 — нарастающий] мс — ритм толчков] [plan=× план → выбор] [nostp=1 — проверка: смысл без истощения] [dsoma=мВ — плато слова → сома плана] [key=value ...]
+    PYTHONPATH=. .venv/bin/python data/tools/spell_bench.py [reads=3] [size=small] [go=6] [save=путь | load=путь] [show=N — окна рта у N слов] [ahp=мВ/мс — усталость рта] [inh=× торможение рта] [place=мВ — место слова в смысле] [pulse=период/ширина[/1 — нарастающий] мс — ритм толчков] [plan=× план → выбор] [nostp=1 — проверка: смысл без истощения] [dsoma=мВ — плато слова → сома плана] [chain=× цепочка выбор → план] [key=value ...]
 
 Новый мозг small: лепет (5 кругов) → чтение train-data reads раз без сна →
 проверка: в ПФК — только слово (без звука), рту — ровный ток go мВ (роль
@@ -29,6 +29,7 @@ pulse = None
 plan_gain = 1.0
 no_stp = False
 dsoma = None
+chain = 1.0
 load = save = None
 overrides = []
 
@@ -53,6 +54,8 @@ for kv in sys.argv[1:]:
         no_stp = v == "1"
     elif k == "dsoma":
         dsoma = float(v)
+    elif k == "chain":
+        chain = float(v)
     elif k == "pulse":
         pulse = [float(x) for x in v.split("/")]
     elif k == "ahp":
@@ -97,6 +100,10 @@ if ahp:
 
     brain.slow_ahp_b[OUT.slice] = ahp[0]
     brain.decay_slow_ahp[OUT.slice] = math.exp(-cfg.dt_ms / ahp[1])
+
+if chain != 1.0 and "articulator" in brain.areas:
+    # Цепочка выбор → план × chain (стенд): в одиночку ниже порога?
+    brain.projection("articulator -> motor").weight.mul_(chain)
 
 if dsoma is not None:
     # Плато слова → сома плана, мВ (стенд).
@@ -226,6 +233,15 @@ def say(word: str) -> str:
         ))
 
         if OUT is not M:
+            mine = torch.zeros(M.size, dtype=torch.bool)
+
+            for c in set(word.lower()):
+                if c in art.codes:
+                    mine[art.code(c).cpu()] = True
+
+            print("    план, своих/чужих клеток: " + " | ".join(
+                f"{int((b.bool() & mine).sum())}/{int((b.bool() & ~mine).sum())}" for b in plan_bins[80:92]
+            ))
             print("    план: " + " | ".join(
                 f"{int(b.sum())}:" + "".join(c for c, _ in art.said(b.to(brain.device), 0.25)[:3])
                 for b in plan_bins[80:95]

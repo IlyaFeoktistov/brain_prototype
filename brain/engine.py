@@ -416,6 +416,9 @@ class SpikingBrain:
                 self.dendrite_pre[area.E.slice] = True
         if "association" in self.areas:
             self.dendrite_post[self.areas["association"].E.slice] = True
+        # Рот по буквам: какое слово говорится — дендритами рта.
+        if getattr(cfg, "mouth_letters", False) and "motor" in self.areas:
+            self.dendrite_post[self.areas["motor"].E.slice] = True
         self.slow_scale = self.slow_gain * self.tau_m / cfg.memory_tau_syn
         # Базовый контур: у кого истощаются синапсы и чьё торможение
         # растёт с частотой — E зон с обучаемыми связями внутри себя (там

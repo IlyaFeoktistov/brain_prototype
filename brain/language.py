@@ -166,6 +166,7 @@ class Articulators:
     """
 
     LOUD = "крупно"
+    PAUSE = " "
 
     def __init__(self, size: int, cells: int, device):
         self.size = size
@@ -593,6 +594,12 @@ class LanguageInterface:
             Articulators(self.motor.E.size, cfg.articulator_cells, self.device)
             if cfg.mouth_letters else None
         )
+
+        if self.articulators is not None:
+            # Клетки паузы рта — тонические (свойство клеток, как у
+            # пейсмейкеров): горят сами, пока буквы их не погасят.
+            pause = self.articulators.code(Articulators.PAUSE)
+            self.brain.bias[self.motor.E.start + pause] = cfg.pause_tonic_mv
         # Клетки последовательности (пре-SMA / Брока): фраза как целое.
         self.sequence = self.brain.areas.get("sequence")
 
@@ -837,6 +844,7 @@ class LanguageInterface:
             self._learn_chunk(rates)
             self._learn_plan(rates, place)
             self._learn_mouth(rates, place)
+            self._learn_spelling(rates, held, token)
 
         if learn_forms:
             meaning = self._area(rates, self.meaning)
@@ -1432,6 +1440,35 @@ class LanguageInterface:
                 said += 1
 
         return said
+
+    def _learn_spelling(self, rates: torch.Tensor, held: torch.Tensor | None, token: str) -> None:
+        """
+        Слово учит свои буквы: пока оно звучит, рот повторяет его про себя
+        (зеркало), и клетки рта, которые стреляли, связываются с рабочей
+        памятью по совпадению — на дендриты (какое слово говорится).
+        Синапсы растут от места слова в ПФК к этим клеткам на одну ветку:
+        входы, активные вместе, собираются на одной ветке (кластерная
+        пластичность, Kastellakis 2015; ветка по слову — упрощение, долг).
+        Переходы буква → буква учат связи самого рта (STDP с дофамином).
+        """
+
+        if self.articulators is None or held is None or not self.brain.plasticity:
+            return
+
+        proj = next((p for p in self.brain.plastic if p.name == "prefrontal -> motor"), None)
+        fired = (self._area(rates, self.motor) > 0).nonzero().flatten()
+
+        if proj is None or not len(fired):
+            return
+
+        branch = Ear._seed("ветка:" + token) % max(1, self.cfg.dendrite_branches)
+        self.brain.grow([("prefrontal -> motor", held, fired, branch)], len(fired) * len(held))
+        memory = self._area(rates, self.context) > 0
+        source = self.context.E.start + memory.nonzero().flatten()
+        hit = torch.isin(proj.pre[fired], source.to(proj.pre.dtype)).float()
+        delta = self.cfg.spelling_rate * hit * (proj.cap - proj.weight[fired])
+        proj.weight[fired] += delta
+        proj.early[fired] += delta.to(proj.early.dtype)
 
     def _learn_echo(self, rates: torch.Tensor) -> None:
         """Слух → рот (instar): клетки рта, которые говорили, тянут свои

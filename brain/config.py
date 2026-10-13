@@ -530,6 +530,26 @@ def learned_mouth(areas: list[AreaSpec], pathways: list[PathwaySpec]) -> tuple[l
     return areas, out
 
 
+def letter_mouth(areas: list[AreaSpec], pathways: list[PathwaySpec]) -> tuple[list, list]:
+    """
+    Рот по буквам целиком: моторная зона учит переходы буква → буква
+    (свои связи, STDP с дофамином, как смысловая кора), а какое слово
+    говорится — дендритами от рабочей памяти (ПФК → рот, по совпадению):
+    следующая буква = продолжение текущей ∧ это слово (как следующее слово
+    в смысловой коре). Плюс слух → рот (letter_mouth_pathways).
+    """
+
+    areas = [
+        # Связи внутри рта почти все со всеми (400 из ~750 у small): у буквы
+        # 8 клеток, и переход «а → б» должен найтись без роста. Врождённо
+        # слабые (0–0.05) — рот не пляшет сам. [не подбиралось]
+        replace(a, ee_plastic=True, k_ee=400, ee_weight=(0.0, 0.05)) if a.name == "motor" else a
+        for a in areas
+    ]
+
+    return areas, pathways + letter_mouth_pathways()
+
+
 def letter_mouth_pathways() -> list[PathwaySpec]:
     """
     Рот по буквам (флаг mouth_letters; ROADMAP чат-минимум 7): дорсальный
@@ -551,6 +571,12 @@ def letter_mouth_pathways() -> list[PathwaySpec]:
         # 3 — зеркало 5/37, рот на звук молчит; 6 — 37/37 на символе, на
         # слове молчит; 10 — на слове 1–3 клетки; 16 — «вода» → в | о | д.
         PathwaySpec("auditory", "motor", k=200, weight=(0.0, 0.5), plastic=True, cap=16.0,
+                    k_inhibitory=0, predictive=False, modulator="coincidence"),
+        # Какое слово говорится: ПФК → рот на дендриты. Место слова в ПФК —
+        # 4 клетки; плато ветки — от 10 мВ: 4 синапса на одной ветке по
+        # ≥2.5 мВ — потолок 6 (запас). Синапсы растут от места слова к
+        # клеткам его букв (language._learn_spelling).
+        PathwaySpec("prefrontal", "motor", k=20, weight=(0.0, 0.1), plastic=True, cap=6.0,
                     k_inhibitory=0, predictive=False, modulator="coincidence"),
     ]
 
@@ -1600,6 +1626,15 @@ class BrainConfig:
     babble_ms: float = 20.0
     # Instar слух → рот при лепете (как form_rate). [не подбиралось] 0.2.
     echo_rate: float = 0.2
+    # Клетки паузы рта (артикуляция « »): тонические — горят сами, пока
+    # рот не говорит, буквы их гасят (торможение зоны). Первая буква слова
+    # — переход «пауза → буква», конец — «буква → пауза» (Jin & Costa 2010:
+    # клетки начала и конца последовательности). [не подбиралось] 22 мВ —
+    # чуть выше порога (20 мВ над покоем).
+    pause_tonic_mv: float = 22.0
+    # Слово учит свои буквы: ПФК → рот по совпадению, доля (cap − w).
+    # [не подбиралось] 0.3 — как context_hebb_rate.
+    spelling_rate: float = 0.3
     # Сила записи: след STDP × это = прирост веса за одно слово. Запись с
     # одного раза — одно событие (плато, BTSP — Bittner 2017) даёт синапсу
     # почти полную силу: след одной пары спайков ≈ A+ × 0.5 ≈ 0.005, потолок

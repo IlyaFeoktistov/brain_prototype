@@ -6,7 +6,7 @@ import time
 import torch
 
 from brain.config import (
-    FEATURES, BrainConfig, hippocampus_areas, hippocampus_pathways, learned_mouth, letter_mouth_pathways, sequence_areas,
+    FEATURES, BrainConfig, hippocampus_areas, hippocampus_pathways, learned_mouth, letter_mouth, sequence_areas,
     sequence_pathways,
 )
 from brain.engine import SpikingBrain
@@ -37,7 +37,7 @@ class Mind:
             cfg.pathways = cfg.pathways + sequence_pathways()
 
         if cfg.mouth_letters and not any(p.src == "auditory" and p.dst == "motor" for p in cfg.pathways):
-            cfg.pathways = cfg.pathways + letter_mouth_pathways()
+            cfg.areas, cfg.pathways = letter_mouth(cfg.areas, cfg.pathways)
 
         # Рот учится: только новому мозгу (у загруженного рот уже есть).
         if cfg.mouth_learns and not any(p.dst == "motor" and p.plastic for p in cfg.pathways):

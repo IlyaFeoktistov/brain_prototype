@@ -118,6 +118,9 @@ class AreaSpec:
     # Масштабирование связей внутри зоны по сумме (synaptic_scaling).
     # False — у рта по буквам: врождённые колонки артикуляций сильнее бюджета.
     ee_scaled: bool = True
+    # Сколько плато дендрита поднимает сому, мВ (None — общее dendrite_soma_mv).
+    # У плана рта плато слова держит его буквы (BAC firing, Larkum 1999).
+    dendrite_soma_mv: float | None = None
 
 
 @dataclass

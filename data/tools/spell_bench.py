@@ -3,7 +3,7 @@
 (рот повторяет услышанное про себя, ПФК → рот на дендриты, буква → буква
 внутри рта) и произносится из рабочей памяти.
 
-    PYTHONPATH=. .venv/bin/python data/tools/spell_bench.py [reads=3] [go=6] [save=путь | load=путь] [show=N — окна рта у N слов] [ahp=мВ/мс — усталость рта] [inh=× торможение рта] [place=мВ — место слова в смысле] [pulse=период/ширина[/1 — нарастающий] мс — ритм толчков] [plan=× план → выбор] [nostp=1 — проверка: смысл без истощения] [key=value ...]
+    PYTHONPATH=. .venv/bin/python data/tools/spell_bench.py [reads=3] [size=small] [go=6] [save=путь | load=путь] [show=N — окна рта у N слов] [ahp=мВ/мс — усталость рта] [inh=× торможение рта] [place=мВ — место слова в смысле] [pulse=период/ширина[/1 — нарастающий] мс — ритм толчков] [plan=× план → выбор] [nostp=1 — проверка: смысл без истощения] [dsoma=мВ — плато слова → сома плана] [key=value ...]
 
 Новый мозг small: лепет (5 кругов) → чтение train-data reads раз без сна →
 проверка: в ПФК — только слово (без звука), рту — ровный ток go мВ (роль
@@ -28,6 +28,7 @@ place_mv = 30.0
 pulse = None
 plan_gain = 1.0
 no_stp = False
+dsoma = None
 load = save = None
 overrides = []
 
@@ -50,6 +51,8 @@ for kv in sys.argv[1:]:
         plan_gain = float(v)
     elif k == "nostp":
         no_stp = v == "1"
+    elif k == "dsoma":
+        dsoma = float(v)
     elif k == "pulse":
         pulse = [float(x) for x in v.split("/")]
     elif k == "ahp":
@@ -60,7 +63,8 @@ for kv in sys.argv[1:]:
         overrides.append((k, v))
 
 cfg = BrainConfig()
-cfg.size = "small"
+cfg.size = next((v for k, v in overrides if k == "size"), "small")
+overrides = [(k, v) for k, v in overrides if k != "size"]
 cfg.save_path = "/nonexistent/brain.pt"
 cfg.mouth_letters = True
 
@@ -93,6 +97,10 @@ if ahp:
 
     brain.slow_ahp_b[OUT.slice] = ahp[0]
     brain.decay_slow_ahp[OUT.slice] = math.exp(-cfg.dt_ms / ahp[1])
+
+if dsoma is not None:
+    # Плато слова → сома плана, мВ (стенд).
+    brain.dendrite_soma[M.slice] = dsoma
 
 if plan_gain != 1.0 and "articulator" in brain.areas:
     brain.projection("motor -> articulator").weight.mul_(plan_gain)

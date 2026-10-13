@@ -404,6 +404,12 @@ class SpikingBrain:
         self.decay_syn = torch.exp(-dt / self.tau_syn)
         self.decay_slow = math.exp(-dt / cfg.memory_tau_syn)
         self.decay_dend = math.exp(-dt / cfg.dendrite_tau_ms)
+        # Сколько плато ветки поднимает сому, мВ — по клеткам (своя у зоны).
+        self.dendrite_soma = torch.full((self.n_slots,), float(cfg.dendrite_soma_mv), device=self.device)
+
+        for spec in cfg.areas:
+            if getattr(spec, "dendrite_soma_mv", None) is not None:
+                self.dendrite_soma[self.areas[spec.name].E.slice] = spec.dendrite_soma_mv
         self.decay_pool = math.exp(-dt / cfg.pool_inhibition_tau_ms)
         self.pool_mask = torch.zeros(self.n_slots, device=self.device)
         if "association" in self.areas:
@@ -1239,8 +1245,9 @@ class SpikingBrain:
                 plateau = torch.sigmoid(
                     (branch - cfg.dendrite_threshold_mv) / cfg.dendrite_slope_mv
                 ).amax(1)
-                # Плато ветки деполяризует и сому (см. dendrite_soma_mv).
-                somatic = cfg.dendrite_soma_mv * plateau
+                # Плато ветки деполяризует и сому (см. dendrite_soma_mv; у
+                # зоны может быть своя сила — AreaSpec.dendrite_soma_mv).
+                somatic = self.dendrite_soma * plateau
             else:
                 plateau = self.i_dend / (self.i_dend + cfg.dendrite_half_mv)
                 somatic = 0.0

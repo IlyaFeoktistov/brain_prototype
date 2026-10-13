@@ -636,6 +636,30 @@ def letter_mouth(areas: list[AreaSpec], pathways: list[PathwaySpec], articulator
                     k_inhibitory=0, predictive=False, scaled=False, modulator="hebbian"),
     ]
 
+    # Слоговарь (вентральная премоторная кора / Брока — карта звуков речи,
+    # DIVA; слоговарь Левелта): клетки, захватывающие частые сочетания
+    # звуков. Не назначаются кодом: конкуренция и свой гомеостаз у клетки
+    # (как зона последовательности для фраз). Слог — 2–3 буквы: вход от
+    # выхода рта учится чистым STDP с узким окном — клетка связывается с
+    # буквами, прозвучавшими за ~40 мс до её спайка. Доля 0.03, активность
+    # 2% [не подбиралось] — как у зоны последовательности.
+    areas = areas + [
+        AreaSpec(
+            "syllable", "слоговарь (программы слогов)",
+            0.03, k_ee=10, ee_plastic=False, ee_weight=(0.0, 0.0),
+            target_activity=0.02, cell_homeostasis=True, inhibition_adapts=False,
+            stdp_tau_plus=20.0, stdp_ltp_rise=0.0, stdp_tau_minus=20.0,
+        ),
+    ]
+    pathways = pathways + [
+        # 400 входов из ~750 клеток выхода рта: ~4 клетки на блок буквы.
+        # Масштабирование по сумме держит клетку избирательной: бюджет
+        # 400 × 0.25 × 1.5 = 150 — ~50 синапсов у потолка 3, на 2–3 буквы.
+        # [не подбиралось]
+        PathwaySpec("articulator", "syllable", k=400, weight=(0.0, 0.5), plastic=True, cap=3.0,
+                    k_inhibitory=0, predictive=False, modulator="hebbian"),
+    ]
+
     return areas, pathways + letter_mouth_pathways()
 
 

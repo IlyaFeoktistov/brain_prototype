@@ -661,6 +661,8 @@ class SpikingBrain:
                 spec.ee_weight, plastic=spec.ee_plastic, cap=spec.ee_cap,
                 modulator=spec.ee_modulator, ach_suppressed=spec.ee_ach_suppressed,
             )
+            if self.projections and self.projections[-1].name == f"{spec.name}: E->E":
+                self.projections[-1].scaled = getattr(spec, "ee_scaled", True)
             if spec.columns > 1:
                 self._wire_columns(spec, area)
 
@@ -836,6 +838,11 @@ class SpikingBrain:
             p.early = self.early[
                 p.offset: p.offset + p.weight.numel()
             ].view(p.weight.shape)
+
+            # Врождённо сильнее потолка (колонки рта): учёба врождённое не
+            # срезает — потолок синапса не ниже его веса при рождении.
+            if bool((p.birth.float() > p.cap).any()):
+                p.ceiling = p.birth.float().clamp(min=p.cap)
 
         # Пути гиппокампа учатся от ацетилхолина (encode), а не от дофамина.
         # Пути в стриатум D2 («стой») — от провала дофамина: знак −1
@@ -1061,6 +1068,13 @@ class SpikingBrain:
         self.trace_post = z()
         # Счётчик спайков для окна наблюдения.
         self.counts = z()
+        # Счёт спайков с весом, убывающим от начала звука (рот по буквам):
+        # сколько передал бы устающий синапс на момент спайка (кратковременная
+        # депрессия, Tsodyks & Markram 1997) — ранние буквы слова весят больше.
+        self.track_primacy = bool(getattr(cfg, "mouth_letters", False))
+        self.primacy_counts = z()
+        self.primacy_gain = torch.ones(1, device=self.device)
+        self.primacy_decay = math.exp(-cfg.dt_ms / max(1e-6, getattr(cfg, "primacy_tau_ms", 50.0)))
         # Ток покоя (мВ): гомеостаз возбудимости зоны.
         self.bias = z()
 
@@ -1256,6 +1270,10 @@ class SpikingBrain:
         if cfg.pool_inhibition_mv > 0:
             self.pool.mul_(self.decay_pool).add_((self.spikes * self.pool_mask).sum())
         self.counts.add_(self.spikes)
+
+        if self.track_primacy:
+            self.primacy_counts.add_(self.spikes * self.primacy_gain)
+            self.primacy_gain.mul_(self.primacy_decay)
         self.dropped.add_((self.spikes.sum() - self.max_spikes).clamp(min=0.0))
 
         # ---- STDP -> eligibility ----
@@ -1413,6 +1431,11 @@ class SpikingBrain:
         """Прожить окно и вернуть частоты (Hz) всех нейронов."""
 
         self.counts.zero_()
+
+        if self.track_primacy:
+            self.primacy_counts.zero_()
+            self.primacy_gain.fill_(1.0)
+
         self.run(duration_ms, sensory)
 
         steps = max(1, round(duration_ms / self.cfg.dt_ms / self.CHUNK)) * self.CHUNK
@@ -1450,7 +1473,13 @@ class SpikingBrain:
         plastic.add_(eligibility, alpha=gain)
 
         for proj in self.plastic:
-            proj.weight.clamp_(0.0, proj.cap)
+            ceiling = getattr(proj, "ceiling", None)
+
+            if ceiling is None:
+                proj.weight.clamp_(0.0, proj.cap)
+            else:
+                proj.weight.clamp_(min=0.0)
+                torch.minimum(proj.weight, ceiling, out=proj.weight)
 
         # Изменение сначала свежее (early) — см. forget() и сон.
         self.early.add_(plastic - before)

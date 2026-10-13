@@ -3,7 +3,7 @@
 (рот повторяет услышанное про себя, ПФК → рот на дендриты, буква → буква
 внутри рта) и произносится из рабочей памяти.
 
-    PYTHONPATH=. .venv/bin/python data/tools/spell_bench.py [reads=3] [go=6] [save=путь | load=путь] [show=N — окна рта у N слов] [ahp=мВ/мс — усталость рта] [inh=× торможение рта] [key=value ...]
+    PYTHONPATH=. .venv/bin/python data/tools/spell_bench.py [reads=3] [go=6] [save=путь | load=путь] [show=N — окна рта у N слов] [ahp=мВ/мс — усталость рта] [inh=× торможение рта] [place=мВ — место слова в смысле] [key=value ...]
 
 Новый мозг small: лепет (5 кругов) → чтение train-data reads раз без сна →
 проверка: в ПФК — только слово (без звука), рту — ровный ток go мВ (роль
@@ -24,6 +24,7 @@ reads, go = 3, 6.0
 show = 0
 ahp = None
 inh = 1.0
+place_mv = 30.0
 load = save = None
 overrides = []
 
@@ -40,6 +41,8 @@ for kv in sys.argv[1:]:
         show = int(v)
     elif k == "inh":
         inh = float(v)
+    elif k == "place":
+        place_mv = float(v)
     elif k == "ahp":
         ahp = [float(x) for x in v.split("/")]
     elif k == "save":
@@ -130,11 +133,18 @@ def say(word: str) -> str:
     lang._hold_memory()
     brain.on_chunk = chunk
 
+    place = lang.concepts.get(word, allocate=False)
+
     with brain.frozen():
         brain.run(100.0)  # слово в памяти, рот молчит
+        # Мозг думает это слово: горит его место в смысловой коре.
+        if place is not None and place_mv > 0:
+            brain.feel("association", place, place_mv)
+
         brain.feel("motor", torch.arange(M.size, device=brain.device), go)
         brain.run(300.0)
         brain.feel("motor", None, 0.0)
+        brain.feel("association", None, 0.0)
         branches = brain.i_dend.view(brain.n_slots, -1)[M.start: M.stop].amax(1)
         mine = torch.cat([art.code(c) for c in word.lower() if c in art.codes])
         print(f"    дендрит рта: буквы слова {float(branches[mine].mean()):.1f} мВ, все {float(branches.mean()):.1f}")

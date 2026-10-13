@@ -181,16 +181,41 @@ class Articulators:
         self.cells = min(cells, size)
         self.device = device
         self.codes: dict[str, torch.Tensor] = {}
+        # Символ -> номер блока клеток (колонки моторной зоны подряд).
+        self.blocks: dict[str, int] = {}
 
     def code(self, symbol: str) -> torch.Tensor:
         code = self.codes.get(symbol)
 
         if code is None:
-            rng = torch.Generator().manual_seed(Ear._seed("рот:" + symbol))
-            code = torch.randperm(self.size, generator=rng)[: self.cells].to(self.device)
+            block = self.blocks.get(symbol)
+
+            if block is None:
+                # Своя синергия у каждого символа: блок по хешу, занятый —
+                # следующий свободный (тело одно на всю жизнь — сохраняется).
+                count = self.size // self.cells
+                taken = set(self.blocks.values())
+                block = Ear._seed("рот:" + symbol) % count
+
+                for _ in range(count):
+                    if block not in taken:
+                        break
+                    block = (block + 1) % count
+
+                self.blocks[symbol] = block
+
+            start = block * self.cells
+            code = torch.arange(start, start + self.cells, device=self.device)
             self.codes[symbol] = code
 
         return code
+
+    def state_dict(self) -> dict:
+        return {"blocks": dict(self.blocks)}
+
+    def load_state_dict(self, state: dict) -> None:
+        self.blocks = dict(state.get("blocks", {}))
+        self.codes = {}
 
     def parts(self, char: str) -> list[str]:
         small = char.lower()
@@ -853,6 +878,7 @@ class LanguageInterface:
             self._learn_plan(rates, place)
             self._learn_mouth(rates, place)
             self._learn_spelling(rates, held, token)
+            self._learn_primacy(place, token)
 
         if learn_forms:
             meaning = self._area(rates, self.meaning)
@@ -1482,6 +1508,39 @@ class LanguageInterface:
         source = self.context.E.start + held
         hit = torch.isin(proj.pre[fired], source.to(proj.pre.dtype)).float()
         delta = self.cfg.spelling_rate * hit * (proj.cap - proj.weight[fired])
+        proj.weight[fired] += delta
+        proj.early[fired] += delta.to(proj.early.dtype)
+
+    def _learn_primacy(self, place: torch.Tensor | None, token: str) -> None:
+        """
+        Место слова → рот с градиентом первичности: клетки рта, стрелявшие на
+        слове, связываются с местом слова пропорционально спайкам, взвешенным
+        усталостью синапса от начала звука (engine.primacy_counts) — первая
+        буква сильнее второй. Синапсы растут от места к этим клеткам.
+        """
+
+        if self.articulators is None or place is None or not self.brain.plasticity:
+            return
+
+        proj = next((p for p in self.brain.plastic if p.name == "association -> motor"), None)
+
+        if proj is None:
+            return
+
+        weight = self._area(self.brain.primacy_counts[: self.brain.n], self.motor)
+        fired = (weight > 0).nonzero().flatten()
+
+        if not len(fired):
+            return
+
+        self.brain.grow([("association -> motor", place, fired)], len(fired) * len(place))
+        source = self.meaning.E.start + place
+        hit = torch.isin(proj.pre[fired], source.to(proj.pre.dtype)).float()
+        # Instar: вес идёт к cap × доля (доля — от самой ранней, сильной
+        # буквы), а не к потолку: [замер] «к потолку» за несколько повторов
+        # насыщал все буквы (человек: ч 8.4, е 8.7, … к 5.3) — градиента нет.
+        share = (weight[fired] / weight[fired].max())[:, None]
+        delta = self.cfg.primacy_rate * hit * (proj.cap * share - proj.weight[fired])
         proj.weight[fired] += delta
         proj.early[fired] += delta.to(proj.early.dtype)
 
@@ -3693,6 +3752,7 @@ class LanguageInterface:
         return {
             "semantic": self.semantic.state_dict(),
             "mouth": self.mouth.state_dict(),
+            "articulators": self.articulators.state_dict() if self.articulators is not None else None,
             "concepts": self.concepts.state_dict(),
             "category_usage": self._category_usage,
             "value_learned": self._value_learned,
@@ -3718,6 +3778,9 @@ class LanguageInterface:
     def load_state_dict(self, state: dict) -> None:
         self.semantic.load_state_dict(state["semantic"])
         self.mouth.load_state_dict(state["mouth"])
+
+        if self.articulators is not None and state.get("articulators"):
+            self.articulators.load_state_dict(state["articulators"])
 
         if "concepts" in state:
             self.concepts.load_state_dict(state["concepts"])

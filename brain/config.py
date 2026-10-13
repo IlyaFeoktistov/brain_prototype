@@ -115,6 +115,9 @@ class AreaSpec:
     stdp_tau_plus: float | None = None
     stdp_ltp_rise: float | None = None
     stdp_tau_minus: float | None = None
+    # Масштабирование связей внутри зоны по сумме (synaptic_scaling).
+    # False — у рта по буквам: врождённые колонки артикуляций сильнее бюджета.
+    ee_scaled: bool = True
 
 
 @dataclass
@@ -541,7 +544,7 @@ def learned_mouth(areas: list[AreaSpec], pathways: list[PathwaySpec]) -> tuple[l
     return areas, out
 
 
-def letter_mouth(areas: list[AreaSpec], pathways: list[PathwaySpec]) -> tuple[list, list]:
+def letter_mouth(areas: list[AreaSpec], pathways: list[PathwaySpec], articulator_cells: int = 8) -> tuple[list, list]:
     """
     Рот по буквам целиком: моторная зона учит переходы буква → буква
     (свои связи, STDP с дофамином, как смысловая кора), а какое слово
@@ -550,6 +553,18 @@ def letter_mouth(areas: list[AreaSpec], pathways: list[PathwaySpec]) -> tuple[li
     в смысловой коре). Плюс слух → рот (letter_mouth_pathways).
     """
 
+    pathways = [
+        # Место слова → рот на сому, с градиентом первичности (первая буква
+        # сильнее): вместо врождённого случайного пути (вес 6), по которому
+        # рот лишь отражал выбранное место. Растёт от места к клеткам букв
+        # (language._learn_primacy). Потолок 2: место — 4 клетки по ~15 Гц
+        # при ответе, за 50 мс ~3 спайка × 4 × 2 ≈ 24 мВ у первой буквы —
+        # выше порога (20); у поздних букв веса меньше. [не подбиралось]
+        replace(p, k=400, weight=(0.0, 0.05), plastic=True, cap=2.0, predictive=False,
+                modulator="coincidence", scaled=False, k_inhibitory=0)
+        if (p.src, p.dst) == ("association", "motor") else p
+        for p in pathways
+    ]
     areas = [
         # Связи внутри рта почти все со всеми (400 из ~750 у small): у буквы
         # 8 клеток, и переход «а → б» должен найтись без роста. Врождённо
@@ -560,8 +575,15 @@ def letter_mouth(areas: list[AreaSpec], pathways: list[PathwaySpec]) -> tuple[li
         # 1998): буква — 25 мс, связь «а → следующая», а не «а → через
         # две». [замер] с общим окном слов (τ+ 80, пик ~50 мс) связи вперёд
         # и назад равны и у потолка («м→о» 0.46 / 0.49, случайные 0.41).
-        replace(a, ee_plastic=True, k_ee=400, ee_weight=(0.0, 0.05), ee_cap=0.5,
-                stdp_tau_plus=20.0, stdp_ltp_rise=0.0, stdp_tau_minus=20.0) if a.name == "motor" else a
+        # Клетки одной артикуляции — врождённая синергия (колонка подряд,
+        # Articulators): буква звучит целиком, вспышкой, гаснет своей
+        # усталостью — дальше побеждает следующая (competitive queuing).
+        # [замер] без колонок у буквы стреляли 2–4 клетки из 8. Вес 6
+        # [не подбиралось]: 3–4 выстрелившие соседки (≈20 мВ) будят остальных.
+        replace(a, ee_plastic=True, k_ee=400, ee_weight=(0.0, 0.05), ee_cap=1.5,
+                stdp_tau_plus=20.0, stdp_ltp_rise=0.0, stdp_tau_minus=20.0,
+                columns=articulator_cells, column_weight=6.0, ee_scaled=False)
+        if a.name == "motor" else a
         for a in areas
     ]
 
@@ -1673,6 +1695,15 @@ class BrainConfig:
     # клетки начала и конца последовательности). [не подбиралось] 22 мВ —
     # чуть выше порога (20 мВ над покоем).
     pause_tonic_mv: float = 22.0
+    # Градиент первичности (рот по буквам): спайки рта на слове весят
+    # exp(−t / primacy_tau_ms) от начала звука — синапс слова устаёт за
+    # время звучания (кратковременная депрессия), и ранние буквы связываются
+    # сильнее поздних (competitive queuing, Houghton 1990). [не подбиралось]
+    # 50 мс — две буквы по 25 мс: соседние буквы отличаются в e^0.5 ≈ 1.6 раза.
+    primacy_tau_ms: float = 50.0
+    # Место слова → рот (на сому, с градиентом): доля (cap − w) за слово.
+    # [не подбиралось] 0.3, как spelling_rate.
+    primacy_rate: float = 0.3
     # Слово учит свои буквы: ПФК → рот по совпадению, доля (cap − w).
     # [не подбиралось] 0.3 — как context_hebb_rate.
     spelling_rate: float = 0.3

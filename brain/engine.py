@@ -577,7 +577,11 @@ class SpikingBrain:
         modulator: str = "dopamine",
         ach_suppressed: bool = False,
         topographic: float = 0.0,
+        blocks: int = 0,
     ) -> Projection | None:
+        if blocks > 0:
+            k = blocks
+
         k = min(k, pre_pop.size)
 
         if k <= 0:
@@ -585,7 +589,7 @@ class SpikingBrain:
 
         # Врождённый путь с постоянным весом — не храним, а вычисляем
         # (топографический хранится: хеш получателей не знает карты).
-        if self.cfg.procedural_wiring and not plastic and weight[0] == weight[1] != 0 and not topographic:
+        if self.cfg.procedural_wiring and not plastic and weight[0] == weight[1] != 0 and not topographic and not blocks:
             proj = ProceduralProjection(
                 name, pre_pop, post, k, weight[0],
                 seed=self.cfg.seed * 1009 + len(self.projections), device=self.device,
@@ -596,10 +600,16 @@ class SpikingBrain:
             self.projections.append(proj)
             return proj
 
-        pre = (
-            self._topographic_pre(post, k, pre_pop, topographic) if topographic > 0
-            else self._random_pre(post, k, pre_pop)
-        )
+        if blocks > 0:
+            # Блок в блок: клетка получателя — от всех клеток блока того же
+            # номера у источника (колонка → колонка, как столбики артикуляций).
+            first = torch.arange(post.size, device=self.device) // blocks * blocks
+            pre = first[:, None] + torch.arange(blocks, device=self.device)[None, :]
+            pre = pre_pop.start + pre.clamp(max=pre_pop.size - 1)
+        elif topographic > 0:
+            pre = self._topographic_pre(post, k, pre_pop, topographic)
+        else:
+            pre = self._random_pre(post, k, pre_pop)
         proj = Projection(
             name,
             "net",
@@ -698,7 +708,7 @@ class SpikingBrain:
                 f"{path.src} -> {path.dst}", src.E, dst.E, path.k,
                 path.weight, plastic=path.plastic, cap=path.cap,
                 modulator=path.modulator, ach_suppressed=path.ach_suppressed,
-                topographic=path.topographic,
+                topographic=path.topographic, blocks=getattr(path, "blocks", 0),
             )
 
             if proj is not None:

@@ -11,10 +11,11 @@ from brain.mind import Mind
 mind = Mind.load(sys.argv[1]); mind.cfg.autosave = False
 lang, brain = mind.language, mind.brain
 M = brain.areas["motor"].E; art = lang.articulators
-ee = next(p for p in brain.plastic if p.name == "motor: E->E")
+ee = next(p for p in brain.plastic if p.name == ("articulator -> motor" if "articulator" in brain.areas else "motor: E->E"))
+SRC = brain.areas["articulator"].E if "articulator" in brain.areas else M
 def link(a, b):
     pa, pb = art.code(a), art.code(b)
-    hit = torch.isin(ee.pre[pb], (M.start + pa).to(ee.pre.dtype))
+    hit = torch.isin(ee.pre[pb], (SRC.start + pa).to(ee.pre.dtype))
     return float((ee.weight[pb] * hit).sum() / hit.sum().clamp(min=1))
 text = Path("train-data.md").read_text(encoding="utf-8").lower()
 pairs = Counter(w[i:i+2] for w in lang.tokenize(text) if w.isalpha() for i in range(len(w)-1))

@@ -71,6 +71,9 @@ mind.cfg.autosave = False
 cfg = mind.cfg
 lang, brain = mind.language, mind.brain
 M = brain.areas["motor"].E
+# Выход — слой выбора, если он есть (иначе — сам рот).
+OUT = brain.areas["articulator"].E if "articulator" in brain.areas else M
+GO = "articulator" if "articulator" in brain.areas else "motor"
 art = lang.articulators
 
 if inh != 1.0:
@@ -107,20 +110,25 @@ for _ in range(0 if load else reads):
 if save:
     mind.save(save)
 
-ee = next(p for p in brain.plastic if p.name == "motor: E->E")
+ee = next(p for p in brain.plastic if p.name in ("articulator -> motor", "motor: E->E"))
 pm = next(p for p in brain.plastic if p.name == "prefrontal -> motor")
 print(f"рот E→E: макс {float(ee.weight.max()):.2f}, выше 0.5 — {int((ee.weight > 0.5).sum())}; "
       f"ПФК → рот: макс {float(pm.weight.max()):.2f}, выше 2 — {int((pm.weight > 2).sum())}")
 
 words = Counter(lang.word(t) for t in lang.tokenize(text) if t.isalpha())
 bins: list[torch.Tensor] = []
+plan_bins: list[torch.Tensor] = []
 
 
 def chunk(fired, _t):
-    cells = fired[(fired >= M.start) & (fired < M.stop)] - M.start
-    motor = torch.zeros(M.size)
+    cells = fired[(fired >= OUT.start) & (fired < OUT.stop)] - OUT.start
+    motor = torch.zeros(OUT.size)
     motor[cells] = 1.0
     bins.append(motor)
+    cells = fired[(fired >= M.start) & (fired < M.stop)] - M.start
+    plan = torch.zeros(M.size)
+    plan[cells] = 1.0
+    plan_bins.append(plan)
 
 
 def say(word: str) -> str:
@@ -130,6 +138,7 @@ def say(word: str) -> str:
         return "?"
 
     bins.clear()
+    plan_bins.clear()
     trace = lang._memory_trace()
     trace.zero_()
     trace[held] = cfg.memory_mv
@@ -145,7 +154,7 @@ def say(word: str) -> str:
         if place is not None and place_mv > 0:
             brain.feel("association", place, place_mv)
 
-        everyone = torch.arange(M.size, device=brain.device)
+        everyone = torch.arange(OUT.size, device=brain.device)
 
         if pulse:
             # Ритм «давай» на стенде: толчок go мВ шириной pulse[1] мс каждые
@@ -160,19 +169,19 @@ def say(word: str) -> str:
                     steps = max(1, int(width // 4))
 
                     for i in range(steps):
-                        brain.feel("motor", everyone, go * (i + 1) / steps)
+                        brain.feel(GO, everyone, go * (i + 1) / steps)
                         brain.run(4.0)
                 else:
-                    brain.feel("motor", everyone, go)
+                    brain.feel(GO, everyone, go)
                     brain.run(width)
 
-                brain.feel("motor", None, 0.0)
+                brain.feel(GO, None, 0.0)
                 brain.run(period - width)
                 t += period
         else:
-            brain.feel("motor", everyone, go)
+            brain.feel(GO, everyone, go)
             brain.run(300.0)
-            brain.feel("motor", None, 0.0)
+            brain.feel(GO, None, 0.0)
         brain.feel("association", None, 0.0)
         branches = brain.i_dend.view(brain.n_slots, -1)[M.start: M.stop].amax(1)
         mine = torch.cat([art.code(c) for c in word.lower() if c in art.codes])
@@ -187,6 +196,12 @@ def say(word: str) -> str:
         print("    " + " | ".join(
             f"{int(b.sum())}:" + "".join(c for c, _ in art.said(b.to(brain.device), 0.25)[:3]) for b in bins[80:95]
         ))
+
+        if OUT is not M:
+            print("    план: " + " | ".join(
+                f"{int(b.sum())}:" + "".join(c for c, _ in art.said(b.to(brain.device), 0.25)[:3])
+                for b in plan_bins[80:95]
+            ))
 
     for b in bins[80:]:
         said = art.said(b.to(brain.device), 0.5)

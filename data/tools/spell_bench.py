@@ -3,7 +3,7 @@
 (рот повторяет услышанное про себя, ПФК → рот на дендриты, буква → буква
 внутри рта) и произносится из рабочей памяти.
 
-    PYTHONPATH=. .venv/bin/python data/tools/spell_bench.py [reads=3] [go=6] [save=путь | load=путь] [key=value ...]
+    PYTHONPATH=. .venv/bin/python data/tools/spell_bench.py [reads=3] [go=6] [save=путь | load=путь] [show=N — окна рта у N слов] [ahp=мВ/мс — усталость рта] [inh=× торможение рта] [key=value ...]
 
 Новый мозг small: лепет (5 кругов) → чтение train-data reads раз без сна →
 проверка: в ПФК — только слово (без звука), рту — ровный ток go мВ (роль
@@ -21,6 +21,9 @@ from brain.language import Articulators
 from brain.mind import Mind
 
 reads, go = 3, 6.0
+show = 0
+ahp = None
+inh = 1.0
 load = save = None
 overrides = []
 
@@ -33,6 +36,12 @@ for kv in sys.argv[1:]:
         go = float(v)
     elif k == "load":
         load = v
+    elif k == "show":
+        show = int(v)
+    elif k == "inh":
+        inh = float(v)
+    elif k == "ahp":
+        ahp = [float(x) for x in v.split("/")]
     elif k == "save":
         save = v
     else:
@@ -57,6 +66,18 @@ cfg = mind.cfg
 lang, brain = mind.language, mind.brain
 M = brain.areas["motor"].E
 art = lang.articulators
+
+if inh != 1.0:
+    # Торможение рта на стенде: E → I и I → E × inh (конкуренция букв).
+    for name in ("motor: E->I", "motor: I->E"):
+        brain.projection(name).weight.mul_(inh)
+
+if ahp:
+    # Усталость клеток рта (sAHP) на стенде: ahp=мВ/мс.
+    import math
+
+    brain.slow_ahp_b[M.slice] = ahp[0]
+    brain.decay_slow_ahp[M.slice] = math.exp(-cfg.dt_ms / ahp[1])
 text = Path("train-data.md").read_text(encoding="utf-8")
 alphabet = sorted({c.lower() for c in text if not c.isspace()})
 
@@ -123,6 +144,11 @@ def say(word: str) -> str:
     lang._hold_memory()
     out = []
 
+    if show > 0:
+        print("    " + " | ".join(
+            f"{int(b.sum())}:" + "".join(c for c, _ in art.said(b.to(brain.device), 0.25)[:3]) for b in bins[5:20]
+        ))
+
     for b in bins[5:]:
         said = art.said(b.to(brain.device), 0.5)
         letter = said[0][0] if said else ""
@@ -134,7 +160,7 @@ def say(word: str) -> str:
 
 
 right = 0
-test = [w for w, _ in words.most_common(20)]
+test = [w for w, _ in words.most_common(20)][: show or 20]
 
 for w in test:
     got = say(w)

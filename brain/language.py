@@ -1473,8 +1473,13 @@ class LanguageInterface:
 
         branch = Ear._seed("ветка:" + token) % max(1, self.cfg.dendrite_branches)
         self.brain.grow([("prefrontal -> motor", held, fired, branch)], len(fired) * len(held))
-        memory = self._area(rates, self.context) > 0
-        source = self.context.E.start + memory.nonzero().flatten()
+        # Учится от места звучащего слова (в ПФК оно сильнее всех — только
+        # что загружено), а не от всей памяти: [замер] со всеми активными
+        # клетками ПФК слово цеплялось к буквам следующих слов — «москва»
+        # сильно связана с 1055 синапсами почти по всему рту, дендрит букв
+        # слова 317 мВ против 97 у прочих. Выбор клеток кодом — долг: в мозге
+        # решала бы сила совпадения (нелинейность NMDA).
+        source = self.context.E.start + held
         hit = torch.isin(proj.pre[fired], source.to(proj.pre.dtype)).float()
         delta = self.cfg.spelling_rate * hit * (proj.cap - proj.weight[fired])
         proj.weight[fired] += delta

@@ -701,6 +701,7 @@ class SpikingBrain:
 
             if proj is not None:
                 proj.predictive = path.predictive
+                proj.scaled = getattr(path, "scaled", True)
             self._connect(
                 f"{path.src} -> {path.dst}.I", src.E, dst.I, path.k_inhibitory,
                 (path.inhibitory_weight, path.inhibitory_weight),
@@ -1762,6 +1763,9 @@ class SpikingBrain:
         scaled = 0
 
         for proj in self.plastic:
+            if not getattr(proj, "scaled", True):
+                continue
+
             total = proj.weight.sum(1)
             budget = (
                 proj.weight.shape[1]

@@ -3,7 +3,7 @@
 (рот повторяет услышанное про себя, ПФК → рот на дендриты, буква → буква
 внутри рта) и произносится из рабочей памяти.
 
-    PYTHONPATH=. .venv/bin/python data/tools/spell_bench.py [reads=3] [go=6] [save=путь | load=путь] [show=N — окна рта у N слов] [ahp=мВ/мс — усталость рта] [inh=× торможение рта] [place=мВ — место слова в смысле] [pulse=период/ширина[/1 — нарастающий] мс — ритм толчков] [key=value ...]
+    PYTHONPATH=. .venv/bin/python data/tools/spell_bench.py [reads=3] [go=6] [save=путь | load=путь] [show=N — окна рта у N слов] [ahp=мВ/мс — усталость рта] [inh=× торможение рта] [place=мВ — место слова в смысле] [pulse=период/ширина[/1 — нарастающий] мс — ритм толчков] [plan=× план → выбор] [key=value ...]
 
 Новый мозг small: лепет (5 кругов) → чтение train-data reads раз без сна →
 проверка: в ПФК — только слово (без звука), рту — ровный ток go мВ (роль
@@ -26,6 +26,7 @@ ahp = None
 inh = 1.0
 place_mv = 30.0
 pulse = None
+plan_gain = 1.0
 load = save = None
 overrides = []
 
@@ -44,6 +45,8 @@ for kv in sys.argv[1:]:
         inh = float(v)
     elif k == "place":
         place_mv = float(v)
+    elif k == "plan":
+        plan_gain = float(v)
     elif k == "pulse":
         pulse = [float(x) for x in v.split("/")]
     elif k == "ahp":
@@ -82,11 +85,14 @@ if inh != 1.0:
         brain.projection(name).weight.mul_(inh)
 
 if ahp:
-    # Усталость клеток рта (sAHP) на стенде: ahp=мВ/мс.
+    # Усталость выхода рта (sAHP) на стенде: ahp=мВ/мс (слой выбора, если есть).
     import math
 
-    brain.slow_ahp_b[M.slice] = ahp[0]
-    brain.decay_slow_ahp[M.slice] = math.exp(-cfg.dt_ms / ahp[1])
+    brain.slow_ahp_b[OUT.slice] = ahp[0]
+    brain.decay_slow_ahp[OUT.slice] = math.exp(-cfg.dt_ms / ahp[1])
+
+if plan_gain != 1.0 and "articulator" in brain.areas:
+    brain.projection("motor -> articulator").weight.mul_(plan_gain)
 text = Path("train-data.md").read_text(encoding="utf-8")
 alphabet = sorted({c.lower() for c in text if not c.isspace()})
 

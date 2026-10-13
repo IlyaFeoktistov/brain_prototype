@@ -471,6 +471,34 @@ class SpikingBrain:
         else:
             self.ltp_gain = 1.0
         self.decay_minus = math.exp(-dt / cfg.stdp_tau_minus)
+
+        # Своё окно STDP у зон (AreaSpec.stdp_*): затухание следов — на клетку.
+        custom = [a for a in cfg.areas if getattr(a, "stdp_tau_plus", None) is not None]
+
+        if custom:
+            def per_cell(value: float) -> torch.Tensor:
+                return torch.full((self.n_slots,), float(value), device=self.device)
+
+            decay_plus, decay_rise = per_cell(self.decay_plus), per_cell(self.decay_rise)
+            decay_minus, ltp_gain = per_cell(self.decay_minus), per_cell(self.ltp_gain)
+
+            for spec in custom:
+                E = self.areas[spec.name].E
+                tau = spec.stdp_tau_plus
+                rise = spec.stdp_ltp_rise or 0.0
+                decay_plus[E.slice] = math.exp(-dt / tau)
+                decay_rise[E.slice] = math.exp(-dt / rise) if rise > 0 else 0.0
+                decay_minus[E.slice] = math.exp(-dt / (spec.stdp_tau_minus or cfg.stdp_tau_minus))
+
+                if rise > 0:
+                    peak_t = tau * rise / (tau - rise) * math.log(tau / rise)
+                    ltp_gain[E.slice] = 1.0 / (math.exp(-peak_t / tau) - math.exp(-peak_t / rise))
+                else:
+                    ltp_gain[E.slice] = 1.0
+
+            self.decay_plus, self.decay_rise = decay_plus, decay_rise
+            self.decay_minus, self.ltp_gain = decay_minus, ltp_gain
+
         self.decay_eligibility = math.exp(-dt / cfg.eligibility_tau)
         # Число фоновых входных спайков за шаг ~ Poisson(λ).
         self.noise_mean = cfg.background_rate_hz * dt / 1000.0

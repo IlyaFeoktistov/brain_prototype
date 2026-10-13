@@ -1269,7 +1269,9 @@ class SpikingBrain:
         self.v.copy_(torch.where(fired, cfg.v_reset, v))
         self.refractory.copy_(torch.where(fired, cfg.refractory_ms, self.refractory))
         self.adapt.mul_(self.decay_adapt).add_(self.adapt_b * self.spikes)
-        self.adapt_slow.mul_(self.decay_slow_ahp).add_(self.slow_ahp_b * self.spikes)
+        # Ацетилхолин блокирует sAHP (Madison & Nicoll 1984).
+        sahp = self.slow_ahp_b * (1.0 - cfg.ach_blocks_sahp * self.acetylcholine)
+        self.adapt_slow.mul_(self.decay_slow_ahp).add_(sahp * self.spikes)
 
         if cfg.base_circuit:
             # Ресурс восстанавливается к 1, спайк тратит долю stp_u.

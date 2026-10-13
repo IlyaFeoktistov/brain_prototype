@@ -153,6 +153,9 @@ def say(word: str) -> str:
 
     place = lang.concepts.get(word, allocate=False)
 
+    # Говорит — ацетилхолин низкий (вспоминание, не запись): усталость рта есть.
+    brain.set_acetylcholine(0.0)
+
     with brain.frozen():
         brain.run(1500.0)  # отдых: усталость рта от прошлого слова проходит (τ 1 с)
         brain.run(100.0)  # слово в памяти, рот молчит

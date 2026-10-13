@@ -217,6 +217,9 @@ class Articulators:
         self.blocks = dict(state.get("blocks", {}))
         self.codes = {}
 
+        for symbol in self.blocks:
+            self.code(symbol)
+
     def parts(self, char: str) -> list[str]:
         small = char.lower()
         return [small] + ([self.LOUD] if small != char else [])

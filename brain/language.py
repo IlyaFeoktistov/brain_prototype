@@ -880,6 +880,10 @@ class LanguageInterface:
             self._learn_spelling(rates, held, token)
             self._learn_primacy(place, token)
 
+        if learn_forms and self.articulators is not None and not self._own_speech:
+            # Цепочка звуков: соседние буквы повтора про себя — чистый STDP.
+            self.brain.hebbian(self.cfg.hebbian_rate)
+
         if learn_forms:
             meaning = self._area(rates, self.meaning)
 

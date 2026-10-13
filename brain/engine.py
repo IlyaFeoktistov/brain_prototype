@@ -863,12 +863,15 @@ class SpikingBrain:
         # говорит (LTP ≈ LTD), а во сне раздувал общее слово — учит их
         # совпадение (language._learn_context).
         coincidence = [p for p in self.plastic if p.modulator == "coincidence"]
+        # Чистый STDP без третьего фактора (цепочка звуков рта): след сам
+        # становится весом на каждом услышанном слове (hebbian()).
+        self.hebbian_paths = [p for p in self.plastic if p.modulator == "hebbian"]
         self.dopamine_mask = None
 
-        if self.encoding or inverted or coincidence:
+        if self.encoding or inverted or coincidence or self.hebbian_paths:
             self.dopamine_mask = torch.ones(self.n_plastic, dtype=torch.float16, device=self.device)
 
-            for p in self.encoding + coincidence:
+            for p in self.encoding + coincidence + self.hebbian_paths:
                 self.dopamine_mask[p.offset: p.offset + p.weight.numel()] = 0.0
 
             for p in inverted:
@@ -1520,6 +1523,31 @@ class SpikingBrain:
         for proj in self.encoding:
             proj.weight.add_(proj.eligibility, alpha=gain)
             proj.weight.clamp_(0.0, proj.cap)
+
+    def hebbian(self, rate: float) -> None:
+        """
+        STDP без третьего фактора (пути modulator="hebbian"): накопленный
+        след пар спайков сразу становится весом и обнуляется — учит каждое
+        услышанное, а не только неожиданное (связи коры, Markram 1997;
+        Bi & Poo 1998). Свежее — как всё выученное (early).
+        """
+
+        if not self.plasticity or rate <= 0 or not self.hebbian_paths:
+            return
+
+        for proj in self.hebbian_paths:
+            before = proj.weight.clone()
+            proj.weight.add_(proj.eligibility, alpha=rate)
+            ceiling = getattr(proj, "ceiling", None)
+
+            if ceiling is None:
+                proj.weight.clamp_(0.0, proj.cap)
+            else:
+                proj.weight.clamp_(min=0.0)
+                torch.minimum(proj.weight, ceiling, out=proj.weight)
+
+            proj.early.add_((proj.weight - before).to(proj.early.dtype))
+            proj.eligibility.zero_()
 
     def forget(self) -> None:
         """

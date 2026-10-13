@@ -623,8 +623,12 @@ def letter_mouth(areas: list[AreaSpec], pathways: list[PathwaySpec], articulator
         # дофамином, узкое окно; выученное — переходы букв). Выбранное не
         # повторяется — его блок выбора устал (8 мВ / 1 с), отдельного
         # тормозного пути не нужно. Потолок 1.5 — как был у связей рта.
+        # Учит чистый STDP (modulator "hebbian", language: brain.hebbian после
+        # каждого слова): [замер] со STDP + дофамином переходы не сходились —
+        # ×6 → ×12 чтения «н→а» 4.1 → 1.7, «м→о» ~0 (учились лишь неожиданные
+        # слова, по шумному повтору).
         PathwaySpec("articulator", "motor", k=400, weight=(0.0, 0.05), plastic=True, cap=1.5,
-                    k_inhibitory=0, predictive=False, scaled=False),
+                    k_inhibitory=0, predictive=False, scaled=False, modulator="hebbian"),
     ]
 
     return areas, pathways + letter_mouth_pathways()
@@ -1749,6 +1753,10 @@ class BrainConfig:
     # Слово учит свои буквы: ПФК → рот по совпадению, доля (cap − w).
     # [не подбиралось] 0.3 — как context_hebb_rate.
     spelling_rate: float = 0.3
+    # Скорость чистого STDP цепочки звуков (brain.hebbian после слова): след
+    # пары спайков ~A+ = 0.01 на пару; слово — десятки пар у соседних букв.
+    # [не подбиралось] 10: переход доходит до потолка 1.5 за ~десяток слов с ним.
+    hebbian_rate: float = 10.0
     # Сила записи: след STDP × это = прирост веса за одно слово. Запись с
     # одного раза — одно событие (плато, BTSP — Bittner 2017) даёт синапсу
     # почти полную силу: след одной пары спайков ≈ A+ × 0.5 ≈ 0.005, потолок

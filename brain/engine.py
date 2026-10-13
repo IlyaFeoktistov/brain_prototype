@@ -404,6 +404,17 @@ class SpikingBrain:
         self.decay_syn = torch.exp(-dt / self.tau_syn)
         self.decay_slow = math.exp(-dt / cfg.memory_tau_syn)
         self.decay_dend = math.exp(-dt / cfg.dendrite_tau_ms)
+        # Своё затухание ветки у зоны (AreaSpec.dendrite_tau_ms): у рта —
+        # быстрые события тонких веток (буква), а не NMDA-плато смысла.
+        custom_dend = [a for a in cfg.areas if getattr(a, "dendrite_tau_ms", None) is not None]
+
+        if custom_dend:
+            per_cell = torch.full((self.n_slots,), self.decay_dend, device=self.device)
+
+            for spec in custom_dend:
+                per_cell[self.areas[spec.name].E.slice] = math.exp(-dt / spec.dendrite_tau_ms)
+
+            self.decay_dend = per_cell.repeat_interleave(max(1, cfg.dendrite_branches))
         # Сколько плато ветки поднимает сому, мВ — по клеткам (своя у зоны).
         self.dendrite_soma = torch.full((self.n_slots,), float(cfg.dendrite_soma_mv), device=self.device)
 
@@ -731,6 +742,7 @@ class SpikingBrain:
             if proj is not None:
                 proj.predictive = path.predictive
                 proj.scaled = getattr(path, "scaled", True)
+                proj.dendrite = getattr(path, "dendrite", False)
             self._connect(
                 f"{path.src} -> {path.dst}.I", src.E, dst.I, path.k_inhibitory,
                 (path.inhibitory_weight, path.inhibitory_weight),
@@ -893,6 +905,16 @@ class SpikingBrain:
 
             for p in inverted:
                 self.dopamine_mask[p.offset: p.offset + p.weight.numel()] = -1.0
+
+        # Пути на дендриты из любой зоны (PathwaySpec.dendrite): часы → рот.
+        dendritic = [p for p in net if getattr(p, "dendrite", False)]
+        self.dendrite_syn = None
+
+        if dendritic:
+            self.dendrite_syn = torch.zeros(self.net_weight.numel(), dtype=torch.bool, device=self.device)
+
+            for p in dendritic:
+                self.dendrite_syn[p.offset: p.offset + p.weight.numel()] = True
 
         # Пути, передачу по которым подавляет ацетилхолин: доля подавления
         # на каждом синапсе (0 — не подавляется).
@@ -1198,6 +1220,9 @@ class SpikingBrain:
                 self.dendrite_pre.index_select(0, pre_of)
                 & self.dendrite_post.index_select(0, post)
             )
+
+            if self.dendrite_syn is not None:
+                to_dendrite = to_dendrite | self.dendrite_syn.index_select(0, synapses)
             branches = max(1, cfg.dendrite_branches)
             slot = post.long() * branches + self.net_branch.index_select(0, synapses).long()
             dendrite = torch.zeros_like(self.i_dend).index_add_(0, slot, weight * to_dendrite)

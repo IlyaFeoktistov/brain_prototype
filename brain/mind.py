@@ -5,7 +5,10 @@ import time
 
 import torch
 
-from brain.config import FEATURES, BrainConfig, hippocampus_areas, hippocampus_pathways
+from brain.config import (
+    FEATURES, BrainConfig, hippocampus_areas, hippocampus_pathways, learned_mouth, sequence_areas,
+    sequence_pathways,
+)
 from brain.engine import SpikingBrain
 from brain.language import LanguageInterface
 
@@ -28,6 +31,14 @@ class Mind:
         if cfg.neural_hippocampus and not any(a.name == "ca3" for a in cfg.areas):
             cfg.areas = cfg.areas + hippocampus_areas()
             cfg.pathways = cfg.pathways + hippocampus_pathways()
+
+        if cfg.sequence_enabled and not any(a.name == "sequence" for a in cfg.areas):
+            cfg.areas = cfg.areas + sequence_areas()
+            cfg.pathways = cfg.pathways + sequence_pathways()
+
+        # Рот учится: только новому мозгу (у загруженного рот уже есть).
+        if cfg.mouth_learns and not any(p.dst == "motor" and p.plastic for p in cfg.pathways):
+            cfg.areas, cfg.pathways = learned_mouth(cfg.areas, cfg.pathways)
 
         self.brain = SpikingBrain(cfg)
         self.language = LanguageInterface(self.brain, cfg)

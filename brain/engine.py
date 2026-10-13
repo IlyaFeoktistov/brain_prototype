@@ -1612,6 +1612,14 @@ class SpikingBrain:
             # быстрая во всех зонах; потом у зоны своя скорость.
             speed = 1.0 if self.developing else spec.homeostasis
             step = (self.cfg.homeostasis_rate * speed * error).clamp(-1.0, 1.0)
+
+            if spec.cell_homeostasis:
+                # У каждой клетки своя норма: выстрелившая теряет
+                # возбудимость, молчащая набирает; в среднем клетка
+                # стреляет на доле target_activity слов.
+                fired = (rates[E.slice] > 0).float()
+                step = self.cfg.homeostasis_rate * speed * (spec.target_activity - fired)
+
             self.bias[E.slice] = (self.bias[E.slice] + step).clamp(low, high)
 
     def grow(self, links: list[tuple[str, torch.Tensor, torch.Tensor]], count: int) -> int:

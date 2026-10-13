@@ -545,6 +545,8 @@ class LanguageInterface:
         # Слово -> колонка цели (врождённые, см. AreaSpec.columns); новое
         # слово берёт колонку слова, звучавшего давнее всех.
         self.goal_columns: dict[str, int] = {}
+        # Клетки последовательности (пре-SMA / Брока): фраза как целое.
+        self.sequence = self.brain.areas.get("sequence")
 
         # Какое чувство сейчас ощущается и с какого момента (адаптация).
         self._felt_mood: str | None = None
@@ -782,6 +784,11 @@ class LanguageInterface:
         if learn_forms and place is not None:
             self._learn_form(rates)
             self._grow_form(token, rates, place)
+
+        if learn_forms:
+            self._learn_chunk(rates)
+            self._learn_plan(rates, place)
+            self._learn_mouth(rates, place)
 
         if learn_forms:
             meaning = self._area(rates, self.meaning)
@@ -1116,6 +1123,7 @@ class LanguageInterface:
 
     def _learn_context(
         self, context: torch.Tensor, place: torch.Tensor, dopamine: float, source_area: str = "prefrontal",
+        step: float | None = None,
     ) -> None:
         """
         Путь «память → смысл» учится по совпадению под дофамином:
@@ -1123,6 +1131,7 @@ class LanguageInterface:
         пропорционально дофамину. STDP тут не работает: клетки памяти
         стреляют непрерывно, и сбалансированное окно даёт LTP ≈ LTD.
         Так же учится путь «цель → смысл» (цель горит непрерывно).
+        step — доля (cap − w) за раз без дофамина (план фразы).
         """
 
         rate = self.cfg.context_hebb_rate
@@ -1139,7 +1148,7 @@ class LanguageInterface:
         rows = place
         hit = torch.isin(proj.pre[rows], source.to(proj.pre.dtype)).float()
         level = dopamine / self.cfg.surprise_dopamine_gain
-        delta = rate * level * hit * (proj.cap - proj.weight[rows])
+        delta = (step if step is not None else rate * level) * hit * (proj.cap - proj.weight[rows])
         proj.weight[rows] += delta
         # Как всё выученное — сначала свежее (не поспал — забыл).
         proj.early[rows] += delta.to(proj.early.dtype)
@@ -1278,6 +1287,73 @@ class LanguageInterface:
         good, bad = drive[groups[0]].mean(), drive[groups[1]].mean()
 
         return float((good - bad) / self.cfg.value_cap)
+
+    def _learn_chunk(self, rates: torch.Tensor) -> None:
+        """
+        Клетки последовательности учатся узнавать фразу (instar, как
+        узнавание формы): выстрелившая клетка тянет свои входы из рабочей
+        памяти к узору слов, которые там сейчас звучат. Своя речь тоже —
+        фраза, которую мозг говорит, та же, что он слышал.
+        """
+
+        if self.sequence is None or not self.brain.plasticity or self.cfg.sequence_rate <= 0:
+            return
+
+        path = next((p for p in self.brain.plastic if p.name == "prefrontal -> sequence"), None)
+
+        if path is None:
+            return
+
+        active = (rates[path.post.slice] > 0).float()[:, None]
+
+        if not bool(active.any()):
+            return
+
+        held = (rates.index_select(0, path.pre.flatten().long()).view_as(path.weight) > 0).float()
+        path.weight.add_(self.cfg.sequence_rate * active * (path.cap * held - path.weight))
+
+    def _learn_plan(self, rates: torch.Tensor, place: torch.Tensor | None) -> None:
+        """
+        План фразы (GODIVA, Bohland 2010): клетки последовательности,
+        горящие на слове, связываются с местом этого слова по совпадению —
+        фраза будит все свои слова сразу, а не только следующее. Порядок
+        даёт связь слово → слово, конец — план исчерпан.
+        """
+
+        rate = self.cfg.sequence_plan_rate
+
+        if self.sequence is None or place is None or rate <= 0 or not self.brain.plasticity:
+            return
+
+        chunk = (self._area(rates, self.sequence) > 0).nonzero().flatten()
+
+        if len(chunk):
+            self._learn_context(chunk, place, 0.0, "sequence", step=rate)
+
+    def _learn_mouth(self, rates: torch.Tensor, place: torch.Tensor | None) -> None:
+        """
+        Рот учится внутренней речью: клетки рта, выстрелившие на слове,
+        тянут входы из смысла к выстрелившим клеткам (instar) и отращивают
+        новые от места слова — у слова свои клетки рта со сходящимся входом.
+        """
+
+        if not self.cfg.mouth_learns or place is None or not self.brain.plasticity:
+            return
+
+        path = next((p for p in self.brain.plastic if p.name == "association -> motor"), None)
+
+        if path is None:
+            return
+
+        fired = self._area(rates, self.motor) > 0
+
+        if not bool(fired.any()):
+            return
+
+        active = fired.float()[:, None]
+        pre = (rates.index_select(0, path.pre.flatten().long()).view_as(path.weight) > 0).float()
+        path.weight.add_(self.cfg.mouth_rate * active * (path.cap * pre - path.weight))
+        self._growth.append(("association -> motor", place, fired.nonzero().flatten()))
 
     def _form_path(self):
         return next(
@@ -1668,6 +1744,12 @@ class LanguageInterface:
             goal = self._area(self.last_rates, self.goal)
             aims = (goal > 0).nonzero().flatten()
 
+        # Какая фраза идёт — клетки последовательности до нового слова.
+        chunk = None
+
+        if self.last_rates is not None and self.sequence is not None:
+            chunk = (self._area(self.last_rates, self.sequence) > 0).nonzero().flatten()
+
         if self.last_rates is not None:
             memory = self._area(self._without_current(self.last_rates), self.context)
             context = memory.topk(min(self.cfg.context_grow_cells, memory.numel())).indices
@@ -1683,6 +1765,9 @@ class LanguageInterface:
 
             if aims is not None and len(aims):
                 self._capture_context(aims, self._place, "goal")
+
+            if chunk is not None and len(chunk):
+                self._capture_context(chunk, self._place, "sequence")
 
         if (expected_state is not None or neural) and token in self.semantic:
             if not neural:
@@ -1740,6 +1825,13 @@ class LanguageInterface:
                                 self._owed.append((column, self._place, step.dopamine, "goal"))
 
                         self._learn_context(aims, self._place, step.dopamine, "goal")
+
+                    if chunk is not None and len(chunk):
+                        # Фраза учится тем же правилом: её клетки растят
+                        # синапсы к месту слова, которое в ней прозвучало.
+                        self._growth.append(("sequence -> association", chunk, self._place, branch))
+                        self._owed.append((chunk, self._place, step.dopamine, "sequence"))
+                        self._learn_context(chunk, self._place, step.dopamine, "sequence")
 
                 # Неожиданный переход закрепляется: dopamine
                 # превращает eligibility traces только что

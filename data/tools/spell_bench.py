@@ -3,7 +3,7 @@
 (рот повторяет услышанное про себя, ПФК → рот на дендриты, буква → буква
 внутри рта) и произносится из рабочей памяти.
 
-    PYTHONPATH=. .venv/bin/python data/tools/spell_bench.py [reads=3] [go=6] [save=путь | load=путь] [show=N — окна рта у N слов] [ahp=мВ/мс — усталость рта] [inh=× торможение рта] [place=мВ — место слова в смысле] [key=value ...]
+    PYTHONPATH=. .venv/bin/python data/tools/spell_bench.py [reads=3] [go=6] [save=путь | load=путь] [show=N — окна рта у N слов] [ahp=мВ/мс — усталость рта] [inh=× торможение рта] [place=мВ — место слова в смысле] [pulse=период/ширина[/1 — нарастающий] мс — ритм толчков] [key=value ...]
 
 Новый мозг small: лепет (5 кругов) → чтение train-data reads раз без сна →
 проверка: в ПФК — только слово (без звука), рту — ровный ток go мВ (роль
@@ -25,6 +25,7 @@ show = 0
 ahp = None
 inh = 1.0
 place_mv = 30.0
+pulse = None
 load = save = None
 overrides = []
 
@@ -43,6 +44,8 @@ for kv in sys.argv[1:]:
         inh = float(v)
     elif k == "place":
         place_mv = float(v)
+    elif k == "pulse":
+        pulse = [float(x) for x in v.split("/")]
     elif k == "ahp":
         ahp = [float(x) for x in v.split("/")]
     elif k == "save":
@@ -136,14 +139,40 @@ def say(word: str) -> str:
     place = lang.concepts.get(word, allocate=False)
 
     with brain.frozen():
+        brain.run(1500.0)  # отдых: усталость рта от прошлого слова проходит (τ 1 с)
         brain.run(100.0)  # слово в памяти, рот молчит
         # Мозг думает это слово: горит его место в смысловой коре.
         if place is not None and place_mv > 0:
             brain.feel("association", place, place_mv)
 
-        brain.feel("motor", torch.arange(M.size, device=brain.device), go)
-        brain.run(300.0)
-        brain.feel("motor", None, 0.0)
+        everyone = torch.arange(M.size, device=brain.device)
+
+        if pulse:
+            # Ритм «давай» на стенде: толчок go мВ шириной pulse[1] мс каждые
+            # pulse[0] мс (идея перед генератором ритма из клеток).
+            period, width = pulse[0], pulse[1]
+            ramp = len(pulse) > 2 and pulse[2] > 0
+            t = 0.0
+
+            while t < 300.0:
+                if ramp:
+                    # Нарастающий толчок (как фаза тета): гонка к порогу.
+                    steps = max(1, int(width // 4))
+
+                    for i in range(steps):
+                        brain.feel("motor", everyone, go * (i + 1) / steps)
+                        brain.run(4.0)
+                else:
+                    brain.feel("motor", everyone, go)
+                    brain.run(width)
+
+                brain.feel("motor", None, 0.0)
+                brain.run(period - width)
+                t += period
+        else:
+            brain.feel("motor", everyone, go)
+            brain.run(300.0)
+            brain.feel("motor", None, 0.0)
         brain.feel("association", None, 0.0)
         branches = brain.i_dend.view(brain.n_slots, -1)[M.start: M.stop].amax(1)
         mine = torch.cat([art.code(c) for c in word.lower() if c in art.codes])
@@ -156,10 +185,10 @@ def say(word: str) -> str:
 
     if show > 0:
         print("    " + " | ".join(
-            f"{int(b.sum())}:" + "".join(c for c, _ in art.said(b.to(brain.device), 0.25)[:3]) for b in bins[5:20]
+            f"{int(b.sum())}:" + "".join(c for c, _ in art.said(b.to(brain.device), 0.25)[:3]) for b in bins[80:95]
         ))
 
-    for b in bins[5:]:
+    for b in bins[80:]:
         said = art.said(b.to(brain.device), 0.5)
         letter = said[0][0] if said else ""
 

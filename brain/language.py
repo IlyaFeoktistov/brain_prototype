@@ -153,6 +153,49 @@ class Ear:
 
 
 # ==================================================================
+# РОТ: символ <-> артикуляция (зеркало уха)
+# ==================================================================
+
+
+class Articulators:
+    """
+    Тело рта: у каждого символа свой врождённый набор клеток моторной
+    зоны — его артикуляция (как у уха свои каналы улитки). Что сказано
+    наружу — какой набор выстрелил: это «мышцы», а не решение мозга.
+    Заглавная — строчная + общий признак «крупно», как у уха.
+    """
+
+    LOUD = "крупно"
+
+    def __init__(self, size: int, cells: int, device):
+        self.size = size
+        self.cells = min(cells, size)
+        self.device = device
+        self.codes: dict[str, torch.Tensor] = {}
+
+    def code(self, symbol: str) -> torch.Tensor:
+        code = self.codes.get(symbol)
+
+        if code is None:
+            rng = torch.Generator().manual_seed(Ear._seed("рот:" + symbol))
+            code = torch.randperm(self.size, generator=rng)[: self.cells].to(self.device)
+            self.codes[symbol] = code
+
+        return code
+
+    def parts(self, char: str) -> list[str]:
+        small = char.lower()
+        return [small] + ([self.LOUD] if small != char else [])
+
+    def said(self, motor: torch.Tensor, threshold: float = 0.5) -> list[tuple[str, float]]:
+        """Какие артикуляции выстрелили: доля клеток символа, по убыванию."""
+
+        fired = motor > 0
+        found = [(s, float(fired[c].float().mean())) for s, c in self.codes.items()]
+        return sorted([f for f in found if f[1] >= threshold], key=lambda f: -f[1])
+
+
+# ==================================================================
 # READOUT: состояние зоны -> токен
 # ==================================================================
 
@@ -545,6 +588,11 @@ class LanguageInterface:
         # Слово -> колонка цели (врождённые, см. AreaSpec.columns); новое
         # слово берёт колонку слова, звучавшего давнее всех.
         self.goal_columns: dict[str, int] = {}
+        # Рот по буквам: артикуляции символов в моторной зоне.
+        self.articulators = (
+            Articulators(self.motor.E.size, cfg.articulator_cells, self.device)
+            if cfg.mouth_letters else None
+        )
         # Клетки последовательности (пре-SMA / Брока): фраза как целое.
         self.sequence = self.brain.areas.get("sequence")
 
@@ -1354,6 +1402,53 @@ class LanguageInterface:
         pre = (rates.index_select(0, path.pre.flatten().long()).view_as(path.weight) > 0).float()
         path.weight.add_(self.cfg.mouth_rate * active * (path.cap * pre - path.weight))
         self._growth.append(("association -> motor", place, fired.nonzero().flatten()))
+
+    def babble(self, symbols: list[str], rounds: int = 1, seed: int = 0) -> int:
+        """
+        Лепет: рот произносит символ (его артикуляция горит), ухо слышит
+        звук, пока рот ещё говорит, — слух → рот учится по совпадению
+        (обратная модель, DIVA). Порядок случайный. Вернуть число звуков.
+        """
+
+        if self.articulators is None:
+            return 0
+
+        rng = random.Random(seed)
+        said = 0
+
+        for _ in range(rounds):
+            order = list(symbols)
+            rng.shuffle(order)
+
+            for symbol in order:
+                cells = torch.cat([self.articulators.code(p) for p in self.articulators.parts(symbol)])
+                self.brain.feel("motor", cells, self.cfg.babble_mv)
+                self.brain.run(self.cfg.babble_ms)
+                # Звук приходит, пока артикуляция ещё идёт.
+                rates = self.brain.observe(self.cfg.stimulus_ms, self.ear.encode(symbol))
+                self.brain.feel("motor", None, 0.0)
+                self._learn_echo(rates)
+                self.brain.run(self.cfg.gap_ms * 5)
+                said += 1
+
+        return said
+
+    def _learn_echo(self, rates: torch.Tensor) -> None:
+        """Слух → рот (instar): клетки рта, которые говорили, тянут свои
+        входы из слуха к узору услышанного звука."""
+
+        path = next((p for p in self.brain.plastic if p.name == "auditory -> motor"), None)
+
+        if path is None or not self.brain.plasticity:
+            return
+
+        active = (rates[path.post.slice] > 0).float()[:, None]
+
+        if not bool(active.any()):
+            return
+
+        heard = (rates.index_select(0, path.pre.flatten().long()).view_as(path.weight) > 0).float()
+        path.weight.add_(self.cfg.echo_rate * active * (path.cap * heard - path.weight))
 
     def _form_path(self):
         return next(

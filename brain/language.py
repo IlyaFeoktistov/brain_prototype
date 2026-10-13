@@ -1471,7 +1471,7 @@ class LanguageInterface:
                 sound = symbol * self.cfg.babble_repeat
                 rates = self.brain.observe(self.ear.duration(sound), self.ear.encode(sound))
                 self.brain.feel("motor", None, 0.0)
-                self._learn_echo(rates)
+                self._learn_echo(rates, cells)
                 self.brain.run(self.cfg.gap_ms * 5)
                 said += 1
 
@@ -1544,22 +1544,39 @@ class LanguageInterface:
         proj.weight[fired] += delta
         proj.early[fired] += delta.to(proj.early.dtype)
 
-    def _learn_echo(self, rates: torch.Tensor) -> None:
-        """Слух → рот (instar): клетки рта, которые говорили, тянут свои
-        входы из слуха к узору услышанного звука."""
+    def _learn_echo(self, rates: torch.Tensor, commanded: torch.Tensor | None = None) -> None:
+        """
+        Слух → рот: клетки рта, которым приказано говорить (копия команды),
+        тянут свои входы из слуха к узору услышанного звука (instar); клетки,
+        выстрелившие без приказа, — ошибка: их входы от этого звука слабеют
+        (обучение обратной модели по ошибке относительно команды — DIVA;
+        как лазящие волокна мозжечка). [замер] instar у всех выстреливших:
+        похожий символ (ф при «о») тянулся к чужому звуку — путаница росла.
+        """
 
         path = next((p for p in self.brain.plastic if p.name == "auditory -> motor"), None)
 
         if path is None or not self.brain.plasticity:
             return
 
-        active = (rates[path.post.slice] > 0).float()[:, None]
+        fired = rates[path.post.slice] > 0
 
-        if not bool(active.any()):
+        if not bool(fired.any()):
             return
 
         heard = (rates.index_select(0, path.pre.flatten().long()).view_as(path.weight) > 0).float()
-        path.weight.add_(self.cfg.echo_rate * active * (path.cap * heard - path.weight))
+
+        if commanded is None:
+            told = fired
+        else:
+            told = torch.zeros_like(fired)
+            told[commanded] = True
+
+        right = (fired & told).float()[:, None]
+        wrong = (fired & ~told).float()[:, None]
+        rate = self.cfg.echo_rate
+        path.weight.add_(rate * right * (path.cap * heard - path.weight))
+        path.weight.sub_(rate * wrong * heard * path.weight)
 
     def _form_path(self):
         return next(

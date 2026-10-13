@@ -241,12 +241,16 @@ def say(word: str) -> str:
     return "".join(out)
 
 
-right = 0
+right = first = two = 0
 test = [w for w, _ in words.most_common(20)][: show or 20]
 
 for w in test:
     got = say(w)
-    right += got == w.lower()
+    word = w.lower()
+    right += got == word
+    first += got[:1] == word[:1]
+    two += len(word) >= 2 and got[:2] == word[:2]
     print(f"  {w:12s} → {got}")
 
-print(f"верно {right}/{len(test)}")
+longer = sum(len(w) >= 2 for w in test)
+print(f"верно {right}/{len(test)}; первая буква {first}/{len(test)}, первые две {two}/{longer}")

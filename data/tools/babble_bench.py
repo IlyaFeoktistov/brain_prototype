@@ -56,7 +56,8 @@ for s in alphabet + [art.LOUD]:
 
 def mirror(symbol: str) -> tuple[list, int]:
     with brain.frozen():
-        rates = brain.observe(cfg.stimulus_ms, lang.ear.encode(symbol))
+        sound = symbol * cfg.babble_repeat  # как при лепете
+        rates = brain.observe(lang.ear.duration(sound), lang.ear.encode(sound))
         brain.run(cfg.gap_ms * 5)
 
     motor = rates[M.slice]
@@ -102,7 +103,7 @@ for word in ["москва", "столица", "вода", "Париж"]:
     brain.on_chunk = chunk
 
     with brain.frozen():
-        brain.run(cfg.stimulus_ms, lang.ear.encode(word))
+        brain.run(lang.ear.duration(word), lang.ear.encode(word))
         brain.run(40.0)
 
     brain.on_chunk = None

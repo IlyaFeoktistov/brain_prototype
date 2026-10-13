@@ -72,6 +72,14 @@ class Ear:
 
         return raster
 
+    def duration(self, token: str) -> float:
+        """Сколько звучит токен, мс: по буквам (letter_ms) или поровну."""
+
+        if self.cfg.letter_ms > 0:
+            return self.cfg.letter_ms * max(1, len(token))
+
+        return self.cfg.stimulus_ms
+
     def _code(self, token: str) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Компактный код звучания: 32 канала + узор спайков [steps, 32].
@@ -85,7 +93,7 @@ class Ear:
             return code
 
         cfg = self.cfg
-        steps = int(round(cfg.stimulus_ms / cfg.dt_ms))
+        steps = int(round(self.duration(token) / cfg.dt_ms))
         p = cfg.sensory_rate_hz * cfg.dt_ms / 1000.0
 
         if cfg.ear_letters:
@@ -802,7 +810,7 @@ class LanguageInterface:
         if gate:
             rates = self._listen_and_prepare(sound, place, token)
         else:
-            rates = self.brain.observe(self.cfg.stimulus_ms, sound)
+            rates = self.brain.observe(sound.shape[0] * self.cfg.dt_ms, sound)
 
         self.health.word(rates)
 
@@ -1432,8 +1440,10 @@ class LanguageInterface:
                 cells = torch.cat([self.articulators.code(p) for p in self.articulators.parts(symbol)])
                 self.brain.feel("motor", cells, self.cfg.babble_mv)
                 self.brain.run(self.cfg.babble_ms)
-                # Звук приходит, пока артикуляция ещё идёт.
-                rates = self.brain.observe(self.cfg.stimulus_ms, self.ear.encode(symbol))
+                # Звук приходит, пока артикуляция ещё идёт. Лепет — долгий
+                # звук («ммм», «ба-ба-ба»): символ тянется babble_repeat раз.
+                sound = symbol * self.cfg.babble_repeat
+                rates = self.brain.observe(self.ear.duration(sound), self.ear.encode(sound))
                 self.brain.feel("motor", None, 0.0)
                 self._learn_echo(rates)
                 self.brain.run(self.cfg.gap_ms * 5)
@@ -2055,7 +2065,7 @@ class LanguageInterface:
             amplitude[hint] += self.cfg.episode_recall_mv * self._recall_strength
 
         self.brain.feel("association", self._everyone, amplitude)
-        rates = self.brain.observe(self.cfg.stimulus_ms, sound)
+        rates = self.brain.observe(sound.shape[0] * self.cfg.dt_ms, sound)
 
         if basal:
             # Пауза смены реплики: звук кончился, петля базальных ганглиев
@@ -2508,8 +2518,9 @@ class LanguageInterface:
         # слово и пауза короче, чем наяву.
         compression = self.cfg.replay_compression
         cfg = self.cfg
-        stimulus, pause = cfg.stimulus_ms, cfg.rest_ms
+        stimulus, pause, letter = cfg.stimulus_ms, cfg.rest_ms, cfg.letter_ms
         cfg.stimulus_ms, cfg.rest_ms = stimulus / compression, pause / compression
+        cfg.letter_ms = letter / compression
 
         try:
             for step in self.experience(tokens):
@@ -2529,7 +2540,7 @@ class LanguageInterface:
             report.sentences += 1
             self.rest()
         finally:
-            cfg.stimulus_ms, cfg.rest_ms = stimulus, pause
+            cfg.stimulus_ms, cfg.rest_ms, cfg.letter_ms = stimulus, pause, letter
 
     @property
     def drowsy(self) -> bool:

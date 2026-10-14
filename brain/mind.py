@@ -6,7 +6,7 @@ import time
 import torch
 
 from brain.config import (
-    FEATURES, BrainConfig, hippocampus_areas, hippocampus_pathways, learned_mouth, letter_mouth, sequence_areas,
+    FEATURES, BrainConfig, eye_areas, hippocampus_areas, hippocampus_pathways, learned_mouth, letter_mouth, sequence_areas,
     sequence_pathways,
 )
 from brain.engine import SpikingBrain
@@ -35,6 +35,9 @@ class Mind:
         if cfg.sequence_enabled and not any(a.name == "sequence" for a in cfg.areas):
             cfg.areas = cfg.areas + sequence_areas()
             cfg.pathways = cfg.pathways + sequence_pathways()
+
+        if cfg.eye and not any(a.name == "visual" for a in cfg.areas):
+            cfg.areas = cfg.areas + eye_areas()
 
         if cfg.mouth_letters and not any(p.src == "auditory" and p.dst == "motor" for p in cfg.pathways):
             cfg.areas, cfg.pathways = letter_mouth(

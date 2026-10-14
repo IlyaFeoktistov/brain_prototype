@@ -288,7 +288,7 @@ class SpikingBrain:
         self._init_state()
 
         self.sensory_spikes = torch.zeros(
-            cfg.sensory_size, device=self.device
+            self.n_receptors, device=self.device
         )
 
     # ==============================================================
@@ -314,6 +314,16 @@ class SpikingBrain:
             self.areas[spec.name] = Area(spec.name, spec.title, spec.kind, E, I)
 
         self.n = start
+        # Органы-датчики: участки общего массива рецепторов подряд.
+        self.sensors = [sensor for sensor in cfg.sensors() if sensor.area in self.areas]
+        self.sensor_offsets = []
+        offset = 0
+
+        for sensor in self.sensors:
+            self.sensor_offsets.append(offset)
+            offset += sensor.size
+
+        self.n_receptors = offset
         # Фиктивные нейроны [n, n_slots): никогда не стреляют, на них
         # указывают пустые ячейки таблиц синапсов. Их много, чтобы
         # пустые ячейки не дрались за один адрес (atomic-конфликты).
@@ -748,26 +758,73 @@ class SpikingBrain:
                 (path.inhibitory_weight, path.inhibitory_weight),
             )
 
-        # ---- ухо: sensory -> слуховая кора ----
-        ear = self.areas["auditory"]
-        k = min(cfg.k_sensory, cfg.sensory_size)
+        # ---- органы-датчики: рецепторы -> своя зона ----
+        # У каждого органа свой участок общего массива рецепторов: ухо —
+        # первым (как всегда), дальше остальные.
+        for sensor, offset in zip(self.sensors, self.sensor_offsets):
+            area = self.areas[sensor.area]
 
-        for pop, gain in ((ear.E, 1.0), (ear.I, cfg.sensory_inhibitory_gain)):
-            w = cfg.sensory_weight * gain
-            self.projections.append(
-                Projection(
-                    f"ear -> {pop.name}",
-                    "sensory",
-                    torch.randint(
-                        0, cfg.sensory_size, (pop.size, k),
-                        device=self.device, generator=self.generator,
-                    ),
-                    pop,
-                    torch.full((pop.size, k), w, device=self.device),
+            for pop, gain in ((area.E, 1.0), (area.I, sensor.inhibitory_gain)):
+                if sensor.wiring == "oriented" and pop is area.E:
+                    pre, weight = self._wire_oriented(sensor, pop.size)
+                else:
+                    # Случайные рецепторы своего органа (торможение сетчатки
+                    # в V1 — тоже широкое, без формы поля).
+                    k = min(sensor.k, sensor.size)
+                    pre = torch.randint(
+                        0, sensor.size, (pop.size, k), device=self.device, generator=self.generator,
+                    )
+                    weight = torch.full((pop.size, k), sensor.weight, device=self.device)
+
+                self.projections.append(
+                    Projection(
+                        f"{sensor.name} -> {pop.name}", "sensory", pre + offset, pop, weight * gain,
+                    )
                 )
-            )
 
         self._pack()
+
+    def _wire_oriented(self, sensor, cells: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Сетчатка → V1: простая клетка видит штрих одной ориентации в своём
+        месте. Центральная полоса OFF (тёмный штрих на светлом) шириной в
+        шаг между местами — 2 × 5 рецепторов, по бокам вплотную по 5 ON
+        (светлый фон рядом со штрихом): входы, выстроенные по полю простой
+        клетки (Hubel & Wiesel 1962; Reid & Alonso 1995). Поля соседей
+        перекрываются: штрих в пиксель не проходит между местами. [замер]
+        rf-расчёт (scratchpad): с полосой в пиксель на сетке через 2 px
+        горизонтальная линия будила клетки 0° слабее всех (109 против 482 у
+        45°) — центр стоял рядом со штрихом. 4 ориентации (0°, 45°, 90°,
+        135°) в каждом месте, места — ровной сеткой по полю. Рецепторы:
+        слой ON [0, rows·cols), слой OFF [rows·cols, 2·rows·cols).
+        """
+
+        rows, cols = sensor.rows, sensor.cols
+        layer = rows * cols
+        places = max(1, cells // 4)
+        # Сетка мест с тем же соотношением сторон, что поле.
+        grid_r = max(1, round((places * rows / cols) ** 0.5))
+        grid_c = max(1, places // grid_r)
+        cell = torch.arange(cells, device=self.device)
+        angle = (cell % 4).float() * math.pi / 4
+        place = (cell // 4) % (grid_r * grid_c)
+        r0 = (place // grid_c).float().add(0.5).mul(rows / grid_r).sub(0.5)
+        c0 = (place % grid_c).float().add(0.5).mul(cols / grid_c).sub(0.5)
+        dr, dc = -torch.sin(angle), torch.cos(angle)  # вдоль штриха
+        t = torch.arange(-2, 3, device=self.device).float()
+        pre, sign = [], []
+
+        for side, layer_offset in ((-0.5, layer), (0.5, layer), (-1.5, 0), (1.5, 0)):
+            # Сдвиг поперёк штриха (перпендикуляр: (dc, -dr)).
+            r = r0[:, None] + t[None, :] * dr[:, None] + side * dc[:, None]
+            c = c0[:, None] + t[None, :] * dc[:, None] - side * dr[:, None]
+            r = (r + 0.5).floor().long().clamp(0, rows - 1)
+            c = (c + 0.5).floor().long().clamp(0, cols - 1)
+            pre.append(layer_offset + r * cols + c)
+
+        pre = torch.cat(pre, dim=1)
+        weight = torch.full(pre.shape, sensor.weight, device=self.device)
+        return pre, weight
 
     def _pack(self) -> None:
         """
@@ -1172,9 +1229,9 @@ class SpikingBrain:
         )
 
 
-        # Вход уха на CHUNK шагов вперёд.
+        # Вход органов-датчиков на CHUNK шагов вперёд.
         self.ear_input = torch.zeros(
-            self.CHUNK, cfg.sensory_size, device=self.device
+            self.CHUNK, self.n_receptors, device=self.device
         )
 
         # Структурная пластичность: сколько синапсов отмерло и выросло.
@@ -1477,9 +1534,10 @@ class SpikingBrain:
             begin = c * self.CHUNK
 
             if sensory is not None and begin < sensory.shape[0]:
+                # Растр может быть уже массива (только ухо: его участок первый).
                 part = sensory[begin: begin + self.CHUNK]
-                self.ear_input[: len(part)].copy_(part)
-                self.ear_input[len(part):].zero_()
+                self.ear_input.zero_()
+                self.ear_input[: len(part), : part.shape[1]].copy_(part)
             else:
                 self.ear_input.zero_()
 

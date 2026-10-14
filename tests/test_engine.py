@@ -177,3 +177,22 @@ def test_health_is_clean_and_catches_runaway(mind):
     language.health.pause(rates)
     snap = language.health.sentence("очаг")
     assert any("в тишине" in p for p in snap.problems)
+
+
+def test_axon_delays_between_areas():
+    # Между зонами спайк идёт axon_delay_ms ±50% (лишние шаги сверху одного),
+    # внутри зоны — через шаг, как раньше; мозг с задержками живёт без NaN.
+    mind = make_mind(axon_delays=True)
+    brain = mind.brain
+    inner = brain.projection("association: E->E")
+    across = next(p for p in brain.projections if getattr(p, "pre_pop", None) is not None
+                  and p.pre_pop.name.split(".")[0] != p.post.name.split(".")[0] and p.weight.numel())
+    delay = lambda p: brain.net_delay[p.offset: p.offset + p.weight.numel()].float()
+    steps = brain.cfg.axon_delay_ms / brain.cfg.dt_ms
+
+    assert float(delay(inner).max()) == 0.0
+    assert 0.5 * steps - 1 <= float(delay(across).mean()) <= 1.5 * steps - 1
+    assert brain.delay_slots > 1
+
+    mind.language.read_text(FACTS)
+    assert torch.isfinite(brain.v[: brain.n]).all()

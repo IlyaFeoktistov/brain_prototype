@@ -987,6 +987,28 @@ class SpikingBrain:
             p.branch = self.net_branch[p.offset: p.offset + p.weight.numel()].view(p.weight.shape)
         self.ear_pre, self.ear_post, self.ear_weight = flatten(sensory, dummy=False)
 
+        # Задержка каждого синапса — лишние шаги сверху обычного одного (0 —
+        # приходит на следующем шаге, как всегда). Между зонами — axon_delay_ms
+        # ±50%; свой генератор — проводка не сдвигается.
+        self.net_delay = torch.zeros(self.net_weight.shape, dtype=torch.int16, device=self.device)
+
+        if getattr(self.cfg, "axon_delays", False):
+            delays = torch.Generator(device=self.device).manual_seed(self.cfg.seed + 11)
+            steps = self.cfg.axon_delay_ms / self.cfg.dt_ms
+
+            for p in net:
+                src = getattr(p, "pre_pop", None)
+
+                if src is None or src.name.split(".")[0] == p.post.name.split(".")[0]:
+                    continue
+
+                n = p.weight.numel()
+                jitter = 1.0 + torch.rand(n, device=self.device, generator=delays) - 0.5
+                extra = (steps * jitter).round().clamp(min=1) - 1
+                self.net_delay[p.offset: p.offset + n] = extra.to(torch.int16)
+
+        self.delay_slots = int(self.net_delay.max()) + 1
+
         self.n_synapses = self.net_weight.numel() - self.DUMMY_SYNAPSES
         self.n_plastic = sum(p.weight.numel() for p in self.plastic)
 
@@ -1246,6 +1268,12 @@ class SpikingBrain:
         z = lambda: torch.zeros(self.n_slots, device=self.device)
 
         self.v = cfg.v_rest + self._uniform((self.n_slots,), 0.0, 10.0)
+        # Спайки в пути (задержки аксонов): кольцо [шагов вперёд, клеток] — что
+        # придёт к сому и к веткам через столько-то шагов; tick — номер шага.
+        branches = max(1, cfg.dendrite_branches)
+        self.pending = torch.zeros(self.delay_slots, self.n_slots, device=self.device)
+        self.pending_dend = torch.zeros(self.delay_slots, self.n_slots * branches, device=self.device)
+        self.tick = torch.zeros(1, dtype=torch.long, device=self.device)
         self.i_syn = z()
         self.i_slow = z()
         # Дендритный ток (контекст из рабочей памяти, см. dendritic_context).
@@ -1368,7 +1396,16 @@ class SpikingBrain:
                 to_dendrite = to_dendrite | self.dendrite_syn.index_select(0, synapses)
             branches = max(1, cfg.dendrite_branches)
             slot = post.long() * branches + self.net_branch.index_select(0, synapses).long()
-            dendrite = torch.zeros_like(self.i_dend).index_add_(0, slot, weight * to_dendrite)
+
+            if self.delay_slots > 1:
+                # В путь: придёт к ветке через свою задержку.
+                ahead = (self.tick + self.net_delay.index_select(0, synapses).long()) % self.delay_slots
+                self.pending_dend.view(-1).index_add_(0, ahead * self.i_dend.numel() + slot, weight * to_dendrite)
+                now = self.tick % self.delay_slots
+                dendrite = self.pending_dend.index_select(0, now).squeeze(0)
+                self.pending_dend.index_fill_(0, now, 0.0)
+            else:
+                dendrite = torch.zeros_like(self.i_dend).index_add_(0, slot, weight * to_dendrite)
             self.i_dend.mul_(self.decay_dend).add_(dendrite)
             weight = weight * ~to_dendrite
 
@@ -1379,7 +1416,17 @@ class SpikingBrain:
             # стреляет выше нормы).
             weight = torch.where(weight < 0, weight * self.inh_gain.index_select(0, post), weight)
 
-        drive.index_add_(0, post, weight)
+        if self.delay_slots > 1:
+            # В путь: каждый синапс доставит спайк через свою задержку; к соме
+            # приходит то, что было в пути и пришло сейчас.
+            ahead = (self.tick + self.net_delay.index_select(0, synapses).long()) % self.delay_slots
+            self.pending.view(-1).index_add_(0, ahead * self.n_slots + post.long(), weight)
+            now = self.tick % self.delay_slots
+            drive.add_(self.pending.index_select(0, now).squeeze(0))
+            self.pending.index_fill_(0, now, 0.0)
+            self.tick.add_(1)
+        else:
+            drive.index_add_(0, post, weight)
 
         if self.proc_rows is not None:
             # Врождённые пути с постоянным весом: получатели — из хеша.
@@ -2292,7 +2339,7 @@ class SpikingBrain:
         "v", "i_syn", "i_slow", "i_dend", "pool", "area_pool", "adapt", "adapt_slow", "refractory", "spikes",
         "trace_pre", "trace_pre_rise", "ltp_kernel", "trace_post", "counts", "eligibility",
         "eligibility_scale", "dropped", "bias", "interoception", "kick_current", "kick_left", "stp_x", "inh_gain",
-        "chemistry",
+        "chemistry", "pending", "pending_dend", "tick",
     )
 
     def _snapshot(self) -> dict:

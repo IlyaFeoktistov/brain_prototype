@@ -606,6 +606,7 @@ class SpikingBrain:
         topographic: float = 0.0,
         blocks: int = 0,
         shift: int = 0,
+        retinotopic: float = 0.0,
     ) -> Projection | None:
         if blocks > 0:
             k = blocks
@@ -617,7 +618,7 @@ class SpikingBrain:
 
         # Врождённый путь с постоянным весом — не храним, а вычисляем
         # (топографический хранится: хеш получателей не знает карты).
-        if self.cfg.procedural_wiring and not plastic and weight[0] == weight[1] != 0 and not topographic and not blocks:
+        if self.cfg.procedural_wiring and not plastic and weight[0] == weight[1] != 0 and not topographic and not blocks and not retinotopic:
             proj = ProceduralProjection(
                 name, pre_pop, post, k, weight[0],
                 seed=self.cfg.seed * 1009 + len(self.projections), device=self.device,
@@ -636,6 +637,8 @@ class SpikingBrain:
             first = (torch.arange(post.size, device=self.device) // blocks - shift) * blocks
             pre = first[:, None] + torch.arange(blocks, device=self.device)[None, :]
             pre = pre_pop.start + pre.clamp(min=0, max=pre_pop.size - 1)
+        elif retinotopic > 0:
+            pre = self._retinotopic_pre(post, k, pre_pop, retinotopic)
         elif topographic > 0:
             pre = self._topographic_pre(post, k, pre_pop, topographic)
         else:
@@ -699,6 +702,17 @@ class SpikingBrain:
         cfg = self.cfg
         self.projections: list[Projection] = []
 
+        # Места в поле зрения (столбец, px) у клеток зрительных зон: V1 — из
+        # карты сетчатки, следующие ступени — при проводке (_retinotopic_pre).
+        self.field_cols: dict[str, torch.Tensor] = {}
+        self.field_width = 0
+
+        for sensor in self.sensors:
+            if sensor.wiring == "oriented":
+                E = self.areas[sensor.area].E
+                self.field_cols[E.name] = self._oriented_layout(sensor, E.size)[2]
+                self.field_width = sensor.cols
+
         # ---- локальные микросхемы зон ----
         for spec in cfg.areas:
             area = self.areas[spec.name]
@@ -746,7 +760,7 @@ class SpikingBrain:
                 path.weight, plastic=path.plastic, cap=path.cap,
                 modulator=path.modulator, ach_suppressed=path.ach_suppressed,
                 topographic=path.topographic, blocks=getattr(path, "blocks", 0),
-                shift=getattr(path, "shift", 0),
+                shift=getattr(path, "shift", 0), retinotopic=getattr(path, "retinotopic", 0.0),
             )
 
             if proj is not None:
@@ -784,6 +798,48 @@ class SpikingBrain:
 
         self._pack()
 
+    def _oriented_layout(self, sensor, cells: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Карта V1: клетка → ориентация и место в поле (строка, столбец, px).
+        4 ориентации в каждом месте (гиперколонка), места — ровной сеткой с
+        тем же соотношением сторон, что поле.
+        """
+
+        rows, cols = sensor.rows, sensor.cols
+        places = max(1, cells // 4)
+        grid_r = max(1, round((places * rows / cols) ** 0.5))
+        grid_c = max(1, places // grid_r)
+        cell = torch.arange(cells, device=self.device)
+        angle = (cell % 4).float() * math.pi / 4
+        place = (cell // 4) % (grid_r * grid_c)
+        r0 = (place // grid_c).float().add(0.5).mul(rows / grid_r).sub(0.5)
+        c0 = (place % grid_c).float().add(0.5).mul(cols / grid_c).sub(0.5)
+        return angle, r0, c0
+
+    def _retinotopic_pre(self, post: Population, k: int, pre_pop: Population, window: float) -> torch.Tensor:
+        """
+        Ступень зрительного пути: клетки получателя стоят вдоль поля по
+        порядку, клетка берёт k случайных клеток источника, чьё место — в
+        окне шириной window px вокруг её места (поле шире, чем у источника:
+        V1 → V4 — в 2–3 раза, Dehaene et al. 2005). Места получателя
+        запоминаются — следующая ступень строится так же.
+        """
+
+        src = self.field_cols[pre_pop.name]
+        width = self.field_width
+        cell = torch.arange(post.size, device=self.device).float()
+        centre = (cell + 0.5) * width / post.size
+        order = torch.argsort(src)
+        sorted_cols = src[order]
+        lo = torch.searchsorted(sorted_cols, centre - window / 2)
+        hi = torch.searchsorted(sorted_cols, centre + window / 2).clamp(min=1)
+        lo = torch.minimum(lo, hi - 1)
+        pick = lo[:, None] + (
+            torch.rand((post.size, k), device=self.device, generator=self.generator) * (hi - lo)[:, None].float()
+        ).long()
+        self.field_cols[post.name] = centre
+        return pre_pop.start + order[pick.clamp(max=len(order) - 1)]
+
     def _wire_oriented(self, sensor, cells: int) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Сетчатка → V1: простая клетка видит штрих одной ориентации в своём
@@ -801,29 +857,26 @@ class SpikingBrain:
 
         rows, cols = sensor.rows, sensor.cols
         layer = rows * cols
-        places = max(1, cells // 4)
-        # Сетка мест с тем же соотношением сторон, что поле.
-        grid_r = max(1, round((places * rows / cols) ** 0.5))
-        grid_c = max(1, places // grid_r)
-        cell = torch.arange(cells, device=self.device)
-        angle = (cell % 4).float() * math.pi / 4
-        place = (cell // 4) % (grid_r * grid_c)
-        r0 = (place // grid_c).float().add(0.5).mul(rows / grid_r).sub(0.5)
-        c0 = (place % grid_c).float().add(0.5).mul(cols / grid_c).sub(0.5)
+        angle, r0, c0 = self._oriented_layout(sensor, cells)
         dr, dc = -torch.sin(angle), torch.cos(angle)  # вдоль штриха
         t = torch.arange(-2, 3, device=self.device).float()
         pre, sign = [], []
 
-        for side, layer_offset in ((-0.5, layer), (0.5, layer), (-1.5, 0), (1.5, 0)):
+        # Тяни-толкай (push-pull; Hirsch et al. 1998, Ferster 1988): в каждом
+        # подполе свой знак возбуждает, противоположный — тормозит (через
+        # местные тормозные клетки; здесь — отрицательный вес, упрощение).
+        # Центр: OFF +, ON −; бока: ON +, OFF −.
+        for side, own, other in ((-0.5, layer, 0), (0.5, layer, 0), (-1.5, 0, layer), (1.5, 0, layer)):
             # Сдвиг поперёк штриха (перпендикуляр: (dc, -dr)).
             r = r0[:, None] + t[None, :] * dr[:, None] + side * dc[:, None]
             c = c0[:, None] + t[None, :] * dc[:, None] - side * dr[:, None]
             r = (r + 0.5).floor().long().clamp(0, rows - 1)
             c = (c + 0.5).floor().long().clamp(0, cols - 1)
-            pre.append(layer_offset + r * cols + c)
+            pre += [own + r * cols + c, other + r * cols + c]
+            sign += [torch.ones_like(r, dtype=torch.float), -torch.ones_like(r, dtype=torch.float)]
 
         pre = torch.cat(pre, dim=1)
-        weight = torch.full(pre.shape, sensor.weight, device=self.device)
+        weight = torch.cat(sign, dim=1) * sensor.weight
         return pre, weight
 
     def _pack(self) -> None:

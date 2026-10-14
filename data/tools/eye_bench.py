@@ -71,7 +71,7 @@ for name, angle in (("—", 0), ("/", 45), ("|", 90), ("\\", 135)):
     by = [float(rates[o::4].sum()) for o in range(4)]
     total = sum(by) or 1.0
     bars[name] = by
-    print(f"  полоса {name}: спайки по ориентациям 0°/45°/90°/135° — "
+    print(f"  полоса {name} ({float(rates[rates > 0].mean()) if (rates > 0).any() else 0:.0f} Гц): по ориентациям "
           + " / ".join(f"{100 * b / total:.0f}%" for b in by) + f", клеток {int((rates > 0).sum())}")
 
 words = ["москва", "берлин", "человек", "может", "столица", "является"]

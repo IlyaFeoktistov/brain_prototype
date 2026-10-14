@@ -72,3 +72,27 @@ class Eye:
         raster = torch.zeros(steps, self.offset + self.size, device=self.device)
         raster[:, self.offset:] = (torch.rand(steps, self.size, device=self.device) < p).float()
         return raster
+
+
+class Hand:
+    """
+    Рука (орган-исполнитель): у каждой клавиши своё врождённое движение —
+    свой набор клеток моторной коры руки подряд (соматотопия пальцев,
+    Penfield; движение — популяцией, Georgopoulos 1986). Это тело, а не
+    знание: какая буква на клавише, мозг выучивает глазом. Нажата клавиша,
+    чей набор выстрелил сильнее всех и хотя бы наполовину.
+    """
+
+    def __init__(self, keys: int, cells: int):
+        self.keys = keys
+        self.cells = cells
+
+    def code(self, key: int) -> torch.Tensor:
+        return torch.arange(key * self.cells, (key + 1) * self.cells)
+
+    def pressed(self, fired: torch.Tensor, share: float = 0.5) -> int | None:
+        """fired — спайки клеток руки за окно; номер нажатой клавиши или None."""
+
+        blocks = (fired[: self.keys * self.cells] > 0).float().view(self.keys, self.cells).mean(1)
+        key = int(blocks.argmax())
+        return key if float(blocks[key]) >= share else None

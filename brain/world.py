@@ -3,7 +3,8 @@
 Мозг про мир ничего не знает — только сигналы своих рецепторов.
 
 Экран: текст рисуется шрифтом в пиксели, как строка в мессенджере, —
-тёмные буквы на светлом фоне.
+тёмные буквы на светлом фоне. Клавиатура: клавиша → символ (раскладка —
+свойство мира, мозг её не знает и выучивает).
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ class Screen:
         self.font = font
 
     @lru_cache(maxsize=50_000)
-    def picture(self, text: str) -> torch.Tensor:
+    def picture(self, text: str, x: int = 1) -> torch.Tensor:
         from PIL import Image, ImageDraw, ImageFont
 
         font = ImageFont.truetype(self.font, self.font_px)
@@ -33,6 +34,29 @@ class Screen:
         draw = ImageDraw.Draw(image)
         # Строка по вертикали — по середине поля: высота строки шрифта
         # (с выносными элементами) ~ font_px.
-        draw.text((1, (self.rows - self.font_px) // 2 - 1), text, font=font, fill=0)
+        draw.text((x, (self.rows - self.font_px) // 2 - 1), text, font=font, fill=0)
         pixels = torch.frombuffer(bytearray(image.tobytes()), dtype=torch.uint8)
         return pixels.view(self.rows, self.cols).float() / 255.0
+
+
+# ЙЦУКЕН: ряды клавиш слева направо, сверху вниз, затем пробел.
+LAYOUT = "1234567890-" "йцукенгшщзхъ" "фывапролджэ" "ячсмитьбю." "ё,?!:;" " "
+
+
+class Keyboard:
+    """Клавиши по порядку на доске; нажатая клавиша печатает свой символ."""
+
+    def __init__(self, layout: str = LAYOUT):
+        self.layout = layout
+
+    def __len__(self) -> int:
+        return len(self.layout)
+
+    def type(self, key: int) -> str:
+        return self.layout[key]
+
+    def key(self, char: str) -> int | None:
+        """Для стендов (проверка снаружи мозга): клавиша символа."""
+
+        i = self.layout.find(char)
+        return i if i >= 0 else None

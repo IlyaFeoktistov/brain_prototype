@@ -82,7 +82,7 @@ def cosine(a, b) -> float:
     return float(a @ b / (na * nb)) if na and nb else 0.0
 
 
-LETTERS = "аоеиклмнвстрдп"
+LETTERS = "аоеиклмнвстрдпуябгжзчшщхцфыэюйьъ"
 
 
 V1 = brain.areas["visual"].E

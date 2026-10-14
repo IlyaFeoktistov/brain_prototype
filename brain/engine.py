@@ -777,6 +777,7 @@ class SpikingBrain:
                 proj.scaled = getattr(path, "scaled", True)
                 proj.dendrite = getattr(path, "dendrite", False)
                 proj.vogels = getattr(path, "vogels", False)
+                proj.scale_up = getattr(path, "scale_up", False)
                 proj.cap = path.cap
             self._connect(
                 f"{path.src} -> {path.dst}.I", src.E, dst.I, path.k_inhibitory,
@@ -1758,6 +1759,24 @@ class SpikingBrain:
             proj.early.add_((proj.weight - before).to(proj.early.dtype))
             proj.eligibility.zero_()
 
+    def instar(self, name: str, rates: torch.Tensor, rate: float) -> None:
+        """
+        Связь по совпадению за окно (instar, Grossberg): у клеток, стрелявших
+        в окне, входы тянутся к узору активных пресинапсов —
+        Δw = rate · post · (cap · pre − w). Хеббовское правило с насыщением:
+        сильнее то, что совпадало чаще.
+        """
+
+        if not self.plasticity:
+            return
+
+        proj = self.projection(name)
+        pre = (rates.index_select(0, proj.pre.flatten().long()).view(proj.pre.shape) > 0).float()
+        post = (rates[proj.post.slice] > 0).float()[:, None]
+        delta = rate * post * (proj.cap * pre - proj.weight)
+        proj.weight.add_(delta)
+        proj.early.add_(delta.to(proj.early.dtype))
+
     def inhibitory_plasticity(self, rates: torch.Tensor) -> None:
         """
         Пластичность торможения (Vogels et al. 2011) на путях vogels: после
@@ -2078,7 +2097,15 @@ class SpikingBrain:
                 * proj.innate_mean
                 * self.cfg.synaptic_scaling_budget
             )
-            factor = (budget / total.clamp(min=1e-9)).clamp(max=1.0)
+            factor = budget / total.clamp(min=1e-9)
+
+            if getattr(proj, "scale_up", False):
+                # В обе стороны — только у клеток, что уже чему-то научились
+                # (у молчащей клетки нечего масштабировать).
+                learned = total > proj.innate_mean * proj.weight.shape[1]
+                factor = torch.where(learned, factor, factor.clamp(max=1.0))
+            else:
+                factor = factor.clamp(max=1.0)
             proj.weight.mul_(factor[:, None])
             proj.early.mul_(factor[:, None])
             scaled += int((factor < 1.0).sum())

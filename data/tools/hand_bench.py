@@ -49,6 +49,8 @@ i = [s.name for s in brain.sensors].index("eye")
 eye = Eye(cfg, brain.sensor_offsets[i], brain.sensors[i].size, brain.device)
 screen = Screen(cfg.retina_rows, cfg.retina_cols)
 PEN = 20  # место взгляда (px): буква у пера
+PATHS = ("granule -> hand", "granule -> hand: торможение")
+G = brain.areas["granule"].E
 rng = random.Random(0)
 
 def babble() -> None:
@@ -63,7 +65,7 @@ def babble() -> None:
         # Палец на клавише, глаз смотрит на появившуюся букву всю фиксацию.
         rates = brain.observe(cfg.fixation_ms, eye.look(picture))
         brain.feel("hand", None, 0.0)
-        brain.error_learning("letters -> hand", rates, hand.code(key).to(brain.device), cfg.hand_rate)
+        brain.error_learning(PATHS, rates, hand.code(key).to(brain.device), cfg.hand_rate)
         brain.run(cfg.keystroke_ms)
 
     print(f"лепет: {opts['babble']} нажатий")
@@ -71,8 +73,9 @@ def babble() -> None:
 
 if opts["load"] and opts["rebabble"] == "1":
     # Тот же прочитавший мозг, связь «буквы → рука» — заново с рождения.
-    proj = brain.projection("letters -> hand")
-    proj.weight.uniform_(*proj.innate_range)
+    for name in PATHS:
+        proj = brain.projection(name)
+        proj.weight.uniform_(*proj.innate_range)
     babble()
 
     if opts["save"]:
@@ -99,10 +102,17 @@ if not opts["load"]:
     if opts["save"]:
         mind.save(opts["save"])
 
-proj = brain.projection("letters -> hand")
-print(f"буквы → рука: макс {float(proj.weight.max()):.2f}, выше 0.5 — {int((proj.weight > 0.5).sum())}")
+proj = brain.projection("granule -> hand")
+neg = brain.projection("granule -> hand: торможение")
+print(f"гранулярные → рука: макс {float(proj.weight.max()):.2f}, выше 0.5 — {int((proj.weight > 0.5).sum())}; "
+      f"торможение мин {float(neg.weight.min()):.2f}, сильнее 0.5 — {int((neg.weight < -0.5).sum())}")
 TEST = "аоеиклмнвстрдпуябгжзчшщхцфыэюйьъ"
 L = brain.areas["letters"].E
+
+with brain.frozen():
+    brain.run(300.0)
+    g = brain.observe(cfg.fixation_ms, eye.look(screen.picture("о", PEN)))[G.slice]
+print(f"гранулярные на букву: {int((g > 0).sum())} из {G.size} клеток, {float(g[g > 0].mean()) if (g > 0).any() else 0:.0f} Гц")
 
 
 def seen(c: str) -> torch.Tensor:

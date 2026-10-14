@@ -1798,7 +1798,7 @@ class SpikingBrain:
         proj.early.add_(delta.to(proj.early.dtype))
 
     def error_learning(
-        self, name: str, rates: torch.Tensor, target: torch.Tensor, rate: float, goal_mv: float = 10.0,
+        self, names, rates: torch.Tensor, target: torch.Tensor, rate: float, goal_mv: float = 6.0,
     ) -> None:
         """
         Обучение по ошибке (мозжечок: лазающее волокно несёт ошибку, синапс
@@ -1808,21 +1808,36 @@ class SpikingBrain:
         действительно работали), предсказание — вход по пути от активных
         входов в долях goal_mv (вход, который вместе с «давай» доводит до
         порога): Δw = rate · (команда − предсказание) · pre — дельта-правило.
+        names — один путь или несколько к той же зоне (возбуждающий и
+        тормозной): предсказание — их сумма, каждый держит свой знак.
         """
 
         if not self.plasticity:
             return
 
-        proj = self.projection(name)
-        pre = (rates.index_select(0, proj.pre.flatten().long()).view(proj.pre.shape) > 0).float()
-        drive = (pre * proj.weight).sum(1)
+        projs = [self.projection(n) for n in ([names] if isinstance(names, str) else names)]
+        # Средний ток входа, мВ: вес × частота × длительность синаптического
+        # тока (e_tau_syn) — столько вход поднимает клетку в среднем.
+        tau = self.cfg.e_tau_syn / 1000.0
+        pres = [rates.index_select(0, p.pre.flatten().long()).view(p.pre.shape) * tau for p in projs]
+        drive = sum((pre * p.weight).sum(1) for pre, p in zip(pres, projs))
         predicted = (drive / goal_mv).clamp(0.0, 1.0)[:, None]
         wanted = torch.zeros_like(predicted)
         wanted[target] = 1.0
-        delta = rate * (wanted - predicted) * pre
-        delta = (proj.weight + delta).clamp(0.0, proj.cap) - proj.weight
-        proj.weight.add_(delta)
-        proj.early.add_(delta.to(proj.early.dtype))
+
+        for pre, proj in zip(pres, projs):
+            # Шаг — по доле участия входа (pre / сумма), как у дельта-правила
+            # с нормировкой: ошибка распределяется по активным входам.
+            share = pre / pre.sum(1, keepdim=True).clamp(min=1e-9)
+            delta = rate * goal_mv * (wanted - predicted) * share / tau
+            # Возбуждающий путь — [0, cap], тормозной (врождённо 0, не
+            # пластичный по STDP) — [−cap, 0].
+            low, high = (0.0, proj.cap) if proj.plastic else (-proj.cap, 0.0)
+            delta = (proj.weight + delta).clamp(low, high) - proj.weight
+            proj.weight.add_(delta)
+
+            if proj.plastic:
+                proj.early.add_(delta.to(proj.early.dtype))
 
     def inhibitory_plasticity(self, rates: torch.Tensor) -> None:
         """

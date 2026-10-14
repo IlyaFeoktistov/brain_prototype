@@ -23,7 +23,7 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 from brain.world import Keyboard, Screen
 
-opts = {"words": "3000", "babble": "2000", "go": "10,15,20", "load": "", "save": ""}
+opts = {"words": "3000", "babble": "2000", "go": "10,15,20", "load": "", "save": "", "rebabble": "0"}
 cfg = BrainConfig()
 cfg.size = "small"
 cfg.save_path = "/nonexistent/brain.pt"
@@ -51,6 +51,33 @@ screen = Screen(cfg.retina_rows, cfg.retina_cols)
 PEN = 20  # место взгляда (px): буква у пера
 rng = random.Random(0)
 
+def babble() -> None:
+    """Лепет: только клавиши букв (цифры и знаки — так же, но буквы — проверка)."""
+
+    letters = [k for k in range(len(keyboard)) if keyboard.type(k).isalpha()]
+
+    for n in range(int(opts["babble"])):
+        key = rng.choice(letters)
+        brain.feel("hand", hand.code(key).to(brain.device), 30.0)
+        picture = screen.picture(keyboard.type(key), PEN)
+        # Палец на клавише, глаз смотрит на появившуюся букву всю фиксацию.
+        rates = brain.observe(cfg.fixation_ms, eye.look(picture))
+        brain.feel("hand", None, 0.0)
+        brain.error_learning("letters -> hand", rates, hand.code(key).to(brain.device), cfg.hand_rate)
+        brain.run(cfg.keystroke_ms)
+
+    print(f"лепет: {opts['babble']} нажатий")
+
+
+if opts["load"] and opts["rebabble"] == "1":
+    # Тот же прочитавший мозг, связь «буквы → рука» — заново с рождения.
+    proj = brain.projection("letters -> hand")
+    proj.weight.uniform_(*proj.innate_range)
+    babble()
+
+    if opts["save"]:
+        mind.save(opts["save"])
+
 if not opts["load"]:
     text = "\n".join(p.read_text(encoding="utf-8") for p in sorted(Path("data/corpus/qa").glob("*.txt")))
     vocab = [w for w in re.findall(r"[а-яё]+", text.lower()) if 2 <= len(w) <= 12]
@@ -67,23 +94,7 @@ if not opts["load"]:
 
     print(f"прочитано глазом {opts['words']} слов")
 
-    # Лепет: только клавиши букв (цифры и знаки — так же, но буквы — проверка).
-    letters = [k for k in range(len(keyboard)) if keyboard.type(k).isalpha()]
-
-    for n in range(int(opts["babble"])):
-        key = rng.choice(letters)
-        brain.feel("hand", hand.code(key).to(brain.device), 30.0)
-        picture = screen.picture(keyboard.type(key), PEN)
-        # Палец на клавише, глаз смотрит на появившуюся букву всю фиксацию.
-        rates = brain.observe(cfg.fixation_ms, eye.look(picture))
-        brain.feel("hand", None, 0.0)
-        brain.instar("letters -> hand", rates, cfg.hand_rate)
-        brain.run(cfg.keystroke_ms)
-
-        if (n + 1) % 50 == 0:
-            brain.synaptic_scaling()
-
-    print(f"лепет: {opts['babble']} нажатий")
+    babble()
 
     if opts["save"]:
         mind.save(opts["save"])

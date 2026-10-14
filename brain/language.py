@@ -1631,7 +1631,22 @@ class LanguageInterface:
         """Растр рецепторов слова: глаз видит картинку (фиксация) или ухо слышит."""
 
         if self.eye is not None:
-            return self.eye.look(self.screen.picture(form))
+            # Длинное слово — несколько фиксаций (за фиксацию видно 7–8 букв,
+            # Rayner 1998): взгляд на начало, саккада ~30 мс, взгляд дальше на
+            # ширину поля. Куда прыгнуть — пока правило «следующий кусок»;
+            # по-честному — глазодвигательная система (FEF, двухолмие), долг.
+            step = self.screen.cols - 4
+            shots = max(1, math.ceil((self.screen.width(form) + 2) / step))
+            gap = torch.zeros(
+                int(round(self.cfg.saccade_ms / self.cfg.dt_ms)), self.eye.offset + self.eye.size,
+                device=self.device,
+            )
+            parts = []
+
+            for i in range(shots):
+                parts += [self.eye.look(self.screen.picture(form, 1 - i * step))] + ([gap] if i < shots - 1 else [])
+
+            return torch.cat(parts)
 
         return self.ear.encode(form)
 

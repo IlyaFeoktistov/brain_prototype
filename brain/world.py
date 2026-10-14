@@ -38,6 +38,14 @@ class Screen:
         pixels = torch.frombuffer(bytearray(image.tobytes()), dtype=torch.uint8)
         return pixels.view(self.rows, self.cols).float() / 255.0
 
+    @lru_cache(maxsize=50_000)
+    def width(self, text: str) -> float:
+        """Ширина строки в пикселях."""
+
+        from PIL import ImageFont
+
+        return ImageFont.truetype(self.font, self.font_px).getlength(text)
+
 
 # ЙЦУКЕН: ряды клавиш слева направо, сверху вниз, затем пробел.
 LAYOUT = "1234567890-" "йцукенгшщзхъ" "фывапролджэ" "ячсмитьбю." "ё,?!:;" " "

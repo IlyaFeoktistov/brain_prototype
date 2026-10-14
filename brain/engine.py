@@ -1759,12 +1759,19 @@ class SpikingBrain:
             proj.early.add_((proj.weight - before).to(proj.early.dtype))
             proj.eligibility.zero_()
 
-    def instar(self, name: str, rates: torch.Tensor, rate: float) -> None:
+    def instar(self, name: str, rates: torch.Tensor, rate: float, covariance: bool = False) -> None:
         """
         Связь по совпадению за окно (instar, Grossberg): у клеток, стрелявших
         в окне, входы тянутся к узору активных пресинапсов —
         Δw = rate · post · (cap · pre − w). Хеббовское правило с насыщением:
         сильнее то, что совпадало чаще.
+
+        covariance — ковариационное правило (Sejnowski 1977; BCM —
+        Bienenstock, Cooper & Munro 1982, в зрительной коре — Kirkwood,
+        Rioult & Bear 1996): Δw = rate · cap · (post − θ) · pre, θ — свой
+        у клетки скользящий порог, средняя её активность за окна (BCM):
+        вход, активный при молчащей клетке, слабеет — остаётся то, что
+        отличает, а не то, что активно всегда.
         """
 
         if not self.plasticity:
@@ -1773,7 +1780,47 @@ class SpikingBrain:
         proj = self.projection(name)
         pre = (rates.index_select(0, proj.pre.flatten().long()).view(proj.pre.shape) > 0).float()
         post = (rates[proj.post.slice] > 0).float()[:, None]
-        delta = rate * post * (proj.cap * pre - proj.weight)
+
+        if covariance:
+            theta = getattr(proj, "theta", None)
+
+            if theta is None:
+                theta = proj.theta = torch.zeros_like(post)
+
+            # Скользящее среднее за ~100 окон [не подбиралось].
+            theta.mul_(0.99).add_(0.01 * post)
+            delta = rate * proj.cap * (post - theta) * pre
+            delta = (proj.weight + delta).clamp(0.0, proj.cap) - proj.weight
+        else:
+            delta = rate * post * (proj.cap * pre - proj.weight)
+
+        proj.weight.add_(delta)
+        proj.early.add_(delta.to(proj.early.dtype))
+
+    def error_learning(
+        self, name: str, rates: torch.Tensor, target: torch.Tensor, rate: float, goal_mv: float = 10.0,
+    ) -> None:
+        """
+        Обучение по ошибке (мозжечок: лазающее волокно несёт ошибку, синапс
+        меняется на её величину — Marr 1969, Albus 1971, Ito; внутренние
+        модели «вижу → двигаю» — Wolpert, Miall & Kawato 1998). Учитель —
+        копия моторной команды target (локальные клетки получателя, что
+        действительно работали), предсказание — вход по пути от активных
+        входов в долях goal_mv (вход, который вместе с «давай» доводит до
+        порога): Δw = rate · (команда − предсказание) · pre — дельта-правило.
+        """
+
+        if not self.plasticity:
+            return
+
+        proj = self.projection(name)
+        pre = (rates.index_select(0, proj.pre.flatten().long()).view(proj.pre.shape) > 0).float()
+        drive = (pre * proj.weight).sum(1)
+        predicted = (drive / goal_mv).clamp(0.0, 1.0)[:, None]
+        wanted = torch.zeros_like(predicted)
+        wanted[target] = 1.0
+        delta = rate * (wanted - predicted) * pre
+        delta = (proj.weight + delta).clamp(0.0, proj.cap) - proj.weight
         proj.weight.add_(delta)
         proj.early.add_(delta.to(proj.early.dtype))
 

@@ -577,11 +577,12 @@ def eye_areas() -> list[AreaSpec]:
         # немногих победителей, свой гомеостаз у клетки не отдаёт всё одним
         # (как STDP выучивает зрительные признаки, Masquelier & Thorpe 2007).
         # Окно STDP 20 мс — как в зрительной коре in vivo (Meliza & Dan
-        # 2006). Доля 0.05, активность 2%, пул 2 мВ — [не подбиралось], как у
-        # слоговаря; стенд letters_bench.
+        # 2006). Активность 2%, пул 2 мВ — [не подбиралось], как у
+        # слоговаря; стенд letters_bench. Доля 0.1 — [замер] вдвое больше
+        # клеток на место: 32 буквы на месте взгляда 16–21 → 27/32.
         AreaSpec(
             "letters", "V4 / LO: детекторы букв",
-            0.05, k_ee=10, ee_plastic=False, ee_weight=(0.0, 0.0),
+            0.1, k_ee=10, ee_plastic=False, ee_weight=(0.0, 0.0),
             target_activity=0.02, cell_homeostasis=True, inhibition_adapts=False,
             stdp_tau_plus=20.0, stdp_ltp_rise=0.0, stdp_tau_minus=20.0, pool_mv=2.0,
         ),
@@ -632,7 +633,7 @@ def hand_pathways() -> list[PathwaySpec]:
         # 0–0.05 / 1 бюджет 7.5 — меньше 1 мВ: рука молчит без «давай», а с
         # ним выбирает шум.
         PathwaySpec("letters", "hand", k=200, weight=(0.0, 0.5), plastic=True, cap=3.0,
-                    k_inhibitory=0, predictive=False, modulator="coincidence", scale_up=True),
+                    k_inhibitory=0, predictive=False, modulator="coincidence", scaled=False),
     ]
 
 
@@ -1850,8 +1851,11 @@ class BrainConfig:
     # букву, слово до ~13 букв за одну фиксацию (в чтении в фокус попадает
     # 7–8 букв, и ещё ~15 справа видны хуже — Rayner 1998; поле ровное —
     # упрощение, без падения остроты от центра).
+    # [замер] letters_bench, 32 буквы на месте взгляда: поле 96 px и зона букв
+    # 0.05 — 16–21/32 (10 000 слов — 18), поле 56 px (8 букв) и зона 0.1 —
+    # 27/32: клеток на место больше. Длинные слова — несколько фиксаций.
     retina_rows: int = 16
-    retina_cols: int = 96
+    retina_cols: int = 56
     # Ганглиозные клетки: центр и окружение (Kuffler 1953), ON — свет в
     # центре, OFF — тёмное в центре. Окружение — гауссиана шире центра.
     # [не подбиралось] σ центра 0.7 px, окружения 1.5 px — штрих шрифта
@@ -1860,8 +1864,9 @@ class BrainConfig:
     retina_center_px: float = 0.7
     retina_surround_px: float = 1.5
     retina_rate_hz: float = 150.0
-    # Фиксация при чтении — 200–250 мс (Rayner 1998).
+    # Фиксация при чтении — 200–250 мс, саккада — 20–40 мс (Rayner 1998).
     fixation_ms: float = 225.0
+    saccade_ms: float = 30.0
     # Простая клетка V1: центральная полоса из 5 рецепторов одного знака и
     # две боковые полосы противоположного (Hubel & Wiesel 1962; входы LGN
     # выстроены по полям простой клетки — Reid & Alonso 1995). LGN

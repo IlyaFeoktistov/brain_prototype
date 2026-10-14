@@ -85,6 +85,43 @@ def cosine(a, b) -> float:
 LETTERS = "аоеиклмнвстрдп"
 
 
+V1 = brain.areas["visual"].E
+CX = brain.areas["complex"].E
+NAMES = ("V1", "сложные", "буквы")
+
+
+def zones(picture: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    with brain.frozen():
+        brain.run(100.0)
+        rates = brain.observe(cfg.fixation_ms, eye.look(picture))
+    return rates[V1.slice].cpu(), rates[CX.slice].cpu(), rates[L.slice].cpu()
+
+
+def recognition(label: str) -> None:
+    """
+    Узнавание буквы по ближайшему образцу: образец — буква на 20 px (два
+    показа), проба — новый показ со сдвигом 0 / 1 / 2 / 4 px; доля верных
+    среди LETTERS (наугад — 1 / len). V1 против зоны букв.
+    """
+
+    refs = {c: [sum(z) for z in zip(zones(at(c, 20)), zones(at(c, 20)))] for c in LETTERS}
+    line = []
+
+    for dx in (0, 1, 2, 4):
+        hits = [0] * len(NAMES)
+
+        for c in LETTERS:
+            probe = zones(at(c, 20 + dx))
+
+            for z in range(len(NAMES)):
+                best = max(LETTERS, key=lambda d: cosine(probe[z], refs[d][z]))
+                hits[z] += best == c
+
+        line.append(f"{dx} px: " + ", ".join(f"{n} {h}" for n, h in zip(NAMES, hits)))
+
+    print(f"{label} узнавание из {len(LETTERS)} — " + "; ".join(line))
+
+
 def measure(label: str) -> None:
     codes = {c: letters(at(c, 20)) for c in LETTERS}
     moved = {c: letters(at(c, 20 + shift)) for c in LETTERS}
@@ -97,25 +134,30 @@ def measure(label: str) -> None:
 
 
 text = "\n".join(p.read_text(encoding="utf-8") for p in sorted(Path("data/corpus/qa").glob("*.txt")))
-vocab = [w for w in re.findall(r"[а-яё]+", text.lower()) if 2 <= len(w) <= 12]
+vocab = [w for w in re.findall(r"[а-яё]+", text.lower()) if 2 <= len(w) <= int(cfg.retina_cols // 7)]
 rng = random.Random(0)
 measure("до чтения")
-proj = next(p for p in brain.plastic if p.name == "visual -> letters")
+recognition("до чтения")
+proj = next(p for p in brain.plastic if p.name == "complex -> letters")
 
 for n in range(int(opts["words"])):
     rates = brain.observe(cfg.fixation_ms, eye.look(screen.picture(rng.choice(vocab))))
     brain.run(30.0)  # саккада
     brain.homeostasis(rates)
     brain.hebbian(float(opts["rate"]))
+    brain.inhibitory_plasticity(rates)
 
     if (n + 1) % 50 == 0:
         brain.synaptic_scaling()
 
     if (n + 1) % 500 == 0:
+        lateral = brain.projection("letters: торможение").weight
         print(f"  {n + 1} слов: вес V1 → буквы средний {float(proj.weight.mean()):.2f}, "
-              f"у потолка {int((proj.weight > 0.9 * proj.cap).sum())}")
+              f"у потолка {int((proj.weight > 0.9 * proj.cap).sum())}; торможение среднее "
+              f"{float(lateral.mean()):.2f}, сильнее 1 мВ {int((lateral < -1).sum())}")
 
 measure(f"после {opts['words']} слов")
+recognition("после")
 
 if opts["save"]:
     mind.save(opts["save"])

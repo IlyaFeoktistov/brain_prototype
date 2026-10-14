@@ -570,6 +570,16 @@ class LanguageInterface:
         self.device = brain.device
 
         self.ear = Ear(cfg, self.device)
+        # Глаз (чат как мессенджер): текст не звучит, а видится картинкой.
+        self.eye = self.screen = None
+
+        if getattr(cfg, "eye", False) and "letters" in brain.areas:
+            from brain.body import Eye
+            from brain.world import Screen
+
+            i = [s.name for s in brain.sensors].index("eye")
+            self.eye = Eye(cfg, brain.sensor_offsets[i], brain.sensors[i].size, self.device)
+            self.screen = Screen(cfg.retina_rows, cfg.retina_cols)
 
         self.meaning = self.brain.areas["association"]
         self.context = self.brain.areas["prefrontal"]
@@ -835,7 +845,7 @@ class LanguageInterface:
         if aim is not None:
             self.brain.feel("goal", aim, self.cfg.goal_load_mv)
 
-        sound = self.ear.encode(form)
+        sound = self._sense(form)
         self._start_clock()
 
         if gate:
@@ -892,6 +902,13 @@ class LanguageInterface:
         if learn_forms and self.articulators is not None and not self._own_speech:
             # Цепочка звуков: соседние буквы повтора про себя — чистый STDP.
             self.brain.hebbian(self.cfg.hebbian_rate)
+        elif learn_forms and self.eye is not None and not self._own_speech:
+            # Признаки букв учатся каждой фиксацией (чистый STDP), торможение
+            # между детекторами — по Vogels (декорреляция).
+            self.brain.hebbian(self.cfg.hebbian_rate)
+
+        if learn_forms and self.eye is not None and not self._own_speech:
+            self.brain.inhibitory_plasticity(rates)
 
         if learn_forms:
             meaning = self._area(rates, self.meaning)
@@ -1610,10 +1627,22 @@ class LanguageInterface:
         path.weight.add_(rate * right * (path.cap * heard - path.weight))
         path.weight.sub_(rate * wrong * heard * path.weight)
 
+    def _sense(self, form: str) -> torch.Tensor:
+        """Растр рецепторов слова: глаз видит картинку (фиксация) или ухо слышит."""
+
+        if self.eye is not None:
+            return self.eye.look(self.screen.picture(form))
+
+        return self.ear.encode(form)
+
+    def _form_area(self) -> str:
+        """Зона формы слова: зрительная (буквы) при глазе, иначе слуховая."""
+
+        return "letters" if self.eye is not None else "auditory"
+
     def _form_path(self):
-        return next(
-            (p for p in self.brain.projections if p.name == "auditory -> association"), None
-        )
+        name = f"{self._form_area()} -> association"
+        return next((p for p in self.brain.projections if p.name == name), None)
 
     def _learn_form(self, rates: torch.Tensor) -> None:
         """
@@ -1673,13 +1702,14 @@ class LanguageInterface:
             return
 
         self._form_grown[token] = times + 1
-        ear = self.brain.areas["auditory"].E
+        area = self._form_area()
+        ear = self.brain.areas[area].E
         heard = rates[ear.slice]
         active = heard.topk(min(64, heard.numel())).indices
         active = active[heard[active] > 0]
 
         if len(active):
-            self._growth.append(("auditory -> association", active, place))
+            self._growth.append((f"{area} -> association", active, place))
 
     def recognize(self, rates: torch.Tensor) -> torch.Tensor:
         """Куда звучание (активность слуха) толкает смысл по выученному пути."""

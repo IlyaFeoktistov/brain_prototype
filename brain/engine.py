@@ -607,6 +607,7 @@ class SpikingBrain:
         blocks: int = 0,
         shift: int = 0,
         retinotopic: float = 0.0,
+        complex_cells: bool = False,
     ) -> Projection | None:
         if blocks > 0:
             k = blocks
@@ -637,6 +638,8 @@ class SpikingBrain:
             first = (torch.arange(post.size, device=self.device) // blocks - shift) * blocks
             pre = first[:, None] + torch.arange(blocks, device=self.device)[None, :]
             pre = pre_pop.start + pre.clamp(min=0, max=pre_pop.size - 1)
+        elif retinotopic > 0 and complex_cells:
+            pre = self._complex_pre(post, k, pre_pop, retinotopic)
         elif retinotopic > 0:
             pre = self._retinotopic_pre(post, k, pre_pop, retinotopic)
         elif topographic > 0:
@@ -707,11 +710,16 @@ class SpikingBrain:
         self.field_cols: dict[str, torch.Tensor] = {}
         self.field_width = 0
 
+        self.field_layout: dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
+        self.eye_sensor = None
+
         for sensor in self.sensors:
             if sensor.wiring == "oriented":
                 E = self.areas[sensor.area].E
-                self.field_cols[E.name] = self._oriented_layout(sensor, E.size)[2]
+                self.field_layout[E.name] = self._oriented_layout(sensor, E.size)
+                self.field_cols[E.name] = self.field_layout[E.name][2]
                 self.field_width = sensor.cols
+                self.eye_sensor = sensor
 
         # ---- локальные микросхемы зон ----
         for spec in cfg.areas:
@@ -761,12 +769,15 @@ class SpikingBrain:
                 modulator=path.modulator, ach_suppressed=path.ach_suppressed,
                 topographic=path.topographic, blocks=getattr(path, "blocks", 0),
                 shift=getattr(path, "shift", 0), retinotopic=getattr(path, "retinotopic", 0.0),
+                complex_cells=getattr(path, "complex_cells", False),
             )
 
             if proj is not None:
                 proj.predictive = path.predictive
                 proj.scaled = getattr(path, "scaled", True)
                 proj.dendrite = getattr(path, "dendrite", False)
+                proj.vogels = getattr(path, "vogels", False)
+                proj.cap = path.cap
             self._connect(
                 f"{path.src} -> {path.dst}.I", src.E, dst.I, path.k_inhibitory,
                 (path.inhibitory_weight, path.inhibitory_weight),
@@ -839,6 +850,27 @@ class SpikingBrain:
         ).long()
         self.field_cols[post.name] = centre
         return pre_pop.start + order[pick.clamp(max=len(order) - 1)]
+
+    def _complex_pre(self, post: Population, k: int, pre_pop: Population, window: float) -> torch.Tensor:
+        """
+        Сложные клетки V1 (Hubel & Wiesel 1962): клетка той же карты, что
+        простые (ориентация и место), собирает простые клетки своей
+        ориентации из квадрата window × window px вокруг своего места —
+        штрих где угодно в этом квадрате. Берёт до k ближайших таких
+        (остальные входы — повтор ближайшего).
+        """
+
+        angle, rows, cols = self.field_layout[pre_pop.name]
+        my_angle, my_rows, my_cols = self._oriented_layout(self.eye_sensor, post.size)
+        same = my_angle[:, None] == angle[None, :]
+        dist = torch.maximum((my_rows[:, None] - rows[None, :]).abs(), (my_cols[:, None] - cols[None, :]).abs())
+        dist = torch.where(same & (dist <= window / 2), dist, torch.full_like(dist, float("inf")))
+        order = dist.argsort(dim=1)[:, :k]
+        nearest = order[:, :1].expand_as(order)
+        found = torch.gather(dist, 1, order).isfinite()
+        self.field_layout[post.name] = (my_angle, my_rows, my_cols)
+        self.field_cols[post.name] = my_cols
+        return pre_pop.start + torch.where(found, order, nearest)
 
     def _wire_oriented(self, sensor, cells: int) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -1725,6 +1757,29 @@ class SpikingBrain:
 
             proj.early.add_((proj.weight - before).to(proj.early.dtype))
             proj.eligibility.zero_()
+
+    def inhibitory_plasticity(self, rates: torch.Tensor) -> None:
+        """
+        Пластичность торможения (Vogels et al. 2011) на путях vogels: после
+        окна (фиксации) сила торможения от соседа j к клетке i меняется на
+        rate · r_j · (r_i − норма) (частоты — в долях 100 Гц): клетка,
+        стрелявшая вместе с соседом выше нормы, получает от него больше
+        торможения, ниже нормы — меньше. Клетки, отвечающие на одно и то
+        же, расходятся по разным признакам (декорреляция).
+        """
+
+        if not self.plasticity:
+            return
+
+        target = self.cfg.inhibitory_target_hz
+
+        for proj in self.projections:
+            if not getattr(proj, "vogels", False):
+                continue
+
+            pre = rates.index_select(0, proj.pre.flatten().long()).view(proj.pre.shape) / 100.0
+            post = (rates[proj.post.slice] - target)[:, None] / 100.0
+            proj.weight.sub_(self.cfg.inhibitory_rate * pre * post).clamp_(-proj.cap, 0.0)
 
     def forget(self) -> None:
         """

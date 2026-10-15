@@ -1262,10 +1262,9 @@ class BrainConfig:
     # ------------------------------------------------------------------
     interneurons: bool = False
     # Зоны новой коры (ядра, стриатум, гиппокамп, мозжечок — свои цепи).
-    # «limbic» — смесь (поясная кора и ядра) — пока без блока.
     microcircuit_areas: tuple[str, ...] = (
         "auditory", "association", "prefrontal", "motor", "goal", "category",
-        "visual", "complex", "letters", "hand",
+        "visual", "complex", "letters", "hand", "limbic",
     )
     # Доли от тормозных (Rudy et al. 2011; Pfeffer et al. 2013 — 36 / 30 /
     # 17%): PV 40%, SOM 30%, 5HT3aR 30% — VIP из них половина. Остальные
@@ -1316,15 +1315,25 @@ class BrainConfig:
     sigma_ii_um: float = 131.0
     density_e_mm2: float = 20683.0
     density_i_mm2: float = 5834.0
-    # Облегчение E → SOM (Silberberg & Markram 2007; Kapfer et al. 2007): в
-    # покое 0.09 мВ, на 90-м перцентиле 0.94 (Campagnola Fig. 3D, E) — SOM
-    # включает только длительная активность соседей. Tsodyks–Markram,
-    # облегчающие синапсы F1 (Gupta, Wang & Markram 2000): U 0.16,
-    # восстановление 45 мс, облегчение 376 мс. E → PV ослабевают — общий
-    # stp_x базового контура.
-    som_facil_u: float = 0.16
-    som_facil_rec_ms: float = 45.0
-    som_facil_tau_ms: float = 376.0
+    # Кратковременная пластичность синапсов по парам типов (Tsodyks & Markram
+    # 1997, с облегчением — Markram et al. 1998): (от, к, U, восстановление
+    # мс, облегчение мс; 0 — нет). Подобраны под измерения Allen (Campagnola
+    # 2022, Fig. 4B — изменение к 6–8-му спайку серии 50 Гц, 4C —
+    # восстановление через 250 мс; нормировка на 90-й перцентиль переведена в
+    # отношение к первому PSP по Fig. 3D/E), L2/3 где измерено. E → SOM в
+    # серии растут ~3× (SOM включает только длительная активность соседей —
+    # Silberberg & Markram 2007; Kapfer et al. 2007), PV → любые — вдвое
+    # слабеют, E → PV почти не меняются.
+    column_stp: tuple[tuple[str, str, float, float, float], ...] = (
+        ("E", "E", 0.4, 100.0, 100.0), ("E", "PV", 0.1, 150.0, 20.0),
+        ("E", "SOM", 0.03, 300.0, 200.0), ("E", "VIP", 0.15, 100.0, 100.0),
+        ("PV", "E", 0.2, 150.0, 10.0), ("PV", "PV", 0.2, 150.0, 10.0),
+        ("PV", "SOM", 0.1, 200.0, 0.0), ("PV", "VIP", 0.15, 150.0, 10.0),
+        ("SOM", "E", 0.15, 150.0, 100.0), ("SOM", "PV", 0.15, 150.0, 100.0),
+        ("SOM", "SOM", 0.05, 150.0, 0.0), ("SOM", "VIP", 0.2, 60.0, 100.0),
+        ("VIP", "E", 0.2, 100.0, 100.0), ("VIP", "PV", 0.03, 200.0, 0.0),
+        ("VIP", "SOM", 0.02, 150.0, 10.0), ("VIP", "VIP", 0.02, 150.0, 10.0),
+    )
 
     # ------------------------------------------------------------------
     # Слои колонки (ARCHITECTURE 10, «Слои колонки»). Флаг layers включает и
@@ -1338,6 +1347,7 @@ class BrainConfig:
     # колонки должны идти по месту (ретинотопия), а не случайно — следующий шаг.
     layered_areas: tuple[str, ...] = (
         "auditory", "association", "prefrontal", "motor", "goal", "category", "visual", "letters", "hand",
+        "limbic",
     )
     # Зоны-карты: связи внутри колонки — к ближайшим по карте клеткам (в коре
     # местные связи падают с расстоянием, σ ~100 мкм — Campagnola Fig. 2A; на
@@ -1346,8 +1356,9 @@ class BrainConfig:
     # сетчатки), L2/3 — сложные (Hubel & Wiesel 1962; Alonso & Martinez
     # 1998: простые L4 → сложные L2/3); отдельной зоны «complex» нет.
     map_areas: tuple[str, ...] = ("visual", "letters", "hand")
-    # Без L4 (Beul & Hilgetag 2015): моторная кора — агранулярная.
-    agranular_areas: tuple[str, ...] = ("motor", "hand")
+    # Без L4 (Beul & Hilgetag 2015): моторная кора и передние поясная и
+    # островковая (лимбическая зона — чувства) — агранулярные.
+    agranular_areas: tuple[str, ...] = ("motor", "hand", "limbic")
     # Клеток колонки 1 мм² (Potjans Table 5): (слой, E, I).
     column_cells: tuple[tuple[str, int, int], ...] = (
         ("L23", 20683, 5834), ("L4", 21915, 5479), ("L5", 4850, 1065), ("L6", 14395, 2948),

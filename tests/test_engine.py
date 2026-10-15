@@ -201,7 +201,7 @@ def test_axon_delays_between_areas():
 def test_interneuron_types():
     # Зоны новой коры с флагом interneurons: I — это PV, рядом SOM и VIP по
     # долям; связи — по таблице измерений, SOM → E — на ветки дендрита;
-    # синапсы E → SOM облегчаются от серии спайков.
+    # у синапсов клеток с типами своя кратковременная пластичность.
     mind = make_mind(interneurons=True)
     brain = mind.brain
     area = brain.areas["association"]
@@ -214,4 +214,4 @@ def test_interneuron_types():
 
     mind.language.read_text(FACTS)
     assert torch.isfinite(brain.v[: brain.n]).all()
-    assert float(brain.facil_u[area.E.slice].max()) > brain.cfg.som_facil_u
+    assert float(brain.stp_u4[area.E.slice, 2].max()) > 0.0

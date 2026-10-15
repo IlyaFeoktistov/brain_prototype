@@ -465,9 +465,8 @@ class SpikingBrain:
 
         cfg = self.cfg
         self.is_som = torch.zeros(self.n_slots, dtype=torch.bool, device=self.device)
-
-        # Пресинапсы с облегчением к SOM: все E зон с типами тормозных.
-        self.facil_pre = torch.zeros(self.n_slots, device=self.device)
+        # Тип клетки зон с типами тормозных: 0 E, 1 PV, 2 SOM, 3 VIP; −1 — прочие.
+        self.cell_type = torch.full((self.n_slots,), -1, dtype=torch.long, device=self.device)
 
         for area in self.areas.values():
             if area.SOM is None:
@@ -483,9 +482,26 @@ class SpikingBrain:
                     self.adapt_b[pop.slice] = cfg.e_adapt_b * index / cfg.e_adaptation_index
 
                 self.is_som[group["SOM"].slice] = True
-                self.facil_pre[group["E"].slice] = 1.0
+
+                for number, kind in enumerate(("E", "PV", "SOM", "VIP")):
+                    self.cell_type[group[kind].slice] = number
 
         self.has_som = bool(self.is_som.any())
+        self.typed_pre = self.cell_type >= 0
+        # Кратковременная пластичность по парам типов (cfg.column_stp): у
+        # клетки-источника — U, восстановление и облегчение к каждому типу
+        # получателя (столбцы E, PV, SOM, VIP).
+        kinds = ("E", "PV", "SOM", "VIP")
+        self.stp_U4 = torch.ones(self.n_slots, 4, device=self.device)
+        self.stp_rec4 = torch.zeros(self.n_slots, 4, device=self.device)
+        self.stp_fac4 = torch.zeros(self.n_slots, 4, device=self.device)
+
+        for src, dst, U, rec, fac in getattr(cfg, "column_stp", ()):
+            rows = self.cell_type == kinds.index(src)
+            col = kinds.index(dst)
+            self.stp_U4[rows, col] = U
+            self.stp_rec4[rows, col] = cfg.dt_ms / rec
+            self.stp_fac4[rows, col] = math.exp(-cfg.dt_ms / fac) if fac > 0 else 0.0
 
     @staticmethod
     def _typed_groups(area: Area) -> list[tuple[str, dict]]:
@@ -886,6 +902,30 @@ class SpikingBrain:
 
         return pre_pop.start + dist.topk(k, dim=1, largest=False).indices
 
+    def _stp_steady(self, src: str, dst: str, hz: float) -> float:
+        """
+        Средняя сила синапса пары типов (к первому PSP) при ровной частоте hz
+        — по cfg.column_stp (Tsodyks–Markram), для тока недостающих соседей.
+        """
+
+        params = {(a, b): (U, rec, fac) for a, b, U, rec, fac in getattr(self.cfg, "column_stp", ())}
+
+        if (src, dst) not in params or hz <= 0:
+            return 1.0
+
+        U, rec, fac = params[(src, dst)]
+        isi = 1000.0 / hz
+        u, x = 0.0, 1.0
+
+        for _ in range(200):
+            u = u * (math.exp(-isi / fac) if fac > 0 else 0.0)
+            x = 1.0 - (1.0 - x) * math.exp(-isi / rec)
+            u = u + U * (1.0 - u)
+            amplitude = u * x
+            x -= u * x
+
+        return amplitude / U
+
     def _wire_column(self, spec, area: Area) -> None:
         """
         Связи внутри колонки (ARCHITECTURE 10, «Слои колонки»): вероятность E/I
@@ -979,14 +1019,16 @@ class SpikingBrain:
                         tau = float(self.tau_m[post.start])
 
                         dc = self.dc_inh_mv if weight < 0 else self.dc_mv
+                        # Синапсы соседей на частоте покоя уже ослабли / усилились.
+                        weight_dc = weight * self._stp_steady(src_kind, dst_kind, rate * 1000.0)
 
                         if k < 1:
                             # Связь целиком — средним током.
-                            dc[post.slice] += k_data * rate * weight * tau
+                            dc[post.slice] += k_data * rate * weight_dc * tau
                             continue
 
                         root = math.sqrt(max(1.0, k_data / k))
-                        dc[post.slice] += k_data * rate * weight * tau * (1.0 - 1.0 / root)
+                        dc[post.slice] += k_data * rate * weight_dc * tau * (1.0 - 1.0 / root)
                         name = f"{spec.name}: {label(src_layer, src_kind)}->{label(dst_layer, dst_kind)}"
 
                         pre_index = None
@@ -1834,11 +1876,10 @@ class SpikingBrain:
         # Базовый контур (base_circuit): ресурс пресинапса (истощение,
         # 1 — полный) и усиление торможения, приходящего к клетке (1 — норма).
         self.stp_x = torch.ones(self.n_slots, device=self.device)
-        # Облегчающиеся синапсы E → SOM: ресурс и доля выброса у каждого E.
-        self.facil_x = torch.ones(self.n_slots, device=self.device)
-        self.facil_u = torch.full((self.n_slots,), float(getattr(cfg, "som_facil_u", 0.16)), device=self.device)
-        self.facil_decay = cfg.dt_ms / getattr(cfg, "som_facil_tau_ms", 376.0)
-        self.facil_recover = cfg.dt_ms / getattr(cfg, "som_facil_rec_ms", 45.0)
+        # Кратковременная пластичность клеток с типами: u (до первого спайка
+        # 0) и ресурс x к каждому типу получателя.
+        self.stp_u4 = torch.zeros(self.n_slots, 4, device=self.device)
+        self.stp_x4 = torch.ones(self.n_slots, 4, device=self.device)
         self.inh_gain = torch.ones(self.n_slots, device=self.device)
         # У маленьких мозгов зоны малы, и случайные пики занимают
         # большую долю нейронов — им нужен запас не по доле, а в штуках.
@@ -1919,19 +1960,23 @@ class SpikingBrain:
             weight = weight * ~to_dendrite
 
         if self.has_som:
-            # E → SOM облегчаются (Tsodyks–Markram, u растёт с каждым спайком):
-            # в покое — измеренный PSP, после серии — во много раз больше.
-            facilitated = self.is_som.index_select(0, post) & (weight > 0)
-            gain = self.facil_u * self.facil_x / cfg.som_facil_u
-            weight = torch.where(facilitated, weight * gain.index_select(0, pre_of), weight)
+            # Синапсы клеток с типами: свои U, ресурс и облегчение к каждому
+            # типу получателя (cfg.column_stp). Сила спайка = u·x до выброса /
+            # U: состояние уже после спайка — x_до = x / (1 − u).
+            typed = self.typed_pre.index_select(0, pre_of)
+            slot = pre_of.long() * 4 + self.cell_type.index_select(0, post).clamp(min=0)
+            u = self.stp_u4.view(-1).index_select(0, slot)
+            x = self.stp_x4.view(-1).index_select(0, slot)
+            gain = u * x / (1.0 - u).clamp(min=1e-3) / self.stp_U4.view(-1).index_select(0, slot)
+            weight = torch.where(typed, weight * gain, weight)
 
         if cfg.base_circuit:
             # Истощение: синапс отдаёт долю оставшегося ресурса пресинапса
-            # (у E → SOM — своё, выше).
+            # (у клеток с типами — своё, выше).
             depletion = self.stp_x.index_select(0, pre_of)
 
             if self.has_som:
-                depletion = torch.where(facilitated, 1.0, depletion)
+                depletion = torch.where(typed, 1.0, depletion)
             weight = weight * depletion
             # Торможение к клетке × её усиление (растёт, если клетка
             # стреляет выше нормы).
@@ -2068,22 +2113,21 @@ class SpikingBrain:
             # Истощаются синапсы E зон с обучаемыми связями и все E колонок
             # (E → E и E → PV ослабевают при повторе — Markram et al. 1998;
             # Campagnola et al. 2022).
-            self.stp_x.sub_(cfg.stp_u * self.stp_x * self.spikes * torch.maximum(self.cortex_e, self.facil_pre))
+            self.stp_x.sub_(cfg.stp_u * self.stp_x * self.spikes * self.cortex_e)
             # Усиление торможения: каждый спайк E коры поднимает, медленно
             # возвращается к 1 (в равновесии 1 + шаг · τ · частота).
             self.inh_gain.sub_(1.0).mul_(self.decay_inh_gain).add_(1.0)
             self.inh_gain.add_(cfg.inh_gain_per_spike * self.spikes * self.inh_adapts)
 
         if self.has_som:
-            # Облегчение: u спадает к U за τ облегчения, спайк поднимает его на
-            # U·(1 − u); ресурс x восстанавливается за τ восстановления, спайк
-            # тратит u·x (Tsodyks & Markram 1997; Gupta et al. 2000).
-            spiked = self.spikes * self.facil_pre
-            self.facil_u.sub_((self.facil_u - cfg.som_facil_u) * self.facil_decay)
-            self.facil_x.add_((1.0 - self.facil_x) * self.facil_recover)
-            used = self.facil_u * self.facil_x * spiked
-            self.facil_u.add_(cfg.som_facil_u * (1.0 - self.facil_u) * spiked)
-            self.facil_x.sub_(used)
+            # u спадает к 0 за τ облегчения, спайк поднимает его на U·(1 − u);
+            # ресурс x восстанавливается за τ восстановления, спайк тратит u·x
+            # (Tsodyks & Markram 1997; Markram et al. 1998).
+            spiked = (self.spikes * self.typed_pre)[:, None]
+            self.stp_u4.mul_(self.stp_fac4)
+            self.stp_x4.add_((1.0 - self.stp_x4) * self.stp_rec4)
+            self.stp_u4.add_(self.stp_U4 * (1.0 - self.stp_u4) * spiked)
+            self.stp_x4.sub_(self.stp_u4 * self.stp_x4 * spiked)
 
         if cfg.pool_inhibition_mv > 0:
             self.pool.mul_(self.decay_pool).add_((self.spikes * self.pool_mask).sum())
@@ -2891,7 +2935,7 @@ class SpikingBrain:
     _DYNAMIC = (
         "v", "i_syn", "i_inh", "i_slow", "i_dend", "pool", "area_pool", "adapt", "adapt_slow", "refractory", "spikes",
         "trace_pre", "trace_pre_rise", "ltp_kernel", "trace_post", "counts", "eligibility",
-        "eligibility_scale", "dropped", "bias", "interoception", "kick_current", "kick_left", "stp_x", "facil_x", "facil_u", "inh_gain",
+        "eligibility_scale", "dropped", "bias", "interoception", "kick_current", "kick_left", "stp_x", "stp_u4", "stp_x4", "inh_gain",
         "chemistry", "pending", "pending_dend", "tick",
     )
 

@@ -48,6 +48,13 @@ RATES_HZ = {
     "ca1": 1.5, "ca3": 1.0, "dentate": 0.3, "entorhinal": 2.0, "granule": 0.5, "vlpo": 1.0,
 }
 
+# Частоты в медленном сне, Гц (переключатель сна, стенды sleep_switch и
+# sleep_fit): VLPO 5–10 (Szymusiak et al. 1998); LC ~вдвое реже, чем наяву
+# (Aston-Jones & Bloom 1981), шов — тоже (Jacobs & Fornal 1999); орексин
+# почти молчит (Lee, Hassani & Jones 2005); холинергические Мейнерта в
+# медленном сне редки (Lee et al. 2005 [сверить число]).
+SLEEP_RATES_HZ = {"vlpo": 7.0, "lc": 1.0, "raphe": 1.0, "orexin": 0.1, "nbm": 0.5}
+
 
 def _area(name, title, share, **kw) -> AreaSpec:
     """Подкорковое ядро: без обучаемых связей внутри, без гомеостаза по словам."""
@@ -162,6 +169,16 @@ def pathways(cfg) -> list[PathwaySpec]:
         _path("vlpo", "raphe", 20, -1.0),
         _path("prefrontal", "raphe", 20, 0.5),
     ]
+    # ---- переключатель сна (Saper, Chou & Scammell 2001) ----
+    # VLPO (ГАМК, галанин) тормозит ядра бодрствования синапсами — LC, шов,
+    # орексин (Sherin et al. 1998); обратно ядра бодрствования тормозят VLPO
+    # не синапсом, а веществом — норадреналин, серотонин, ацетилхолин
+    # (Gallopin et al. 2000; рецепторы — RECEPTORS). Орексин возбуждает шов
+    # (Brown et al. 2001), как LC и Мейнерт.
+    out += [
+        _path("vlpo", "lc", 20, -1.0),
+        _path("orexin", "raphe", 20, 1.0),
+    ]
     # ---- миндалина (LeDoux 2000; Paré et al. 2004) ----
     # Базолатеральная → центральная; центральная (ГАМК) → LC, VTA, Мейнерт.
     out += [
@@ -193,7 +210,16 @@ def pathways(cfg) -> list[PathwaySpec]:
 #   1986);
 # - серотонин: 5-HT1A гиперполяризуют пирамидные клетки ПФК (Araneda &
 #   Andrade 1991);
-# - орексин возбуждает LC и Мейнерт (Hagan et al. 1999; Eggermann et al. 2001).
+# - орексин возбуждает LC и Мейнерт (Hagan et al. 1999; Eggermann et al. 2001);
+# - VLPO тормозят норадреналин (α2), ацетилхолин (мускариновые) и у
+#   большинства клеток серотонин, гистамин — нет (Gallopin et al. 2000):
+#   обратная ветвь переключателя сна. Величина [сверить по статье];
+# - аденозин (A1) тормозит орексиновые клетки (Liu & Gao 2007 — через вход,
+#   без сдвига потенциала покоя; у нас — током клетки) и холинергические
+#   базального мозга (Arrigoni et al. 2006); A2A деполяризует часть клеток
+#   VLPO (Gallopin et al. 2005), A1 гиперполяризует LC (Regenold & Illes
+#   1990) — единицы мВ [сверить]; заменяют подобранные под старый стенд
+#   +35 / −15 из cfg.receptors (с ними VLPO во сне ~30 Гц против 5–10).
 RECEPTORS = (
     ("acetylcholine", ":VIP", 5.0),
     ("acetylcholine", "", 2.0),
@@ -201,20 +227,132 @@ RECEPTORS = (
     ("serotonin", "goal", -3.0),
     ("orexin", "lc", 10.0),
     ("orexin", "nbm", 5.0),
+    ("noradrenaline", "vlpo", -5.0),
+    ("serotonin", "vlpo", -5.0),
+    ("acetylcholine", "vlpo", -5.0),
+    ("adenosine", "orexin", -5.0),
+    ("adenosine", "nbm", -5.0),
+    ("adenosine", "vlpo", 5.0),
+    ("adenosine", "lc", -5.0),
 )
 
 MODULATORS = (("serotonin", "raphe"), ("acetylcholine", "nbm"), ("orexin", "orexin"))
 
-# [согласовано с частотами in vivo] 2026-10-15, data/tools/anatomy_fit.py
-# (20 + 15 + 15 шагов, весь мозг small, шаг 0.5 мс, с плато и таламусом по
-# данным; внешний фон L2/3 и L5 ушёл почти в 0 — вероятно двойной учёт: вход
-# Potjans уже содержит таламус и другие зоны, у нас они явные — разобрать): фон ядер, мВ
-# (заменяет входы ствола и коры, которых нет), и фон колонок по слою и типу.
-# Лучшая ошибка 0.37; от шага к шагу ядра сна и бодрствования (LC, шов,
-# орексин, Мейнерт, VLPO) перескакивают разом — их взаимное торможение —
-# переключатель (Saper et al. 2001). Выше нормы: PV L2/3 (~40 против 6.4).
-NUCLEUS_BIAS_MV = (('vta', 19.2), ('amygdala', 16.57), ('lc', 7.35), ('vlpo', 17.3), ('striatum_d1', 10.46), ('striatum_d2', 23.91), ('gpe', 7.8), ('gpi', 19.45), ('thalamus', 57.07), ('entorhinal', -55.92), ('dentate', 13.96), ('ca3', 19.35), ('ca1', -24.87), ('granule', 9.28), ('lgn', 42.76), ('mgn', 81.87), ('md', 23.14), ('trn', -19.71), ('fsi', 12.21), ('stn', 24.84), ('raphe', -1.92), ('nbm', 15.58), ('orexin', -1.23), ('cea', 17.59), ('purkinje', 66.63), ('dcn', 66.48), ('io', 3.26))
-COLUMN_EXTERNAL_POP = (('auditory', 'L23', 'E', 0.738), ('auditory', 'L23', 'PV', 0.0), ('auditory', 'L23', 'SOM', 0.155), ('auditory', 'L23', 'VIP', 0.296), ('auditory', 'L4', 'E', 0.764), ('auditory', 'L4', 'PV', 0.084), ('auditory', 'L4', 'SOM', 1.252), ('auditory', 'L4', 'VIP', 0.297), ('auditory', 'L5', 'E', 0.744), ('auditory', 'L5', 'PV', 0.0), ('auditory', 'L5', 'SOM', 1.189), ('auditory', 'L5', 'VIP', 0.415), ('auditory', 'L6', 'E', 1.327), ('auditory', 'L6', 'PV', 0.313), ('auditory', 'L6', 'SOM', 0.797), ('auditory', 'L6', 'VIP', 0.657), ('association', 'L23', 'E', 0.517), ('association', 'L23', 'PV', 0.0), ('association', 'L23', 'SOM', 0.155), ('association', 'L23', 'VIP', 0.044), ('association', 'L4', 'E', 3.624), ('association', 'L4', 'PV', 0.086), ('association', 'L4', 'SOM', 1.24), ('association', 'L4', 'VIP', 0.321), ('association', 'L5', 'E', 0.847), ('association', 'L5', 'PV', 0.0), ('association', 'L5', 'SOM', 1.237), ('association', 'L5', 'VIP', 0.787), ('association', 'L6', 'E', 1.488), ('association', 'L6', 'PV', 0.218), ('association', 'L6', 'SOM', 0.745), ('association', 'L6', 'VIP', 0.596), ('prefrontal', 'L23', 'E', 0.268), ('prefrontal', 'L23', 'PV', 0.0), ('prefrontal', 'L23', 'SOM', 0.155), ('prefrontal', 'L23', 'VIP', 0.006), ('prefrontal', 'L4', 'E', 0.004), ('prefrontal', 'L4', 'PV', 0.0), ('prefrontal', 'L4', 'SOM', 1.047), ('prefrontal', 'L4', 'VIP', 0.001), ('prefrontal', 'L5', 'E', 0.392), ('prefrontal', 'L5', 'PV', 0.0), ('prefrontal', 'L5', 'SOM', 1.136), ('prefrontal', 'L5', 'VIP', 0.189), ('prefrontal', 'L6', 'E', 1.365), ('prefrontal', 'L6', 'PV', 0.077), ('prefrontal', 'L6', 'SOM', 0.613), ('prefrontal', 'L6', 'VIP', 0.594), ('motor', 'L23', 'E', 0.0), ('motor', 'L23', 'PV', 0.0), ('motor', 'L23', 'SOM', 0.0), ('motor', 'L23', 'VIP', 0.0), ('motor', 'L5', 'E', 0.0), ('motor', 'L5', 'PV', 0.0), ('motor', 'L5', 'SOM', 0.0), ('motor', 'L5', 'VIP', 0.267), ('motor', 'L6', 'E', 1.312), ('motor', 'L6', 'PV', 0.0), ('motor', 'L6', 'SOM', 0.001), ('motor', 'L6', 'VIP', 0.205), ('goal', 'L23', 'E', 0.335), ('goal', 'L23', 'PV', 0.0), ('goal', 'L23', 'SOM', 0.155), ('goal', 'L23', 'VIP', 0.01), ('goal', 'L4', 'E', 0.004), ('goal', 'L4', 'PV', 0.0), ('goal', 'L4', 'SOM', 1.066), ('goal', 'L4', 'VIP', 0.002), ('goal', 'L5', 'E', 0.293), ('goal', 'L5', 'PV', 0.0), ('goal', 'L5', 'SOM', 1.163), ('goal', 'L5', 'VIP', 0.324), ('goal', 'L6', 'E', 1.301), ('goal', 'L6', 'PV', 0.086), ('goal', 'L6', 'SOM', 0.565), ('goal', 'L6', 'VIP', 0.587), ('limbic', 'L23', 'E', 0.95), ('limbic', 'L23', 'PV', 0.0), ('limbic', 'L23', 'SOM', 0.155), ('limbic', 'L23', 'VIP', 0.466), ('limbic', 'L5', 'E', 1.446), ('limbic', 'L5', 'PV', 0.0), ('limbic', 'L5', 'SOM', 1.074), ('limbic', 'L5', 'VIP', 0.713), ('limbic', 'L6', 'E', 1.114), ('limbic', 'L6', 'PV', 0.342), ('limbic', 'L6', 'SOM', 0.606), ('limbic', 'L6', 'VIP', 0.6), ('category', 'L23', 'E', 0.725), ('category', 'L23', 'PV', 0.0), ('category', 'L23', 'SOM', 0.155), ('category', 'L23', 'VIP', 0.275), ('category', 'L4', 'E', 3.267), ('category', 'L4', 'PV', 0.104), ('category', 'L4', 'SOM', 1.166), ('category', 'L4', 'VIP', 0.333), ('category', 'L5', 'E', 0.733), ('category', 'L5', 'PV', 0.0), ('category', 'L5', 'SOM', 1.189), ('category', 'L5', 'VIP', 0.845), ('category', 'L6', 'E', 1.321), ('category', 'L6', 'PV', 0.281), ('category', 'L6', 'SOM', 0.758), ('category', 'L6', 'VIP', 0.661), ('visual', 'L23', 'E', 0.309), ('visual', 'L23', 'PV', 0.0), ('visual', 'L23', 'SOM', 0.155), ('visual', 'L23', 'VIP', 0.133), ('visual', 'L4', 'E', 4.249), ('visual', 'L4', 'PV', 0.024), ('visual', 'L4', 'SOM', 1.052), ('visual', 'L4', 'VIP', 0.298), ('visual', 'L5', 'E', 1.702), ('visual', 'L5', 'PV', 0.0), ('visual', 'L5', 'SOM', 1.204), ('visual', 'L5', 'VIP', 0.373), ('visual', 'L6', 'E', 2.135), ('visual', 'L6', 'PV', 0.049), ('visual', 'L6', 'SOM', 0.746), ('visual', 'L6', 'VIP', 0.475), ('letters', 'L23', 'E', 0.626), ('letters', 'L23', 'PV', 0.0), ('letters', 'L23', 'SOM', 0.155), ('letters', 'L23', 'VIP', 0.181), ('letters', 'L4', 'E', 3.197), ('letters', 'L4', 'PV', 0.025), ('letters', 'L4', 'SOM', 0.935), ('letters', 'L4', 'VIP', 0.228), ('letters', 'L5', 'E', 0.901), ('letters', 'L5', 'PV', 0.0), ('letters', 'L5', 'SOM', 1.204), ('letters', 'L5', 'VIP', 0.429), ('letters', 'L6', 'E', 1.576), ('letters', 'L6', 'PV', 0.063), ('letters', 'L6', 'SOM', 0.71), ('letters', 'L6', 'VIP', 0.423), ('hand', 'L23', 'E', 0.0), ('hand', 'L23', 'PV', 0.0), ('hand', 'L23', 'SOM', 0.0), ('hand', 'L23', 'VIP', 0.0), ('hand', 'L5', 'E', 0.0), ('hand', 'L5', 'PV', 0.0), ('hand', 'L5', 'SOM', 0.001), ('hand', 'L5', 'VIP', 0.521), ('hand', 'L6', 'E', 1.166), ('hand', 'L6', 'PV', 0.0), ('hand', 'L6', 'SOM', 0.002), ('hand', 'L6', 'VIP', 0.388))
+# [согласовано с частотами in vivo] 2026-10-15. Оба набора пишут скрипты
+# подбора сами (anatomy.write_fitted), руками не править.
+# NUCLEUS_BIAS_MV — фон каждого ядра, мВ: постоянный ток вместо входов
+# ствола и коры, которых в модели нет. Подбор — data/tools/anatomy_fit.py
+# (весь мозг small, шаг 0.5 мс, частоты наяву RATES_HZ), кроме узла сна
+# (VLPO, LC, шов, орексин, Мейнерт): он двустабилен, его подбирает
+# data/tools/sleep_fit.py по двум состояниям — наяву (RATES_HZ) и в
+# медленном сне (SLEEP_RATES_HZ).
+# COLUMN_EXTERNAL_POP — множитель внешнего фона колонки (вход из мозга вне
+# модели, Potjans минус явные пути) по зоне, слою и типу клетки; подбор —
+# anatomy_fit под column_target_hz. Внешний фон L2/3 и L5 ушёл почти в 0 —
+# вероятно двойной учёт (вход Potjans уже содержит таламус и другие зоны,
+# у нас они явные) — разобрать. Выше нормы: PV L2/3 (~40 против 6.4).
+NUCLEUS_BIAS_MV = (
+    ('vta', 17.97),
+    ('amygdala', 10.77),
+    ('lc', 20.3),
+    ('vlpo', 18.56),
+    ('striatum_d1', 6.88),
+    ('striatum_d2', 18.37),
+    ('gpe', 8.07),
+    ('gpi', 20.38),
+    ('thalamus', 58.48),
+    ('entorhinal', -53.19),
+    ('dentate', 11.0),
+    ('ca3', 18.42),
+    ('ca1', -8.32),
+    ('granule', -1.88),
+    ('lgn', 43.78),
+    ('mgn', 82.6),
+    ('md', 23.13),
+    ('trn', -15.99),
+    ('fsi', 19.8),
+    ('stn', 26.89),
+    ('raphe', -3.33),
+    ('nbm', 14.79),
+    ('orexin', -1.07),
+    ('cea', 15.77),
+    ('purkinje', 68.71),
+    ('dcn', 71.43),
+    ('io', 1.8),
+)
+# (зона, слой, тип клетки, множитель внешнего фона)
+COLUMN_EXTERNAL_POP = (
+    ('auditory', 'L23', 'E', 1.97), ('auditory', 'L23', 'PV', 0.0), ('auditory', 'L23', 'SOM', 1.65), ('auditory', 'L23', 'VIP', 0.126),
+    ('auditory', 'L4', 'E', 1.627), ('auditory', 'L4', 'PV', 0.082), ('auditory', 'L4', 'SOM', 1.38), ('auditory', 'L4', 'VIP', 0.112),
+    ('auditory', 'L5', 'E', 1.571), ('auditory', 'L5', 'PV', 0.0), ('auditory', 'L5', 'SOM', 1.407), ('auditory', 'L5', 'VIP', 0.262),
+    ('auditory', 'L6', 'E', 1.966), ('auditory', 'L6', 'PV', 0.515), ('auditory', 'L6', 'SOM', 0.739), ('auditory', 'L6', 'VIP', 0.493),
+    ('association', 'L23', 'E', 1.007), ('association', 'L23', 'PV', 0.0), ('association', 'L23', 'SOM', 1.619), ('association', 'L23', 'VIP', 0.002),
+    ('association', 'L4', 'E', 4.059), ('association', 'L4', 'PV', 0.064), ('association', 'L4', 'SOM', 1.411), ('association', 'L4', 'VIP', 0.128),
+    ('association', 'L5', 'E', 0.942), ('association', 'L5', 'PV', 0.0), ('association', 'L5', 'SOM', 1.827), ('association', 'L5', 'VIP', 0.642),
+    ('association', 'L6', 'E', 1.81), ('association', 'L6', 'PV', 0.258), ('association', 'L6', 'SOM', 0.755), ('association', 'L6', 'VIP', 0.394),
+    ('prefrontal', 'L23', 'E', 2.382), ('prefrontal', 'L23', 'PV', 0.0), ('prefrontal', 'L23', 'SOM', 1.65), ('prefrontal', 'L23', 'VIP', 0.019),
+    ('prefrontal', 'L4', 'E', 0.01), ('prefrontal', 'L4', 'PV', 0.0), ('prefrontal', 'L4', 'SOM', 1.221), ('prefrontal', 'L4', 'VIP', 0.004),
+    ('prefrontal', 'L5', 'E', 1.004), ('prefrontal', 'L5', 'PV', 0.0), ('prefrontal', 'L5', 'SOM', 1.276), ('prefrontal', 'L5', 'VIP', 0.371),
+    ('prefrontal', 'L6', 'E', 1.608), ('prefrontal', 'L6', 'PV', 0.594), ('prefrontal', 'L6', 'SOM', 0.686), ('prefrontal', 'L6', 'VIP', 0.542),
+    ('motor', 'L23', 'E', 0.0), ('motor', 'L23', 'PV', 0.0), ('motor', 'L23', 'SOM', 0.0), ('motor', 'L23', 'VIP', 0.0),
+    ('motor', 'L5', 'E', 0.0), ('motor', 'L5', 'PV', 0.0), ('motor', 'L5', 'SOM', 0.0), ('motor', 'L5', 'VIP', 0.086),
+    ('motor', 'L6', 'E', 1.398), ('motor', 'L6', 'PV', 0.0), ('motor', 'L6', 'SOM', 0.0), ('motor', 'L6', 'VIP', 0.087),
+    ('goal', 'L23', 'E', 2.321), ('goal', 'L23', 'PV', 0.0), ('goal', 'L23', 'SOM', 1.65), ('goal', 'L23', 'VIP', 0.031),
+    ('goal', 'L4', 'E', 0.022), ('goal', 'L4', 'PV', 0.0), ('goal', 'L4', 'SOM', 1.119), ('goal', 'L4', 'VIP', 0.01),
+    ('goal', 'L5', 'E', 1.838), ('goal', 'L5', 'PV', 0.0), ('goal', 'L5', 'SOM', 1.319), ('goal', 'L5', 'VIP', 0.449),
+    ('goal', 'L6', 'E', 1.78), ('goal', 'L6', 'PV', 0.619), ('goal', 'L6', 'SOM', 0.631), ('goal', 'L6', 'VIP', 0.55),
+    ('limbic', 'L23', 'E', 3.665), ('limbic', 'L23', 'PV', 0.0), ('limbic', 'L23', 'SOM', 1.65), ('limbic', 'L23', 'VIP', 0.167),
+    ('limbic', 'L5', 'E', 2.161), ('limbic', 'L5', 'PV', 0.0), ('limbic', 'L5', 'SOM', 1.414), ('limbic', 'L5', 'VIP', 0.505),
+    ('limbic', 'L6', 'E', 1.86), ('limbic', 'L6', 'PV', 0.625), ('limbic', 'L6', 'SOM', 0.621), ('limbic', 'L6', 'VIP', 0.445),
+    ('category', 'L23', 'E', 2.183), ('category', 'L23', 'PV', 0.0), ('category', 'L23', 'SOM', 1.65), ('category', 'L23', 'VIP', 0.145),
+    ('category', 'L4', 'E', 3.089), ('category', 'L4', 'PV', 0.119), ('category', 'L4', 'SOM', 0.989), ('category', 'L4', 'VIP', 0.138),
+    ('category', 'L5', 'E', 0.737), ('category', 'L5', 'PV', 0.0), ('category', 'L5', 'SOM', 1.272), ('category', 'L5', 'VIP', 0.643),
+    ('category', 'L6', 'E', 1.531), ('category', 'L6', 'PV', 0.433), ('category', 'L6', 'SOM', 0.751), ('category', 'L6', 'VIP', 0.521),
+    ('visual', 'L23', 'E', 0.335), ('visual', 'L23', 'PV', 0.0), ('visual', 'L23', 'SOM', 1.65), ('visual', 'L23', 'VIP', 0.033),
+    ('visual', 'L4', 'E', 4.166), ('visual', 'L4', 'PV', 0.002), ('visual', 'L4', 'SOM', 0.856), ('visual', 'L4', 'VIP', 0.087),
+    ('visual', 'L5', 'E', 1.687), ('visual', 'L5', 'PV', 0.0), ('visual', 'L5', 'SOM', 1.278), ('visual', 'L5', 'VIP', 0.345),
+    ('visual', 'L6', 'E', 1.941), ('visual', 'L6', 'PV', 0.003), ('visual', 'L6', 'SOM', 0.621), ('visual', 'L6', 'VIP', 0.389),
+    ('letters', 'L23', 'E', 2.094), ('letters', 'L23', 'PV', 0.0), ('letters', 'L23', 'SOM', 1.65), ('letters', 'L23', 'VIP', 0.073),
+    ('letters', 'L4', 'E', 3.347), ('letters', 'L4', 'PV', 0.002), ('letters', 'L4', 'SOM', 0.969), ('letters', 'L4', 'VIP', 0.059),
+    ('letters', 'L5', 'E', 0.864), ('letters', 'L5', 'PV', 0.0), ('letters', 'L5', 'SOM', 1.184), ('letters', 'L5', 'VIP', 0.298),
+    ('letters', 'L6', 'E', 1.582), ('letters', 'L6', 'PV', 0.01), ('letters', 'L6', 'SOM', 0.681), ('letters', 'L6', 'VIP', 0.277),
+    ('hand', 'L23', 'E', 0.0), ('hand', 'L23', 'PV', 0.0), ('hand', 'L23', 'SOM', 0.0), ('hand', 'L23', 'VIP', 0.0),
+    ('hand', 'L5', 'E', 0.0), ('hand', 'L5', 'PV', 0.0), ('hand', 'L5', 'SOM', 0.0), ('hand', 'L5', 'VIP', 0.372),
+    ('hand', 'L6', 'E', 1.439), ('hand', 'L6', 'PV', 0.0), ('hand', 'L6', 'SOM', 0.001), ('hand', 'L6', 'VIP', 0.281),
+)
+
+
+def format_fitted(bias, pop) -> str:
+    """Найденные числа — текстом для anatomy.py: ядро на строку, слой зоны на строку."""
+
+    lines = ["NUCLEUS_BIAS_MV = ("]
+    lines += [f"    ({name!r}, {round(mv, 2)})," for name, mv in bias]
+    lines += [")", "# (зона, слой, тип клетки, множитель внешнего фона)", "COLUMN_EXTERNAL_POP = ("]
+    rows: dict = {}
+
+    for area, layer, kind, gain in pop:
+        rows.setdefault((area, layer), []).append(f"({area!r}, {layer!r}, {kind!r}, {round(gain, 3)}),")
+
+    lines += ["    " + " ".join(row) for row in rows.values()]
+    lines.append(")")
+
+    return "\n".join(lines) + "\n"
+
+
+def write_fitted(bias, pop) -> str:
+    """Заменить NUCLEUS_BIAS_MV и COLUMN_EXTERNAL_POP в этом файле найденными."""
+
+    from pathlib import Path
+
+    path = Path(__file__)
+    text = path.read_text(encoding="utf-8")
+    start = text.index("NUCLEUS_BIAS_MV = ")
+    tail = text.index("COLUMN_EXTERNAL_POP = ")
+    # Конец — закрывающая скобка в начале строки (или конец однострочной записи).
+    end = text.index("\n)\n", tail) + 3 if text[tail:].startswith("COLUMN_EXTERNAL_POP = (\n") else text.index("\n", tail) + 1
+    path.write_text(text[:start] + format_fitted(bias, pop) + text[end:], encoding="utf-8")
+
+    return str(path)
 
 
 def apply(cfg) -> None:
@@ -228,6 +366,10 @@ def apply(cfg) -> None:
         # Выход мозжечка — через Пуркинье и ядра, а не прямой путь к руке.
         cfg.pathways = [p for p in cfg.pathways if not (p.src == "granule" and p.dst == "hand")]
 
+    # Старый переключатель сна (VLPO ↔ LC через тормозные клетки
+    # получателя) — заменён ветвями по данным: VLPO → LC синапсом ГАМК,
+    # LC → VLPO норадреналином (RECEPTORS).
+    cfg.pathways = [p for p in cfg.pathways if {p.src, p.dst} != {"vlpo", "lc"}]
     cfg.pathways = cfg.pathways + [p for p in pathways(cfg) if p.src in names and p.dst in names]
     cfg.extra_modulators = MODULATORS
     cortex = [a for a in cfg.layered_areas if a in names]

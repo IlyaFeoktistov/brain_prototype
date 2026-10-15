@@ -2170,6 +2170,18 @@ class SpikingBrain:
             if name in self.areas:
                 self.bias[self.areas[name].E.slice] += mv
 
+        # Разброс возбудимости между клетками ядра — как у главных клеток
+        # колонок (Allen, column_gap_sd_mv E): без него все клетки ядра
+        # одинаковы и включаются разом — ядро «всё или ничего» (узел сна:
+        # проигравшая сторона молчала целиком, а в записях стреляет реже).
+        if getattr(cfg, "anatomy", False):
+            sd = cfg.column_gap_sd_mv[0]
+
+            for area in self.areas.values():
+                if area.layers is None:
+                    E = area.E
+                    self.bias[E.slice] += torch.randn(E.size, device=self.device, generator=self.generator) * sd
+
         # Развитие до рождения (калибровка): гомеостаз быстрый везде.
         self.developing = False
         # Ацетилхолин (тензор — его читает записанный шаг CUDA Graph).

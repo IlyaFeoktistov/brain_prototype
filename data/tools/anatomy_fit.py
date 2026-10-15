@@ -89,6 +89,10 @@ for step in range(int(opts["steps"])):
     print("        хуже всех: " + " ".join(f"{a}.{l}{k}={r:.1f}/{targets[(l, k)]}" for (a, l, k), r in worst), flush=True)
 
     for name, r in nuclei.items():
+        if name in anatomy.SLEEP_RATES_HZ:
+            # Узел сна двустабилен — его согласует sleep_fit по двум состояниям.
+            continue
+
         # Ток: шаг по логарифму отношения частот (1 мВ ≈ заметная доля пути
         # до порога), ограничен ±2 мВ за шаг.
         step_mv = 2.0 * math.log((anatomy.RATES_HZ[name] + 0.5) / (r + 0.5))
@@ -102,15 +106,5 @@ print("column_gain_external_pop =", tuple((*key, round(g, 3)) for key, g in pop.
 
 if opts["write"] == "1":
     # Записать найденное в brain/anatomy.py вместо прежних чисел.
-    from pathlib import Path
-
-    path = Path(anatomy.__file__)
-    text = path.read_text(encoding="utf-8")
-    start = text.index("NUCLEUS_BIAS_MV = ")
-    end = text.index("\n", text.index("COLUMN_EXTERNAL_POP = ")) + 1
-    found = (
-        f"NUCLEUS_BIAS_MV = {tuple((n, round(v, 2)) for n, v in bias.items())}\n"
-        f"COLUMN_EXTERNAL_POP = {tuple((*key, round(g, 3)) for key, g in pop.items())}\n"
-    )
-    path.write_text(text[:start] + found + text[end:], encoding="utf-8")
+    path = anatomy.write_fitted(tuple(bias.items()), tuple((*key, g) for key, g in pop.items()))
     print(f"записано в {path}")

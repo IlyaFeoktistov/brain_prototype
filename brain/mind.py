@@ -28,6 +28,22 @@ class Mind:
     def __init__(self, cfg: BrainConfig):
         self.cfg = cfg
 
+        if getattr(cfg, "anatomy", False):
+            # Анатомический мозг: колонки коры и гиппокамп из нейронов; поведение
+            # — только из цепей: без формул и решений кода (ARCHITECTURE 11).
+            cfg.layers = True
+            cfg.neural_hippocampus = True
+            cfg.neural_speech = True  # слово ответа — само выстрелившее место
+            cfg.neural_surprise = True  # дофамин — из готовности нейронов
+            cfg.emotions_enabled = False  # чувство-формула
+            cfg.thinking_enabled = False  # проверяющий кодом
+            cfg.live_mode = False  # таймеры
+            cfg.initiative_enabled = False
+            cfg.ask_about_unknown = False  # фраза-заготовка
+            cfg.grow_on_surprise = False  # куда расти — решал код
+            cfg.memory_places = False  # места слов в ПФК — кодом
+            cfg.concepts_enabled = False  # места слов в смысловой коре — таблицей
+
         # Новый мозг с гиппокампом из нейронов: его зоны — часть анатомии
         # (сохраняются в cfg.areas, загруженный мозг их уже имеет).
         if cfg.neural_hippocampus and not any(a.name == "ca3" for a in cfg.areas):
@@ -45,6 +61,11 @@ class Mind:
         if cfg.hand and not any(a.name == "hand" for a in cfg.areas):
             cfg.areas = cfg.areas + hand_areas()
             cfg.pathways = cfg.pathways + hand_pathways()
+
+        if getattr(cfg, "anatomy", False) and not any(a.name == "trn" for a in cfg.areas):
+            from brain import anatomy
+
+            anatomy.apply(cfg)
 
         if cfg.layers and any(a.name == "complex" for a in cfg.areas):
             # Колонка V1 (ARCHITECTURE 10): сложные клетки — её слой 2/3, а не

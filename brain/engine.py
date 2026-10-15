@@ -353,6 +353,12 @@ class SpikingBrain:
             n_i = max(2, int(n * cfg.inhibitory_fraction))
             n_e = n - n_i
 
+            if getattr(spec, "cells", 0) > 0:
+                # Ядро с заданным числом главных клеток (реле — по рецепторам).
+                n_e = spec.cells
+                n_i = max(2, round(n_e * cfg.inhibitory_fraction / (1.0 - cfg.inhibitory_fraction)))
+                n = n_e + n_i
+
             if self._has_layers(spec.name):
                 area, start = self._column(spec, n, start)
                 self.areas[spec.name] = area
@@ -473,6 +479,11 @@ class SpikingBrain:
                 continue
 
             for _, group in self._typed_groups(area):
+                if area.layers is not None:
+                    # E колонки — клетки человека (Allen; config column_e_*).
+                    self.tau_m[group["E"].slice] = cfg.column_e_tau_m
+                    self.adapt_b[group["E"].slice] = cfg.e_adapt_b * cfg.column_e_adaptation_index / cfg.e_adaptation_index
+
                 for pop, tau, index in (
                     (group["PV"], cfg.pv_tau_m, cfg.pv_adaptation_index),
                     (group["SOM"], cfg.som_tau_m, cfg.som_adaptation_index),
@@ -539,6 +550,8 @@ class SpikingBrain:
         self.slow_max = torch.full((self.n_slots,), float("inf"), device=self.device)
 
         for spec in cfg.areas:
+            if getattr(spec, "tau_m", None) is not None:
+                self.tau_m[self.areas[spec.name].E.slice] = spec.tau_m
             if spec.adapt_b is not None:
                 self.adapt_b[self.areas[spec.name].E.slice] = spec.adapt_b
             if spec.slow_max is not None:
@@ -722,7 +735,7 @@ class SpikingBrain:
                 continue
 
             external = {layer: (e, i) for layer, e, i in cfg.external_inputs}
-            gaps = {"E": cfg.v_threshold - cfg.v_rest, "PV": cfg.pv_gap_mv, "SOM": cfg.som_gap_mv, "VIP": cfg.vip_gap_mv}
+            gaps = {"E": cfg.column_e_gap_mv, "PV": cfg.pv_gap_mv, "SOM": cfg.som_gap_mv, "VIP": cfg.vip_gap_mv}
             charge = self._potjans_charge()
 
             for layer, group in area.layers.items():
@@ -842,11 +855,15 @@ class SpikingBrain:
         Возвращает (пре, пост, тормозные получатели, на дендриты ли).
         """
 
-        direction = next(
+        direction = getattr(path, "direction", "") or next(
             (d for s, t, d in getattr(self.cfg, "pathway_directions", ()) if (s, t) == (path.src, path.dst)),
             "lateral",
         )
         pre, post, inhibitory, top_down = src.E, dst.E, dst.I, False
+
+        if direction == "ct" and src.layers is not None:
+            # Кортикоталамический путь — из L6 (Sherman & Guillery).
+            return src.layers["L6"]["E"], dst.E, dst.I, False
 
         if src.layers is not None and (direction == "fb" or dst.layers is None and dst.SOM is None):
             # Обратные пути и выход к ядрам — из L5.
@@ -971,6 +988,11 @@ class SpikingBrain:
                         src_ei = "E" if src_kind == "E" else "I"
                         dst_ei = "E" if dst_kind == "E" else "I"
                         p = potjans(src_layer, src_ei, dst_layer, dst_ei)
+
+                        if src_ei == dst_ei == "E":
+                            # Где у человека измерено иначе (L4 → L4 почти нет).
+                            p = next((q for a, b, q in cfg.column_ee_probability_human
+                                      if (a, b) == (src_layer, dst_layer)), p)
 
                         # Тормозная доля — по типам (среднее по слою = Potjans).
                         if src_ei == "E" and dst_ei == "I":
@@ -1294,10 +1316,16 @@ class SpikingBrain:
             src = self.areas[path.src]
             dst = self.areas[path.dst]
             pre, post, inhibitory, top_down = self._laminar(path, src, dst)
+            weight = path.weight
+
+            if getattr(path, "psp_mv", None) is not None:
+                # Вес из измеренного PSP (анатомический мозг).
+                w = path.psp_mv / self._psp_peak(post)
+                weight = (w, w)
 
             proj = self._connect(
                 getattr(path, "name", "") or f"{path.src} -> {path.dst}", pre, post, path.k,
-                path.weight, plastic=path.plastic, cap=path.cap,
+                weight, plastic=path.plastic, cap=path.cap,
                 modulator=path.modulator, ach_suppressed=path.ach_suppressed,
                 topographic=path.topographic, blocks=getattr(path, "blocks", 0),
                 shift=getattr(path, "shift", 0), retinotopic=getattr(path, "retinotopic", 0.0),
@@ -1321,6 +1349,25 @@ class SpikingBrain:
         # первым (как всегда), дальше остальные.
         for sensor, offset in zip(self.sensors, self.sensor_offsets):
             area = self.areas[sensor.area]
+            relay = self.areas.get(getattr(sensor, "relay", "") or "")
+
+            if relay is not None:
+                # Реле таламуса (LGN, MGN): рецептор → своя клетка реле (у
+                # клетки LGN 1–3 сильных входа сетчатки, Usrey, Reppas & Reid
+                # 1999), тормозные реле — случайные рецепторы. Дальше реле
+                # входит в L4 зоны той же проводкой, что раньше рецепторы.
+                cells = torch.arange(relay.E.size, device=self.device) % sensor.size
+                driver = cfg.relay_driver_psp_mv / self._psp_peak(relay.E)
+                self.projections.append(Projection(
+                    f"{sensor.name} -> {relay.E.name}", "sensory", (cells + offset)[:, None], relay.E,
+                    torch.full((relay.E.size, 1), driver, device=self.device),
+                ))
+                k = min(sensor.k, sensor.size)
+                self.projections.append(Projection(
+                    f"{sensor.name} -> {relay.I.name}", "sensory",
+                    torch.randint(0, sensor.size, (relay.I.size, k), device=self.device, generator=self.generator) + offset,
+                    relay.I, torch.full((relay.I.size, k), driver / k * 4, device=self.device),
+                ))
             # Вход органа (через таламус) — в L4 колонки (Potjans: таламус → L4).
             target = area.layers.get("L4", area.layers["L23"]) if area.layers is not None else None
             excitatory = target["E"] if target else area.E
@@ -1337,6 +1384,17 @@ class SpikingBrain:
                         0, sensor.size, (pop.size, k), device=self.device, generator=self.generator,
                     )
                     weight = torch.full((pop.size, k), sensor.weight, device=self.device)
+
+                if relay is not None:
+                    # Реле → L4 (таламокортикальный путь).
+                    proj = Projection(
+                        f"{relay.name} -> {pop.name}", "net", (pre + relay.E.start).to(torch.int32), pop, weight * gain,
+                    )
+                    proj.pre_pop = relay.E
+                    proj.innate_range = (float(weight.min()), float(weight.max()))
+                    proj.source_kind = relay.kind
+                    self.projections.append(proj)
+                    continue
 
                 self.projections.append(
                     Projection(
@@ -1633,6 +1691,10 @@ class SpikingBrain:
     def set_acetylcholine(self, level: float) -> None:
         """Уровень ацетилхолина (0 — сон и вспоминание, 1 — бодрая запись нового)."""
 
+        if self.ach_chemistry >= 0:
+            # Ацетилхолин даёт ядро Мейнерта — код его не ставит.
+            return
+
         self.acetylcholine.fill_(level)
 
     # Нейромодуляторы: имя → ядро-источник (зона, чьи E-клетки выбрасывают);
@@ -1652,7 +1714,9 @@ class SpikingBrain:
         c / (c + K), а не через формулы на события.
         """
 
-        names = list(self.MODULATORS)
+        modulators = dict(self.MODULATORS)
+        modulators.update(dict(getattr(self.cfg, "extra_modulators", ())))
+        names = list(modulators)
         self.chemistry_names = names
         # float64: аденозин копится часами — прибавки за шаг ~1e-10.
         self.chemistry = torch.zeros(len(names), device=self.device, dtype=torch.float64)
@@ -1663,7 +1727,7 @@ class SpikingBrain:
         self.chemistry_source = torch.zeros(len(names), self.n_slots, device=self.device)
 
         for i, name in enumerate(names):
-            area = self.areas.get(self.MODULATORS[name])
+            area = self.areas.get(modulators[name])
             cells = area.E.slice if area is not None else slice(0, self.n)
             size = area.E.size if area is not None else self.n
             self.chemistry_source[i, cells] = 1.0 / size
@@ -1676,10 +1740,24 @@ class SpikingBrain:
         self.receptor_mv = torch.zeros(len(names), self.n_slots, device=self.device)
 
         for name, area_name, mv in self.cfg.receptors:
+            # «зона» — её E; «зона:VIP» — все клетки этого типа во всех слоях.
+            area_name, _, kind = area_name.partition(":")
             area = self.areas.get(area_name)
 
-            if area is not None and name in names:
+            if area is None or name not in names:
+                continue
+
+            if not kind:
                 self.receptor_mv[names.index(name), area.E.slice] = mv
+                continue
+
+            for label, pop in area.populations:
+                if label.split(".")[-1] == kind or (kind == "PV" and label.split(".")[-1] == "I"):
+                    self.receptor_mv[names.index(name), pop.slice] = mv
+
+        # Ацетилхолин из ядра Мейнерта (анатомический мозг): уровень, который
+        # читают пути и sAHP, — занятость его рецепторов, а не число из кода.
+        self.ach_chemistry = names.index("acetylcholine") if "acetylcholine" in names else -1
 
         # Часы (SCN): ток клеткам часов по фазе суток — молекулярный цикл
         # клетки, выставляется set_clock (copy_ — для CUDA Graph).
@@ -1855,6 +1933,23 @@ class SpikingBrain:
                 for _, group in self._typed_groups(area):
                     for kind, data_gap in (("PV", cfg.pv_gap_mv), ("SOM", cfg.som_gap_mv), ("VIP", cfg.vip_gap_mv)):
                         self.bias[group[kind].slice] = gap - data_gap
+
+                    if area.layers is not None:
+                        self.bias[group["E"].slice] = gap - cfg.column_e_gap_mv
+
+        for spec in cfg.areas:
+            hz = getattr(spec, "autonomous_hz", 0.0)
+
+            if hz > 0:
+                # Пейсмейкер: постоянный ток I, при котором клетка из сброса
+                # доходит до порога за 1/hz − рефрактерность (LIF):
+                # e^{T/τ} = (I − a) / (I − g), a — сброс, g — порог над покоем.
+                E = self.areas[spec.name].E
+                tau = float(self.tau_m[E.start])
+                T = max(1.0, 1000.0 / hz - cfg.refractory_ms)
+                q = math.exp(T / tau)
+                g, a = cfg.v_threshold - cfg.v_rest, cfg.v_reset - cfg.v_rest
+                self.bias[E.slice] = (q * g - a) / (q - 1.0)
 
         # Развитие до рождения (калибровка): гомеостаз быстрый везде.
         self.developing = False
@@ -2099,6 +2194,9 @@ class SpikingBrain:
         # Выброс веществ ядрами: доля выстреливших клеток каждого ядра.
         released = (self.chemistry_source @ self.spikes).to(torch.float64)
         self.chemistry.mul_(self.chemistry_decay).add_(released * self.chemistry_release + self.chemistry_basal)
+
+        if self.ach_chemistry >= 0:
+            self.acetylcholine.copy_(occupancy[self.ach_chemistry : self.ach_chemistry + 1])
 
         self.v.copy_(torch.where(fired, cfg.v_reset, v))
         self.refractory.copy_(torch.where(fired, cfg.refractory_ms, self.refractory))

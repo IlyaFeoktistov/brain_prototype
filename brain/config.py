@@ -127,6 +127,15 @@ class AreaSpec:
     # зоны на ~pool_inhibition_tau_ms тормозит все её E-клетки на столько мВ —
     # побеждают немногие самые возбуждённые, зона не глохнет целиком. 0 — нет.
     pool_mv: float = 0.0
+    # Анатомический мозг (brain/anatomy.py): число клеток ядра (E) вместо
+    # доли — у реле таламуса столько, сколько рецепторов органа; 0 — по доле.
+    cells: int = 0
+    # Своя мембрана главных клеток ядра, мс (None — по типу зоны).
+    tau_m: float | None = None
+    # Пейсмейкер: частота без входа (в срезе), Гц — ток покоя ставится так,
+    # чтобы клетка сама стреляла с этой частотой (GPe, SNr, STN, Пуркинье,
+    # ядра мозжечка). 0 — нет.
+    autonomous_hz: float = 0.0
 
 
 
@@ -153,6 +162,9 @@ class SensorSpec:
     rows: int = 0
     cols: int = 0
     wiring: str = "random"
+    # Реле таламуса (анатомический мозг): рецепторы → его клетки один к
+    # одному, оттуда — в L4 зоны той же проводкой. "" — прямо в зону.
+    relay: str = ""
 
 @dataclass
 class PathwaySpec:
@@ -224,6 +236,12 @@ class PathwaySpec:
     # На дендриты получателя, даже если источник — не зона памяти (часы →
     # рот: момент слова — половина конъюнкции «слово ∧ момент» на ветке).
     dendrite: bool = False
+    # Анатомический мозг: вес из измеренного PSP, мВ (знак — знак синапса);
+    # None — weight как есть.
+    psp_mv: float | None = None
+    # Направление по слоям (см. BrainConfig.pathway_directions); "" — из
+    # таблицы. "ct" — из L6 коры (кортикоталамический).
+    direction: str = ""
 
 
 
@@ -1273,23 +1291,31 @@ class BrainConfig:
     pv_share: float = 0.40
     som_share: float = 0.30
     vip_share: float = 0.15
-    # Мембрана (Allen Cell Types, медиана: E 20.4 мс; n 220 / 121 / 105).
-    pv_tau_m: float = 7.0
-    som_tau_m: float = 19.5
-    vip_tau_m: float = 13.3
-    # От покоя до порога, мВ: реобаза × входное сопротивление (Allen,
-    # медианы; у E — 16 мВ, у нас 20). PV дальше всех от порога: успевает
+    # Свойства клеток — человек (Allen Cell Types, кора после нейрохирургии,
+    # медианы): шипиковые E — n 321, нешипиковые с узким спайком (~PV,
+    # быстрые) — n 38, с широким (~SST и VIP; типы у человека в базе не
+    # помечены) — n 41. Мышь для сравнения: E τm 20.4, PV 7.0, SST 19.5, VIP
+    # 13.3 мс; до порога E 16, PV 29, SST 19, VIP 11 мВ.
+    # Мембрана, мс.
+    column_e_tau_m: float = 26.4
+    pv_tau_m: float = 11.0
+    som_tau_m: float = 19.3
+    vip_tau_m: float = 19.3
+    # От покоя до порога, мВ: реобаза × входное сопротивление. PV успевают
     # раньше залпа E не возбудимостью, а быстрой мембраной и сильным частым
     # входом от E — i_excitability с типами не нужен.
-    pv_gap_mv: float = 29.0
-    som_gap_mv: float = 19.0
-    vip_gap_mv: float = 11.0
-    # Адаптация частоты, индекс Allen (E — 0.034): PV 0.003 — нет, SOM
-    # 0.024, VIP 0.022. Ток адаптации — e_adapt_b × индекс / индекс E.
+    column_e_gap_mv: float = 14.2
+    pv_gap_mv: float = 15.4
+    som_gap_mv: float = 10.3
+    vip_gap_mv: float = 10.3
+    # Адаптация частоты, индекс Allen. Ток адаптации — e_adapt_b × индекс /
+    # e_adaptation_index (индекс E мыши 0.034 — к нему относится e_adapt_b).
+    # Человек: E 0.072 (вдвое сильнее мыши), быстрые 0.011, широкие 0.018.
     e_adaptation_index: float = 0.034
-    pv_adaptation_index: float = 0.003
-    som_adaptation_index: float = 0.024
-    vip_adaptation_index: float = 0.022
+    column_e_adaptation_index: float = 0.072
+    pv_adaptation_index: float = 0.011
+    som_adaptation_index: float = 0.018
+    vip_adaptation_index: float = 0.018
     # Связи внутри зоны: (от, к, вероятность, PSP в покое, мВ). Вероятность —
     # найдено / проверено пар, L2/3 мыши (Campagnola et al. 2022, Fig. 2B);
     # PSP — Fig. 3D (у тормозных — по всем слоям). Сырые числа без поправки
@@ -1343,6 +1369,10 @@ class BrainConfig:
     # пары клеток (Thomson & Lamy 2007).
     # ------------------------------------------------------------------
     layers: bool = False
+    # Анатомический мозг (brain/anatomy.py, ARCHITECTURE 11): колонки коры +
+    # гиппокамп из нейронов + подкорковые цепи по данным + реле таламуса
+    # органов чувств. Включает layers и neural_hippocampus.
+    anatomy: bool = False
     # Зоны-карты (V1, сложные, буквы, рука) пока без слоёв: связи внутри их
     # колонки должны идти по месту (ретинотопия), а не случайно — следующий шаг.
     layered_areas: tuple[str, ...] = (
@@ -1363,12 +1393,16 @@ class BrainConfig:
     column_cells: tuple[tuple[str, int, int], ...] = (
         ("L23", 20683, 5834), ("L4", 21915, 5479), ("L5", 4850, 1065), ("L6", 14395, 2948),
     )
-    # Доли PV, SOM, VIP от тормозных слоя (Rudy et al. 2011, Fig. 1 — Lee et
-    # al. 2010, S1 мыши; приблизительно, сверить с Kim et al. 2017, Table S3).
-    # Остаток — нейроглиаформные и др. (нет).
+    # Доли PV, SOM, VIP от тормозных слоя. Распределение по слоям — мышь
+    # (Rudy et al. 2011, Fig. 1 — Lee et al. 2010, S1; приблизительно, сверить
+    # с Kim et al. 2017, Table S3): L2/3 0.30 / 0.20 / 0.30, L4 0.60 / 0.25 /
+    # 0.05, L5 0.50 / 0.40 / 0.05, L6 0.50 / 0.35 / 0.05. У человека из CGE
+    # (VIP, LAMP5) — 50% тормозных, из MGE (PV, SST) — 44%, у мыши 31 / 67%
+    # (Hodge et al. 2019, MTG): PV и SOM × 0.66, VIP × 1.6. Остаток —
+    # нейроглиаформные, LAMP5 и др. (нет).
     layer_interneurons: tuple[tuple[str, float, float, float], ...] = (
-        ("L23", 0.30, 0.20, 0.30), ("L4", 0.60, 0.25, 0.05),
-        ("L5", 0.50, 0.40, 0.05), ("L6", 0.50, 0.35, 0.05),
+        ("L23", 0.20, 0.13, 0.48), ("L4", 0.40, 0.165, 0.08),
+        ("L5", 0.33, 0.26, 0.08), ("L6", 0.33, 0.23, 0.08),
     )
     # Вероятность связи E/I между слоями (Potjans Table 5): строка — к кому,
     # столбцы — от L23E, L23I, L4E, L4I, L5E, L5I, L6E, L6I.
@@ -1383,21 +1417,28 @@ class BrainConfig:
         (0.036, 0.001, 0.003, 0.001, 0.028, 0.008, 0.066, 0.144),
     )
     # PSP E → E, мВ: Potjans 0.15 (среднее in vivo, Fetz 1991), L4 → L2/3 ×2
-    # (у них же; Feldmeyer et al. 2002 — сильнее). Внутри слоя у мыши
-    # измерено (Campagnola Fig. 3D): L2/3 0.10, L4 0.18, L5 0.19 (IT).
+    # (у них же; Feldmeyer et al. 2002 — сильнее). Внутри слоя: человек
+    # (Campagnola Fig. 5B: L2 → L2 0.40, L3 → L3 0.34 — у мыши 0.10; L5 →
+    # L5 0.14), L4 — мышь (0.18; у человека пар L4 → L4 почти нет).
     ee_psp_mv: float = 0.15
     l4_to_l23_psp_mv: float = 0.30
-    layer_ee_psp_mv: tuple[tuple[str, float], ...] = (("L23", 0.10), ("L4", 0.18), ("L5", 0.19))
-    # PSP E → PV, SOM, VIP по слою источника (Campagnola Fig. 3D; L6 → VIP
-    # не измерено — как L5).
+    layer_ee_psp_mv: tuple[tuple[str, float], ...] = (("L23", 0.37), ("L4", 0.18), ("L5", 0.14))
+    # Вероятность, отличная от Potjans: у человека в L4 E почти не связаны
+    # друг с другом (Campagnola Fig. 5A: 1 из 143 пар; «уникальное свойство
+    # L4 человека», у мыши и у Potjans — 0.05). (от слоя, к слою, вероятность).
+    column_ee_probability_human: tuple[tuple[str, str, float], ...] = (("L4", "L4", 0.007),)
+    # PSP E → PV, SOM, VIP по слою источника (мышь — Campagnola Fig. 3D; L6
+    # → VIP не измерено — как L5). L2/3 → PV — человек (Fig. 5B: E →
+    # тормозные 0.93 мВ, у человека это в основном быстрые PV; у мыши 0.27).
     layer_ei_psp_mv: tuple[tuple[str, float, float, float], ...] = (
-        ("L23", 0.27, 0.09, 0.56), ("L4", 0.45, 0.05, 0.66),
+        ("L23", 0.93, 0.09, 0.56), ("L4", 0.45, 0.05, 0.66),
         ("L5", 0.51, 0.08, 0.08), ("L6", 0.49, 0.20, 0.08),
     )
-    # PSP от тормозных, мВ (Campagnola Fig. 3D, по всем слоям): к E, PV,
-    # SOM, VIP.
+    # PSP от тормозных, мВ (мышь — Campagnola Fig. 3D, по всем слоям): к E,
+    # PV, SOM, VIP. PV → E и PV → PV — человек (Fig. 5B: тормозные → L3 E
+    # −0.21, → тормозные −0.88; у мыши −0.44 и −0.47).
     inhibitory_psp_mv: tuple[tuple[str, float, float, float, float], ...] = (
-        ("PV", -0.44, -0.47, -0.25, -0.27),
+        ("PV", -0.21, -0.88, -0.25, -0.27),
         ("SOM", -0.16, -0.18, -0.17, -0.17),
         ("VIP", -0.06, -0.13, -0.15, -0.14),
     )
@@ -1422,13 +1463,17 @@ class BrainConfig:
     column_gain_from_e: tuple[float, float, float] = (1.0, 1.0, 1.0)  # E → PV, SOM, VIP
     column_gain_to_e: tuple[float, float, float] = (1.0, 1.0, 1.0)  # PV, SOM, VIP → E
     column_gain_ii: float = 1.0  # тормозные → тормозные
-    # Частоты в покое, бодрствование, Гц: E — крыса S1 (de Kock & Sakmann
-    # 2009; в таблице Potjans Table 6; L5 2–3 — середина); тормозные L2/3 —
-    # мышь S1, медианы (Sachidhanandam, Sermet & Petersen 2016: PV 17.8, VIP
-    # 9.8, SST 1.6). Глубже L2/3 тормозные по слоям не измерены — как в L2/3.
+    # Частоты в покое, бодрствование, Гц. Человек (решётка Юта ~1–1.5 мм —
+    # L2/3, у людей с эпилепсией; Le Van Quyen et al. 2016, доп. таблица —
+    # сверить): обычные клетки (E) 2.6, быстрые (~PV) 6.4. SST и VIP у
+    # человека не измерены — их отношение к PV как у мыши (Sachidhanandam,
+    # Sermet & Petersen 2016: PV 17.8, VIP 9.8, SST 1.6): VIP 3.5, SST 0.6.
+    # E глубже L2/3 — крыса S1 (de Kock & Sakmann 2009, Potjans Table 6: L4
+    # 1.4, L5 2–3, L6 0.5). Тормозные глубже L2/3 по слоям не измерены — как
+    # в L2/3.
     column_target_hz: tuple[tuple[str, float, float, float, float], ...] = (
-        ("L23", 0.3, 17.8, 1.6, 9.8), ("L4", 1.4, 17.8, 1.6, 9.8),
-        ("L5", 2.5, 17.8, 1.6, 9.8), ("L6", 0.5, 17.8, 1.6, 9.8),
+        ("L23", 2.6, 6.4, 0.6, 3.5), ("L4", 1.4, 6.4, 0.6, 3.5),
+        ("L5", 2.5, 6.4, 0.6, 3.5), ("L6", 0.5, 6.4, 0.6, 3.5),
     )
     # Торможение в колонках — проводимость, а не ток: тормозной ток ∝ (v −
     # E_ГАМК). Реверсия ГАМК-А у пирамидных клеток коры −74 мВ (Gulledge &
@@ -1993,6 +2038,25 @@ class BrainConfig:
     # мозг спит, когда VLPO выбрасывает больше, чем голубое пятно.
     galanin_tau_ms: float = 2000.0
     galanin_half: float = 4.0
+    # Вещества анатомического мозга (brain/anatomy.py): (вещество, ядро).
+    # Единицы те же — спайков на клетку ядра за τ; полунасыщение — фон
+    # бодрствования (частота ядра наяву × τ), как у дофамина. Серотонин —
+    # дорсальное ядро шва наяву ~1–3 Гц (Jacobs & Fornal 1999), обратный
+    # захват ~1 с; ацетилхолин — базальное ядро Мейнерта, наяву ~5 Гц
+    # (Hangya et al. 2015), ацетилхолинэстераза — быстро (сотни мс); орексин
+    # — латеральный гипоталамус наяву ~3 Гц (Lee, Hassani & Jones 2005),
+    # пептид держится секунды. τ выведения [не измерено в этих единицах].
+    extra_modulators: tuple[tuple[str, str], ...] = ()
+    # Синапс сетчатки на клетку LGN — «водитель»: крупный ВПСП (Usrey,
+    # Reppas & Reid 1999 — один спайк сетчатки часто сам запускает спайк реле;
+    # Sherman & Guillery 1998), мВ [порядок, сверить].
+    relay_driver_psp_mv: float = 8.0
+    serotonin_tau_ms: float = 1000.0
+    serotonin_half: float = 2.0
+    acetylcholine_tau_ms: float = 200.0
+    acetylcholine_half: float = 1.0
+    orexin_tau_ms: float = 5000.0
+    orexin_half: float = 15.0
     # Аденозин — давление сна (процесс S, Borbély 1982): средняя частота
     # всех нейронов плюс обмен веществ покоя за τ. Наяву копится с
     # τ 18 ч, во сне вымывается с τ 4 ч (Daan, Beersma & Borbély 1984).
@@ -2519,15 +2583,18 @@ class BrainConfig:
     def sensors(self) -> list[SensorSpec]:
         """Органы-датчики тела: ухо всегда, глаз — если включён."""
 
+        # Анатомический мозг: рецепторы входят в кору через реле таламуса.
+        relay = self.anatomy
         out = [SensorSpec(
             "ear", "auditory", self.sensory_size, self.k_sensory, self.sensory_weight,
-            self.sensory_inhibitory_gain,
+            self.sensory_inhibitory_gain, relay="mgn" if relay else "",
         )]
 
         if self.eye:
             out.append(SensorSpec(
                 "eye", "visual", 2 * self.retina_rows * self.retina_cols, 40, self.v1_weight,
                 rows=self.retina_rows, cols=self.retina_cols, wiring="oriented",
+                relay="lgn" if relay else "",
             ))
 
         return out

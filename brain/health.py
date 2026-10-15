@@ -76,7 +76,9 @@ class Health:
 
         for i, area in enumerate(brain.areas.values()):
             group[area.E.slice] = 2 * i
-            group[area.I.slice] = 2 * i + 1
+
+            for pop in area.inhibitory:
+                group[pop.slice] = 2 * i + 1
 
         self.group = group.clamp(min=0)
         self.valid = (group >= 0).float()

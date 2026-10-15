@@ -196,3 +196,22 @@ def test_axon_delays_between_areas():
 
     mind.language.read_text(FACTS)
     assert torch.isfinite(brain.v[: brain.n]).all()
+
+
+def test_interneuron_types():
+    # Зоны новой коры с флагом interneurons: I — это PV, рядом SOM и VIP по
+    # долям; связи — по таблице измерений, SOM → E — на ветки дендрита;
+    # синапсы E → SOM облегчаются от серии спайков.
+    mind = make_mind(interneurons=True)
+    brain = mind.brain
+    area = brain.areas["association"]
+
+    assert area.SOM is not None and area.VIP is not None
+    assert area.SOM.size > area.VIP.size
+    assert brain.areas["vta"].SOM is None
+    assert brain.projection("association: SOM->E").dendrite
+    assert brain.projection("association: E->I").weight.shape[1] > brain.projection("association: I->E").weight.shape[1]
+
+    mind.language.read_text(FACTS)
+    assert torch.isfinite(brain.v[: brain.n]).all()
+    assert float(brain.facil_u[area.E.slice].max()) > brain.cfg.som_facil_u

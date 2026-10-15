@@ -180,6 +180,8 @@ class BrainHost:
                     "kind": a.kind,
                     "E": pop(a.E),
                     "I": pop(a.I),
+                    "SOM": pop(a.SOM) if a.SOM is not None else None,
+                    "VIP": pop(a.VIP) if a.VIP is not None else None,
                     # Зона-карта (места слов): E лежат сеткой в столько столбцов.
                     "grid": grids.get(a.name),
                 }

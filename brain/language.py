@@ -3827,7 +3827,7 @@ class LanguageInterface:
 
         for area in brain.areas.values():
             lines.append(
-                f"    {area.name:12s} {area.E.size + area.I.size:9,d} нейронов  {area.title}"
+                f"    {area.name:12s} {area.cells.stop - area.cells.start:9,d} нейронов  {area.title}"
             )
 
         lines.append("- пластичные пути:")

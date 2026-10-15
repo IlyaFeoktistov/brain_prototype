@@ -44,13 +44,28 @@ class Population:
 
 @dataclass
 class Area:
-    """Зона мозга: свои E и I нейроны, своё торможение."""
+    """
+    Зона мозга: свои E и I нейроны, своё торможение. В зонах новой коры с
+    типами тормозных клеток (cfg.interneurons) I — это PV, рядом SOM и VIP.
+    """
 
     name: str
     title: str
     kind: str
     E: Population
     I: Population
+    SOM: Population | None = None
+    VIP: Population | None = None
+
+    @property
+    def inhibitory(self) -> list[Population]:
+        return [pop for pop in (self.I, self.SOM, self.VIP) if pop is not None]
+
+    @property
+    def cells(self) -> slice:
+        """Все клетки зоны подряд: E, I (PV), SOM, VIP."""
+
+        return slice(self.E.start, self.inhibitory[-1].stop)
 
 
 class Projection:
@@ -308,6 +323,16 @@ class SpikingBrain:
             n_e = n - n_i
 
             E = Population(f"{spec.name}.E", start, n_e)
+
+            if self._has_microcircuit(spec.name):
+                # Типы тормозных по долям (ARCHITECTURE 10): I — это PV.
+                I = Population(f"{spec.name}.I", E.stop, max(2, round(n_i * cfg.pv_share)))
+                SOM = Population(f"{spec.name}.SOM", I.stop, max(2, round(n_i * cfg.som_share)))
+                VIP = Population(f"{spec.name}.VIP", SOM.stop, max(1, round(n_i * cfg.vip_share)))
+                self.areas[spec.name] = Area(spec.name, spec.title, spec.kind, E, I, SOM, VIP)
+                start = VIP.stop
+                continue
+
             I = Population(f"{spec.name}.I", E.stop, n_i)
             start = I.stop
 
@@ -329,16 +354,50 @@ class SpikingBrain:
         # пустые ячейки не дрались за один адрес (atomic-конфликты).
         self.n_slots = self.n + self.DUMMY_NEURONS
 
+    def _has_microcircuit(self, name: str) -> bool:
+        """Зона новой коры с типами тормозных клеток (cfg.interneurons)."""
+
+        cfg = self.cfg
+        return bool(getattr(cfg, "interneurons", False)) and name in getattr(cfg, "microcircuit_areas", ())
+
     def _fill(self, values: dict[str, float]) -> torch.Tensor:
-        """Параметр нейрона по типу популяции: cortex_E, memory_E, I."""
+        """Параметр нейрона по типу популяции: cortex_E, memory_E, I (и SOM, VIP)."""
 
         out = torch.zeros(self.n_slots, device=self.device)
 
         for area in self.areas.values():
             out[area.E.slice] = values[f"{area.kind}_E"]
-            out[area.I.slice] = values["I"]
+
+            for pop in area.inhibitory:
+                out[pop.slice] = values["I"]
 
         return out
+
+    def _init_interneurons(self) -> None:
+        """
+        Свойства PV, SOM и VIP — из измерений (Allen Cell Types; config:
+        pv_tau_m …): своя мембрана и адаптация, у SOM — облегчающиеся входы
+        от E (см. _step). Расстояние до порога — в _init_state (bias).
+        """
+
+        cfg = self.cfg
+        self.is_som = torch.zeros(self.n_slots, dtype=torch.bool, device=self.device)
+
+        for area in self.areas.values():
+            if area.SOM is None:
+                continue
+
+            for pop, tau, index in (
+                (area.I, cfg.pv_tau_m, cfg.pv_adaptation_index),
+                (area.SOM, cfg.som_tau_m, cfg.som_adaptation_index),
+                (area.VIP, cfg.vip_tau_m, cfg.vip_adaptation_index),
+            ):
+                self.tau_m[pop.slice] = tau
+                self.adapt_b[pop.slice] = cfg.e_adapt_b * index / cfg.e_adaptation_index
+
+            self.is_som[area.SOM.slice] = True
+
+        self.has_som = bool(self.is_som.any())
 
     def _init_neurons(self) -> None:
         cfg = self.cfg
@@ -371,6 +430,7 @@ class SpikingBrain:
                 self.adapt_b[self.areas[spec.name].E.slice] = spec.adapt_b
             if spec.slow_max is not None:
                 self.slow_max[self.areas[spec.name].E.slice] = spec.slow_max
+        self._init_interneurons()
         self.v_peak = self._fill(
             {"cortex_E": 0.0, "memory_E": cfg.v_threshold, "I": cfg.v_threshold}
         )
@@ -592,6 +652,71 @@ class SpikingBrain:
             shape, device=self.device, generator=self.generator
         ))
 
+    def _psp_peak(self, pop: Population) -> float:
+        """
+        Пик PSP (мВ) клетки популяции от веса 1 — тем же шагом, что в _step:
+        ток прыгает на τm/τsyn и спадает за τsyn, мембрана копит его за τm.
+        Вес связи = измеренный PSP / пик.
+        """
+
+        tau_m = float(self.tau_m[pop.start])
+        tau_syn = float(self.tau_syn[pop.start])
+        dt = self.cfg.dt_ms
+        current, v, peak = tau_m / tau_syn, 0.0, 0.0
+
+        for _ in range(int(10 * max(tau_m, tau_syn) / dt) + 1):
+            v += (current - v) * dt / tau_m
+            current *= math.exp(-dt / tau_syn)
+            peak = max(peak, v)
+
+        return peak
+
+    def _wire_microcircuit(self, spec, area: Area) -> None:
+        """
+        Связи внутри зоны новой коры между E, PV, SOM и VIP — по таблице
+        измерений (cfg.local_links; ARCHITECTURE 10). Входов k = вероятность
+        × клеток-источников в досягаемости (2πσ² × плотность); в зоне их
+        меньше — k срезается, вес растёт, общий вход тот же (масштаб). SOM → E
+        — на ветки дендрита. Старые множители зоны (feedback — на вход E → PV,
+        inhibition — на PV → E) сохранены: сверить с данными.
+        """
+
+        cfg = self.cfg
+        pops = {"E": area.E, "PV": area.I, "SOM": area.SOM, "VIP": area.VIP}
+        names = {"E": "E", "PV": "I", "SOM": "SOM", "VIP": "VIP"}
+        density = {"E": cfg.density_e_mm2, "PV": cfg.density_i_mm2 * cfg.pv_share,
+                   "SOM": cfg.density_i_mm2 * cfg.som_share, "VIP": cfg.density_i_mm2 * cfg.vip_share}
+
+        for src, dst, probability, psp in cfg.local_links:
+            if src == "E":
+                sigma = cfg.sigma_ei_um
+            elif dst == "E":
+                sigma = cfg.sigma_ie_um
+            else:
+                sigma = cfg.sigma_ii_um
+            reach = 2 * math.pi * (sigma / 1000.0) ** 2 * density[src]
+            k_data = probability * reach
+            pre, post = pops[src], pops[dst]
+            k = max(1, min(round(k_data), pre.size))
+
+            if k_data < 0.5:
+                continue
+
+            weight = psp / self._psp_peak(post) * (k_data / k)
+
+            if (src, dst) == ("E", "PV"):
+                weight *= spec.feedback
+            elif (src, dst) == ("PV", "E"):
+                weight *= spec.inhibition
+
+            proj = self._connect(
+                f"{spec.name}: {names[src]}->{names[dst]}", pre, post, k, (weight, weight),
+            )
+
+            if proj is not None and (src, dst) == ("SOM", "E"):
+                # Мартинотти — на дальние дендриты: гасят плато веток.
+                proj.dendrite = True
+
     def _connect(
         self,
         name: str,
@@ -625,7 +750,7 @@ class SpikingBrain:
                 seed=self.cfg.seed * 1009 + len(self.projections), device=self.device,
             )
             proj.source_kind = next(
-                a.kind for a in self.areas.values() if pre_pop in (a.E, a.I)
+                a.kind for a in self.areas.values() if pre_pop is a.E or pre_pop in a.inhibitory
             )
             self.projections.append(proj)
             return proj
@@ -668,7 +793,7 @@ class SpikingBrain:
         proj.modulator = modulator
         proj.ach_suppressed = ach_suppressed
         proj.source_kind = next(
-            a.kind for a in self.areas.values() if pre_pop in (a.E, a.I)
+            a.kind for a in self.areas.values() if pre_pop is a.E or pre_pop in a.inhibitory
         )
         self.projections.append(proj)
 
@@ -734,6 +859,10 @@ class SpikingBrain:
                 self.projections[-1].scaled = getattr(spec, "ee_scaled", True)
             if spec.columns > 1:
                 self._wire_columns(spec, area)
+
+            if area.SOM is not None:
+                self._wire_microcircuit(spec, area)
+                continue
 
             self._connect(
                 f"{spec.name}: E->I", area.E, area.I, cfg.k_ei,
@@ -1310,6 +1439,13 @@ class SpikingBrain:
         for area in self.areas.values():
             self.bias[area.I.slice] = cfg.i_excitability
 
+            if area.SOM is not None:
+                # До порога — как у клетки этого типа (реобаза × сопротивление).
+                gap = cfg.v_threshold - cfg.v_rest
+
+                for pop, data_gap in ((area.I, cfg.pv_gap_mv), (area.SOM, cfg.som_gap_mv), (area.VIP, cfg.vip_gap_mv)):
+                    self.bias[pop.slice] = gap - data_gap
+
         # Развитие до рождения (калибровка): гомеостаз быстрый везде.
         self.developing = False
         # Ацетилхолин (тензор — его читает записанный шаг CUDA Graph).
@@ -1330,6 +1466,11 @@ class SpikingBrain:
         # Базовый контур (base_circuit): ресурс пресинапса (истощение,
         # 1 — полный) и усиление торможения, приходящего к клетке (1 — норма).
         self.stp_x = torch.ones(self.n_slots, device=self.device)
+        # Облегчающиеся синапсы E → SOM: ресурс и доля выброса у каждого E.
+        self.facil_x = torch.ones(self.n_slots, device=self.device)
+        self.facil_u = torch.full((self.n_slots,), float(getattr(cfg, "som_facil_u", 0.16)), device=self.device)
+        self.facil_decay = cfg.dt_ms / getattr(cfg, "som_facil_tau_ms", 376.0)
+        self.facil_recover = cfg.dt_ms / getattr(cfg, "som_facil_rec_ms", 45.0)
         self.inh_gain = torch.ones(self.n_slots, device=self.device)
         # У маленьких мозгов зоны малы, и случайные пики занимают
         # большую долю нейронов — им нужен запас не по доле, а в штуках.
@@ -1409,9 +1550,21 @@ class SpikingBrain:
             self.i_dend.mul_(self.decay_dend).add_(dendrite)
             weight = weight * ~to_dendrite
 
+        if self.has_som:
+            # E → SOM облегчаются (Tsodyks–Markram, u растёт с каждым спайком):
+            # в покое — измеренный PSP, после серии — во много раз больше.
+            facilitated = self.is_som.index_select(0, post) & (weight > 0)
+            gain = self.facil_u * self.facil_x / cfg.som_facil_u
+            weight = torch.where(facilitated, weight * gain.index_select(0, pre_of), weight)
+
         if cfg.base_circuit:
-            # Истощение: синапс отдаёт долю оставшегося ресурса пресинапса.
-            weight = weight * self.stp_x.index_select(0, pre_of)
+            # Истощение: синапс отдаёт долю оставшегося ресурса пресинапса
+            # (у E → SOM — своё, выше).
+            depletion = self.stp_x.index_select(0, pre_of)
+
+            if self.has_som:
+                depletion = torch.where(facilitated, 1.0, depletion)
+            weight = weight * depletion
             # Торможение к клетке × её усиление (растёт, если клетка
             # стреляет выше нормы).
             weight = torch.where(weight < 0, weight * self.inh_gain.index_select(0, post), weight)
@@ -1531,6 +1684,17 @@ class SpikingBrain:
             # возвращается к 1 (в равновесии 1 + шаг · τ · частота).
             self.inh_gain.sub_(1.0).mul_(self.decay_inh_gain).add_(1.0)
             self.inh_gain.add_(cfg.inh_gain_per_spike * self.spikes * self.inh_adapts)
+
+        if self.has_som:
+            # Облегчение: u спадает к U за τ облегчения, спайк поднимает его на
+            # U·(1 − u); ресурс x восстанавливается за τ восстановления, спайк
+            # тратит u·x (Tsodyks & Markram 1997; Gupta et al. 2000).
+            spiked = self.spikes * self.cortex_e
+            self.facil_u.sub_((self.facil_u - cfg.som_facil_u) * self.facil_decay)
+            self.facil_x.add_((1.0 - self.facil_x) * self.facil_recover)
+            used = self.facil_u * self.facil_x * spiked
+            self.facil_u.add_(cfg.som_facil_u * (1.0 - self.facil_u) * spiked)
+            self.facil_x.sub_(used)
 
         if cfg.pool_inhibition_mv > 0:
             self.pool.mul_(self.decay_pool).add_((self.spikes * self.pool_mask).sum())
@@ -2338,7 +2502,7 @@ class SpikingBrain:
     _DYNAMIC = (
         "v", "i_syn", "i_slow", "i_dend", "pool", "area_pool", "adapt", "adapt_slow", "refractory", "spikes",
         "trace_pre", "trace_pre_rise", "ltp_kernel", "trace_post", "counts", "eligibility",
-        "eligibility_scale", "dropped", "bias", "interoception", "kick_current", "kick_left", "stp_x", "inh_gain",
+        "eligibility_scale", "dropped", "bias", "interoception", "kick_current", "kick_left", "stp_x", "facil_x", "facil_u", "inh_gain",
         "chemistry", "pending", "pending_dend", "tick",
     )
 
@@ -2411,20 +2575,20 @@ class SpikingBrain:
         if area not in self.areas:
             return
 
-        for pop in (self.areas[area].E, self.areas[area].I):
-            self.i_syn[pop.slice] = 0.0
-            self.i_slow[pop.slice] = 0.0
-            self.adapt[pop.slice] = 0.0
-            self.adapt_slow[pop.slice] = 0.0
-            self.v[pop.slice] = self.cfg.v_rest
+        cells = self.areas[area].cells
+        self.i_syn[cells] = 0.0
+        self.i_slow[cells] = 0.0
+        self.adapt[cells] = 0.0
+        self.adapt_slow[cells] = 0.0
+        self.v[cells] = self.cfg.v_rest
 
     def quiet(self, area: str) -> None:
         """Погасить активность зоны (только внутри frozen())."""
 
-        for pop in (self.areas[area].E, self.areas[area].I):
-            self.i_syn[pop.slice] = 0.0
-            self.i_slow[pop.slice] = 0.0
-            self.v[pop.slice] = self.cfg.v_rest
+        cells = self.areas[area].cells
+        self.i_syn[cells] = 0.0
+        self.i_slow[cells] = 0.0
+        self.v[cells] = self.cfg.v_rest
 
     # ==============================================================
     # СОХРАНЕНИЕ

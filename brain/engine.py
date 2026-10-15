@@ -891,6 +891,38 @@ class SpikingBrain:
             and getattr(path, "psp_mv", None) is None and path.k > 0
         )
 
+    def _thalamic(self, path, dst: Area) -> bool:
+        """Путь таламуса в колонку анатомического мозга."""
+
+        direction = getattr(path, "direction", "") or next(
+            (d for s, t, d in getattr(self.cfg, "pathway_directions", ()) if (s, t) == (path.src, path.dst)), "",
+        )
+        return bool(getattr(self.cfg, "anatomy", False)) and direction == "thalamic" and dst.layers is not None
+
+    def _thalamic_path(self, path, pre: Population, post: Population, inhibitory: bool) -> tuple[int, float]:
+        """
+        Таламус → колонка по данным: ~85 таламических синапсов на клетку L4,
+        ВПСП ~0.6 мВ (Bruno & Sakmann 2006, одна пара измерений); на тормозные
+        L4 — ~56 входов (Potjans: 0.062 × 902), синапс на быстрые тормозные в
+        2–3 раза сильнее (Cruikshank, Lewis & Connors 2007) — ×2. Агранулярная
+        зона — в L2/3 (моторный таламус → L2/3 и L5, Hooks et al. 2013). Масштаб —
+        как у межзонных путей: вес × √(k_data / k), недостающее — ток по частоте
+        ядра in vivo.
+        """
+
+        from brain import anatomy
+
+        cfg = self.cfg
+        k_data = 56.0 if inhibitory else 85.0
+        psp = 1.2 if inhibitory else 0.6
+        k = max(1, min(round(k_data), pre.size))
+        weight = psp / self._psp_peak(post)
+        root = math.sqrt(max(1.0, k_data / k))
+        rate = anatomy.RATES_HZ.get(path.src, 10.0) / 1000.0
+        tau = float(self.tau_m[post.start])
+        self.dc_mv[post.slice] += k_data * rate * weight * tau * (1.0 - 1.0 / root)
+        return k, weight * root
+
     def _cortical_path(self, path, pre: Population, post: Population) -> tuple[int, float]:
         """
         Путь между колонками по данным: входов из других зон у клетки — 21%
@@ -1435,6 +1467,11 @@ class SpikingBrain:
                 k, w = self._cortical_path(path, pre, post)
                 weight = (w, w)
                 k_inhibitory, inhibitory_weight = self._cortical_path(path, pre, inhibitory)
+            elif self._thalamic(path, dst):
+                # Таламус → колонка — по данным (_thalamic_path).
+                k, w = self._thalamic_path(path, pre, post, inhibitory=False)
+                weight = (w, w)
+                k_inhibitory, inhibitory_weight = self._thalamic_path(path, pre, inhibitory, inhibitory=True)
 
             proj = self._connect(
                 getattr(path, "name", "") or f"{path.src} -> {path.dst}", pre, post, k,

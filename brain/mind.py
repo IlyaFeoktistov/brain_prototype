@@ -32,7 +32,9 @@ class Mind:
             # Анатомический мозг: колонки коры и гиппокамп из нейронов; поведение
             # — только из цепей: без формул и решений кода (ARCHITECTURE 11).
             cfg.layers = True
-            cfg.min_column_neurons = max(cfg.min_column_neurons, 5000)
+            # Колонка крупнее — меньше доля «тока недостающих соседей» (в 5 тыс.
+            # он ~94% входа и раскачивал зоны с сильным явным входом).
+            cfg.min_column_neurons = max(cfg.min_column_neurons, 20000)
             cfg.neural_hippocampus = True
             cfg.neural_speech = True  # слово ответа — само выстрелившее место
             cfg.neural_surprise = True  # дофамин — из готовности нейронов
@@ -80,6 +82,10 @@ class Mind:
             cfg.areas = [replace(a, pool_mv=0.0) for a in cfg.areas]
             cfg.pathways = [p for p in cfg.pathways if not getattr(p, "vogels", False) or p.src != p.dst]
             cfg.vogels_areas = ("letters",)
+            # «Ворота говори» — VA/VL → смысловая кора — костыль: моторный
+            # таламус в височную кору не идёт (её таламус — подушка и MD;
+            # Jones 2007). Речь открывают базальные ганглии через VA/VL → Брока.
+            cfg.pathways = [p for p in cfg.pathways if (p.src, p.dst) != ("thalamus", "association")]
             # «Рабочая память» особым типом клеток (LIF без адаптации +
             # медленный ток только в ПФК) — тоже костыль: у всех пирамидных
             # клеток коры есть NMDA (долг — NMDA у всех E колонок по данным).

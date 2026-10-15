@@ -56,8 +56,11 @@ def measure(gains: list[float], pop: dict | None = None) -> dict:
 
 
 def loss(rates: dict, targets: dict) -> float:
-    errors = [math.log((r + 0.5) / (targets[key] + 0.5)) ** 2 for key, r in rates.items()]
-    return sum(errors) / len(errors)
+    # E — главные клетки коры: их частота весит вчетверо (иначе поиск
+    # находит «дешёвое» решение — молчащие E при верных тормозных).
+    weights = {key: 4.0 if key[1] == "E" else 1.0 for key in rates}
+    errors = [weights[key] * math.log((r + 0.5) / (targets[key] + 0.5)) ** 2 for key, r in rates.items()]
+    return sum(errors) / sum(weights.values())
 
 
 cfg = BrainConfig()

@@ -32,6 +32,7 @@ class Mind:
             # Анатомический мозг: колонки коры и гиппокамп из нейронов; поведение
             # — только из цепей: без формул и решений кода (ARCHITECTURE 11).
             cfg.layers = True
+            cfg.min_column_neurons = max(cfg.min_column_neurons, 5000)
             cfg.neural_hippocampus = True
             cfg.neural_speech = True  # слово ответа — само выстрелившее место
             cfg.neural_surprise = True  # дофамин — из готовности нейронов
@@ -43,6 +44,7 @@ class Mind:
             cfg.grow_on_surprise = False  # куда расти — решал код
             cfg.memory_places = False  # места слов в ПФК — кодом
             cfg.concepts_enabled = False  # места слов в смысловой коре — таблицей
+            cfg.goal_enabled = False  # вопрос в «цель» кладёт и гасит код
 
         # Новый мозг с гиппокампом из нейронов: его зоны — часть анатомии
         # (сохраняются в cfg.areas, загруженный мозг их уже имеет).
@@ -66,6 +68,19 @@ class Mind:
             from brain import anatomy
 
             anatomy.apply(cfg)
+            # Колонки-аттракторы цели (40 мВ на связь, подобраны «держать
+            # вопрос») — костыль: рабочая память держится на рекуррентном
+            # NMDA со скромными весами (Wang 2001); в колонке по данным они
+            # взрывали зону (anatomy_bench: E 50–100 Гц, PV 400).
+            cfg.areas = [replace(a, columns=0, column_weight=0.0) if a.name == "goal" else a for a in cfg.areas]
+            # «Рабочая память» особым типом клеток (LIF без адаптации +
+            # медленный ток только в ПФК) — тоже костыль: у всех пирамидных
+            # клеток коры есть NMDA (долг — NMDA у всех E колонок по данным).
+            # ПФК и цель — обычные колонки.
+            cfg.areas = [
+                replace(a, kind="cortex", ampa_ratio=None, slow_max=None) if a.kind == "memory" and a.name in cfg.layered_areas else a
+                for a in cfg.areas
+            ]
 
         if cfg.layers and any(a.name == "complex" for a in cfg.areas):
             # Колонка V1 (ARCHITECTURE 10): сложные клетки — её слой 2/3, а не

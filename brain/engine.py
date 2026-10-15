@@ -390,7 +390,7 @@ class SpikingBrain:
                 n = n_e + n_i
 
             if self._has_layers(spec.name):
-                area, start = self._column(spec, n, start)
+                area, start = self._column(spec, max(n, getattr(cfg, "min_column_neurons", 0)), start)
                 self.areas[spec.name] = area
                 continue
 
@@ -879,6 +879,39 @@ class SpikingBrain:
 
         return peak
 
+    def _data_path(self, path) -> bool:
+        """Врождённый путь между колонками анатомического мозга — веса по данным."""
+
+        src, dst = self.areas.get(path.src), self.areas.get(path.dst)
+        return (
+            bool(getattr(self.cfg, "anatomy", False)) and not path.plastic and src is not None and dst is not None
+            and src.layers is not None and dst.layers is not None and src is not dst
+            and getattr(path, "psp_mv", None) is None and path.k > 0
+        )
+
+    def _cortical_path(self, path, pre: Population, post: Population) -> tuple[int, float]:
+        """
+        Путь между колонками по данным: входов из других зон у клетки — 21%
+        всех, изнутри зоны — 79% (Markov et al. 2011, FLN_i; так же у Schmidt
+        et al. 2018), то есть 0.21 / 0.79 от её местных возбуждающих входов;
+        поровну между путями, входящими в популяцию (доли по парам зон у нас
+        не измерены). PSP — как E → E у Potjans (0.15 мВ). Масштаб — как
+        внутри колонки: вес × √(k_data / k), недостающее — ток по частоте
+        слоя-источника in vivo. Возвращает (k, вес).
+        """
+
+        cfg = self.cfg
+        local = self.local_e_inputs.get(post.name, 0.0)
+        k_data = local * (0.21 / 0.79) / max(1, self.cortical_inputs.get(post.name, 1))
+        k = max(1, min(round(k_data), pre.size))
+        weight = cfg.ee_psp_mv / self._psp_peak(post)
+        root = math.sqrt(max(1.0, k_data / k))
+        layer = pre.name.split(".")[1] if pre.name.count(".") == 2 else "L23"
+        rate = dict((l, e) for l, e, *_ in cfg.column_target_hz).get(layer, 1.0) / 1000.0
+        tau = float(self.tau_m[post.start])
+        self.dc_mv[post.slice] += k_data * rate * weight * tau * (1.0 - 1.0 / root)
+        return k, weight * root
+
     def _laminar(self, path, src: Area, dst: Area) -> tuple[Population, Population, Population, bool]:
         """
         Из какого слоя в какой идёт путь (ARCHITECTURE 10, «Связи между зонами
@@ -1001,6 +1034,7 @@ class SpikingBrain:
         """
 
         cfg = self.cfg
+        self.local_e_inputs = getattr(self, "local_e_inputs", {})
         order = [layer for layer, _, _ in cfg.column_cells]
         column = {layer: (e, i) for layer, e, i in cfg.column_cells}
         shares = {layer: dict(zip(("PV", "SOM", "VIP"), v)) for layer, *v in cfg.layer_interneurons}
@@ -1081,6 +1115,11 @@ class SpikingBrain:
 
                         n_src = column[src_layer][0] if src_ei == "E" else column[src_layer][1] * shares[src_layer][src_kind]
                         k_data = p * n_src
+
+                        if src_ei == "E":
+                            # Местных возбуждающих входов клетки — для доли
+                            # входов из других зон (_cortical_path).
+                            self.local_e_inputs[post.name] = self.local_e_inputs.get(post.name, 0.0) + k_data
                         k = min(round(p * pre.size), pre.size)
                         weight = gain * psp / self._psp_peak(post)
                         rate = rates[src_layer][src_kind] / 1000.0
@@ -1348,6 +1387,17 @@ class SpikingBrain:
             )
 
         # ---- проводящие пути между зонами ----
+        # Сколько врождённых путей между колонками входит в каждую популяцию:
+        # доля входов из других зон делится между ними (_cortical_path).
+        self.cortical_inputs: dict[str, int] = {}
+
+        for path in cfg.pathways:
+            if self._data_path(path):
+                _, post, inhibitory, _ = self._laminar(path, self.areas[path.src], self.areas[path.dst])
+
+                for pop in (post, inhibitory):
+                    self.cortical_inputs[pop.name] = self.cortical_inputs.get(pop.name, 0) + 1
+
         for path in cfg.pathways:
             # С понятиями слово будит свои клетки смысла напрямую, а
             # «слух → смысл» — слабый обучаемый путь (звучание -> место):
@@ -1364,13 +1414,22 @@ class SpikingBrain:
             pre, post, inhibitory, top_down = self._laminar(path, src, dst)
             weight = path.weight
 
+            k = path.k
+            k_inhibitory, inhibitory_weight = path.k_inhibitory, path.inhibitory_weight
+
             if getattr(path, "psp_mv", None) is not None:
                 # Вес из измеренного PSP (анатомический мозг).
                 w = path.psp_mv / self._psp_peak(post)
                 weight = (w, w)
 
+            if self._data_path(path):
+                # Врождённый путь между колонками — по данным (_cortical_path).
+                k, w = self._cortical_path(path, pre, post)
+                weight = (w, w)
+                k_inhibitory, inhibitory_weight = self._cortical_path(path, pre, inhibitory)
+
             proj = self._connect(
-                getattr(path, "name", "") or f"{path.src} -> {path.dst}", pre, post, path.k,
+                getattr(path, "name", "") or f"{path.src} -> {path.dst}", pre, post, k,
                 weight, plastic=path.plastic, cap=path.cap,
                 modulator=path.modulator, ach_suppressed=path.ach_suppressed,
                 topographic=path.topographic, blocks=getattr(path, "blocks", 0),
@@ -1386,8 +1445,8 @@ class SpikingBrain:
                 proj.scale_up = getattr(path, "scale_up", False)
                 proj.cap = path.cap
             self._connect(
-                f"{path.src} -> {path.dst}.I", pre, inhibitory, path.k_inhibitory,
-                (path.inhibitory_weight, path.inhibitory_weight),
+                f"{path.src} -> {path.dst}.I", pre, inhibitory, k_inhibitory,
+                (inhibitory_weight, inhibitory_weight),
             )
 
         # ---- органы-датчики: рецепторы -> своя зона ----

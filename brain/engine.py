@@ -1938,6 +1938,15 @@ class SpikingBrain:
                     if area.layers is not None:
                         self.bias[group["E"].slice] = gap - cfg.column_e_gap_mv
 
+                    # Разброс между клетками (Allen; config column_gap_sd_mv),
+                    # расстояние до порога не меньше 3 мВ.
+                    for kind, sd in zip(("E", "PV", "SOM", "VIP"), cfg.column_gap_sd_mv):
+                        if kind == "E" and area.layers is None:
+                            continue
+                        pop = group[kind]
+                        spread = torch.randn(pop.size, device=self.device, generator=self.generator) * sd
+                        self.bias[pop.slice] = (self.bias[pop.slice] + spread).clamp(max=gap - 3.0)
+
         for spec in cfg.areas:
             hz = getattr(spec, "autonomous_hz", 0.0)
 

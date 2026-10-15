@@ -136,6 +136,11 @@ class AreaSpec:
     # чтобы клетка сама стреляла с этой частотой (GPe, SNr, STN, Пуркинье,
     # ядра мозжечка). 0 — нет.
     autonomous_hz: float = 0.0
+    # Свои множители согласования колонки (11 чисел, как BrainConfig.
+    # column_gain_*: внешний E/PV/SOM/VIP, E → PV/SOM/VIP, PV/SOM/VIP → E,
+    # I → I) — для стенда подбора, где в одной сети живут копии колонки с
+    # разными множителями. () — общие из BrainConfig.
+    column_gains: tuple[float, ...] = ()
 
 
 

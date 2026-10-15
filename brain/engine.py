@@ -730,10 +730,13 @@ class SpikingBrain:
 
         # Колонки (cfg.layers): внешний вход — остальной мозг, Пуассон K × 8 Гц
         # с PSP 0.15 мВ каждой клетке (Potjans Table 5) вместо слабого шума.
+        specs = {spec.name: spec for spec in cfg.areas}
+
         for area in self.areas.values():
             if area.layers is None:
                 continue
 
+            gain_external = self._column_gains(specs[area.name])[0]
             external = {layer: (e, i) for layer, e, i in cfg.external_inputs}
             gaps = {"E": cfg.column_e_gap_mv, "PV": cfg.pv_gap_mv, "SOM": cfg.som_gap_mv, "VIP": cfg.vip_gap_mv}
             charge = self._potjans_charge()
@@ -745,7 +748,7 @@ class SpikingBrain:
                     # Заряд PSP (мВ·мс) = вес × τm клетки — как у Potjans
                     # относительно расстояния до порога.
                     tau = float(self.tau_m[pop.start])
-                    gain = dict(zip(("E", "PV", "SOM", "VIP"), cfg.column_gain_external))[kind]
+                    gain = dict(zip(("E", "PV", "SOM", "VIP"), gain_external))[kind]
                     gain *= next((g for l, t, g in cfg.column_gain_external_pop if (l, t) == (layer, kind)), 1.0)
                     self.noise_gain[pop.slice] = gain * charge * gaps[kind] / cfg.potjans_gap_mv / tau
 
@@ -944,6 +947,17 @@ class SpikingBrain:
 
         return amplitude / U
 
+    def _column_gains(self, spec) -> tuple:
+        """Множители согласования колонки: свои у зоны (стенд) или общие."""
+
+        cfg = self.cfg
+        own = tuple(getattr(spec, "column_gains", ()) or ())
+
+        if len(own) == 11:
+            return own[0:4], own[4:7], own[7:10], own[10]
+
+        return cfg.column_gain_external, cfg.column_gain_from_e, cfg.column_gain_to_e, cfg.column_gain_ii
+
     def _wire_column(self, spec, area: Area) -> None:
         """
         Связи внутри колонки (ARCHITECTURE 10, «Слои колонки»): вероятность E/I
@@ -969,6 +983,7 @@ class SpikingBrain:
         from_e = {"PV": 0.42, "SOM": 0.30, "VIP": 0.20}
         among = {(src, dst): p for src, dst, p, _ in cfg.local_links if src != "E" and dst != "E"}
         types = ("PV", "SOM", "VIP")
+        _, gain_from_e, gain_to_e, gain_ii = self._column_gains(spec)
 
         def potjans(src_layer, src_ei, dst_layer, dst_ei) -> float:
             row = 2 * order.index(dst_layer) + (dst_ei == "I")
@@ -1013,11 +1028,11 @@ class SpikingBrain:
 
                         # Согласование с частотами in vivo (column_gain_*).
                         if src_ei == "E" and dst_ei == "I":
-                            gain = cfg.column_gain_from_e[types.index(dst_kind)]
+                            gain = gain_from_e[types.index(dst_kind)]
                         elif src_ei == "I" and dst_ei == "E":
-                            gain = cfg.column_gain_to_e[types.index(src_kind)]
+                            gain = gain_to_e[types.index(src_kind)]
                         elif src_ei == "I":
-                            gain = cfg.column_gain_ii
+                            gain = gain_ii
                         else:
                             gain = 1.0
 

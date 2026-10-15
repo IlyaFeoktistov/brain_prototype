@@ -15,11 +15,13 @@ import math
 import sys
 
 import torch
+from dataclasses import replace
 
 from brain.config import BrainConfig, default_areas
 from brain.engine import SpikingBrain
 
-opts = {"neurons": "10000", "evals": "300", "ms": "1000", "area": "auditory", "mode": "gains", "steps": "60", "dt": "2.0"}
+opts = {"neurons": "10000", "evals": "300", "ms": "1000", "area": "auditory", "mode": "gains", "steps": "60", "dt": "2.0",
+        "batch": "24", "generations": "30", "warmup": "300"}
 
 for kv in sys.argv[1:]:
     k, v = kv.split("=", 1)
@@ -114,7 +116,69 @@ def nelder_mead(f, x0: list[float], step: float, evals: int) -> None:
                     values[i] = f(simplex[i])
 
 
-if opts["mode"] == "pop":
+def measure_batch(population: list[list[float]]) -> list[dict]:
+    """
+    Поколение разом: в одной сети живут копии колонки, у каждой свои
+    множители (AreaSpec.column_gains), — видеокарта считает их вместе.
+    """
+
+    torch.manual_seed(0)
+    cfg = BrainConfig()
+    cfg.layers = True
+    cfg.eye = False
+    cfg.compile_step = False
+    cfg.dt_ms = float(opts["dt"])
+    spec = next(a for a in default_areas() if a.name == opts["area"])
+    copies = [replace(spec, name=spec.name if i == 0 else f"{spec.name}_{i}", column_gains=tuple(g))
+              for i, g in enumerate(population)]
+    cfg.areas = copies
+    cfg.pathways = []
+    cfg.layered_areas = tuple(a.name for a in copies)
+    cfg.microcircuit_areas = cfg.layered_areas
+    cfg.size = str(int(opts["neurons"]) * len(population))
+    brain = SpikingBrain(cfg)
+    brain.plasticity = False
+    brain.run(float(opts["warmup"]))
+    rates = brain.observe(float(opts["ms"]))
+    out = []
+
+    for copy in copies:
+        area = brain.areas[copy.name]
+        out.append({(layer, kind): float(rates[pop.slice].mean()) for layer, group in area.layers.items() for kind, pop in group.items()})
+
+    return out
+
+
+if opts["mode"] == "batch":
+    # Эволюционная стратегия (μ/μ, λ) по логарифмам множителей: поколение из
+    # batch вариантов вокруг среднего, лучшая четверть сдвигает среднее, шаг
+    # уменьшается, если поколение не улучшает лучшее (Hansen 2016 — упрощённо).
+    import random
+
+    rng = random.Random(1)
+    n = 11
+    base = BrainConfig()
+    mean = [math.log(g) for g in list(base.column_gain_external) + list(base.column_gain_from_e)
+            + list(base.column_gain_to_e) + [base.column_gain_ii]]
+    sigma = 0.6
+    size = int(opts["batch"])
+    elite = max(2, size // 4)
+
+    for generation in range(int(opts["generations"])):
+        xs = [list(mean)] + [[m + sigma * rng.gauss(0, 1) for m in mean] for _ in range(size - 1)]
+        results = measure_batch([[math.exp(v) for v in x] for x in xs])
+        scored = sorted(((loss(r, targets), x, r) for x, r in zip(xs, results)), key=lambda t: t[0])
+        improved = scored[0][0] < best[0]
+
+        if improved:
+            best[:] = [scored[0][0], [math.exp(v) for v in scored[0][1]], scored[0][2]]
+
+        mean = [sum(x[j] for _, x, _ in scored[:elite]) / elite for j in range(n)]
+        sigma *= 1.0 if improved else 0.85
+        calls[0] += size
+        print(f"поколение {generation:2d} лучшая {scored[0][0]:.3f} (всего {best[0]:.3f}) шаг {sigma:.2f}  "
+              + " ".join(f"{g:.2f}" for g in best[1]), flush=True)
+elif opts["mode"] == "pop":
     # Фон по популяциям (Billeh et al. 2020): множитель внешнего входа
     # каждой популяции × (цель / частота)^0.3 — «стреляет больше нормы —
     # меньше фона»; общие множители — из config.py.
@@ -135,7 +199,7 @@ if opts["mode"] == "pop":
             pop[key] *= min(1.5, max(0.67, ((targets[key] + 0.5) / (r + 0.5)) ** 0.3))
 
     print("column_gain_external_pop =", tuple((l, t, round(g, 3)) for (l, t), g in best_pop.items()))
-else:
+elif opts["mode"] == "gains":
     start = [0.0] * 11
     nelder_mead(f, start, 0.7, int(opts["evals"]))
 

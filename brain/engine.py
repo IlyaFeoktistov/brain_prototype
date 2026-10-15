@@ -2073,7 +2073,15 @@ class SpikingBrain:
                 T = max(1.0, 1000.0 / hz - cfg.refractory_ms)
                 q = math.exp(T / tau)
                 g, a = cfg.v_threshold - cfg.v_rest, cfg.v_reset - cfg.v_rest
-                self.bias[E.slice] = (q * g - a) / (q - 1.0)
+                # Средний фон клетка и так получает — его вычесть (частота в
+                # срезе — без сети; фон — среднее число входов × вес × τm).
+                background = float(self.noise_mean[E.start] / cfg.dt_ms * self.noise_gain[E.start] * tau)
+                self.bias[E.slice] = (q * g - a) / (q - 1.0) - background
+
+        # Фон ядер — согласование с частотами in vivo (cfg.nucleus_bias_mv).
+        for name, mv in getattr(cfg, "nucleus_bias_mv", ()):
+            if name in self.areas:
+                self.bias[self.areas[name].E.slice] += mv
 
         # Развитие до рождения (калибровка): гомеостаз быстрый везде.
         self.developing = False
@@ -2113,6 +2121,15 @@ class SpikingBrain:
 
 
         # Вход органов-датчиков на CHUNK шагов вперёд.
+        # Вероятность спонтанного спайка рецептора за шаг (органы с
+        # spontaneous_hz); None — рецепторы молчат без сигнала.
+        spontaneous = torch.zeros(self.n_receptors, device=self.device)
+
+        for sensor, offset in zip(self.sensors, self.sensor_offsets):
+            spontaneous[offset: offset + sensor.size] = getattr(sensor, "spontaneous_hz", 0.0) * cfg.dt_ms / 1000.0
+
+        self.spontaneous = spontaneous if bool((spontaneous > 0).any()) else None
+
         self.ear_input = torch.zeros(
             self.CHUNK, self.n_receptors, device=self.device
         )
@@ -2224,6 +2241,10 @@ class SpikingBrain:
             # Врождённые пути с постоянным весом: получатели — из хеша.
             proc_post, proc_weight = self.proc_rows.rows(fired_before)
             drive.index_add_(0, proc_post.flatten(), proc_weight.flatten())
+
+        if self.spontaneous is not None:
+            # Рецепторы стреляют и в тишине (SensorSpec.spontaneous_hz).
+            heard_now = (heard_now + (torch.rand_like(heard_now) < self.spontaneous).float()).clamp(max=1.0)
 
         heard = heard_now.index_select(0, self.ear_pre)
         drive.index_add_(0, self.ear_post, heard * self.ear_weight)

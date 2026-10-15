@@ -170,6 +170,8 @@ class SensorSpec:
     # Реле таламуса (анатомический мозг): рецепторы → его клетки один к
     # одному, оттуда — в L4 зоны той же проводкой. "" — прямо в зону.
     relay: str = ""
+    # Рецепторы стреляют и в тишине, Гц (анатомический мозг). 0 — нет.
+    spontaneous_hz: float = 0.0
 
 @dataclass
 class PathwaySpec:
@@ -1494,6 +1496,11 @@ class BrainConfig:
     # под частоты in vivo, как у Billeh et al. 2020 (веса фона по типам):
     # data/tools/column_fit.py mode=pop. () — без неё.
     column_gain_external_pop: tuple[tuple[str, str, float], ...] = ()
+    # Фон ядер анатомического мозга (ядро, мВ к току покоя главных клеток) —
+    # согласование с частотами in vivo (anatomy.RATES_HZ), как фон колонок:
+    # заменяет недостающие входы ствола и коры (клетки реле таламуса наяву
+    # держит у −60 мВ ацетилхолин ствола — Steriade). data/tools/anatomy_fit.py.
+    nucleus_bias_mv: tuple[tuple[str, float], ...] = ()
     # Частоты в покое, бодрствование, Гц. Человек (решётка Юта ~1–1.5 мм —
     # L2/3, у людей с эпилепсией; Le Van Quyen et al. 2016, доп. таблица —
     # сверить): обычные клетки (E) 2.6, быстрые (~PV) 6.4. SST и VIP у
@@ -2623,6 +2630,10 @@ class BrainConfig:
         out = [SensorSpec(
             "ear", "auditory", self.sensory_size, self.k_sensory, self.sensory_weight,
             self.sensory_inhibitory_gain, relay="mgn" if relay else "",
+            # Волокна слухового нерва в тишине: у большинства высокая
+            # спонтанная частота, до ~100 Гц (Liberman 1978, кошка) —
+            # середина 30 Гц [сверить по распределению].
+            spontaneous_hz=30.0 if relay else 0.0,
         )]
 
         if self.eye:
@@ -2630,6 +2641,9 @@ class BrainConfig:
                 "eye", "visual", 2 * self.retina_rows * self.retina_cols, 40, self.v1_weight,
                 rows=self.retina_rows, cols=self.retina_cols, wiring="oriented",
                 relay="lgn" if relay else "",
+                # Ганглиозные клетки сетчатки в темноте стреляют сами —
+                # единицы–десятки Гц (Barlow & Levick 1969) — 8 Гц [сверить].
+                spontaneous_hz=8.0 if relay else 0.0,
             ))
 
         return out

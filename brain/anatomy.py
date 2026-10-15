@@ -41,6 +41,11 @@ RATES_HZ = {
     # Мозжечок: Пуркинье простые спайки ~50, ядра ~30, олива ~1 Гц
     # (Häusser & Clark 1997; Raman et al. 2000; Lang et al. 1999).
     "purkinje": 50.0, "dcn": 30.0, "io": 1.0,
+    # Гиппокамп наяву (Mizuseki & Buzsáki 2013): CA1 ~1.5, CA3 ~1, зубчатая
+    # — редко, ~0.3 Гц; энторинальная L2/3 ~2 [сверить]. Гранулярные клетки
+    # мозжечка — редко, ~0.5 (Chadderton, Margrie & Häusser 2004). VLPO наяву
+    # ~1, во сне 5–10 (Szymusiak et al. 1998).
+    "ca1": 1.5, "ca3": 1.0, "dentate": 0.3, "entorhinal": 2.0, "granule": 0.5, "vlpo": 1.0,
 }
 
 

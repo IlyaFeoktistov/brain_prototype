@@ -205,6 +205,25 @@ RECEPTORS = (
 
 MODULATORS = (("serotonin", "raphe"), ("acetylcholine", "nbm"), ("orexin", "orexin"))
 
+# [согласовано с частотами in vivo] 2026-10-15, data/tools/anatomy_fit.py (20
+# шагов, весь мозг small, шаг 0.5 мс; не сошлось до конца — ошибка колеблется
+# 0.65–0.84): фон ядер, мВ (заменяет входы ствола и коры, которых нет), и
+# фон колонок по слою и типу. MGN, VA/VL, D1 не оживают и при +40 мВ — не
+# фон, а поломка цепи (разобрать).
+NUCLEUS_BIAS_MV = (
+    ("vta", 20.81), ("amygdala", 13.84), ("lc", -0.66), ("vlpo", 16.5), ("striatum_d1", 11.88),
+    ("striatum_d2", 23.35), ("gpe", -2.73), ("gpi", -0.85), ("thalamus", 39.29), ("entorhinal", -30.26),
+    ("dentate", 13.11), ("ca3", 24.62), ("ca1", -0.47), ("granule", -0.51), ("lgn", 39.91), ("mgn", 40.0),
+    ("md", 28.68), ("trn", 14.06), ("fsi", 23.84), ("stn", 24.39), ("raphe", -4.26), ("nbm", 12.5),
+    ("orexin", -2.22), ("cea", 15.52), ("purkinje", 39.55), ("dcn", 39.08), ("io", -0.66),
+)
+COLUMN_EXTERNAL_POP = (
+    ("L23", "E", 1.019), ("L23", "PV", 0.005), ("L23", "SOM", 4.579), ("L23", "VIP", 0.09),
+    ("L4", "E", 3.209), ("L4", "PV", 0.2), ("L4", "SOM", 1.333), ("L4", "VIP", 0.274),
+    ("L5", "E", 0.719), ("L5", "PV", 0.013), ("L5", "SOM", 1.407), ("L5", "VIP", 0.461),
+    ("L6", "E", 1.714), ("L6", "PV", 0.152), ("L6", "SOM", 0.788), ("L6", "VIP", 0.548),
+)
+
 
 def apply(cfg) -> None:
     """Достроить cfg до анатомического мозга (вызывается из Mind)."""
@@ -231,3 +250,9 @@ def apply(cfg) -> None:
             receptors.append((substance, target, mv))
 
     cfg.receptors = tuple(cfg.receptors) + tuple(receptors)
+
+    if not cfg.nucleus_bias_mv:
+        cfg.nucleus_bias_mv = NUCLEUS_BIAS_MV
+
+    if not cfg.column_gain_external_pop:
+        cfg.column_gain_external_pop = COLUMN_EXTERNAL_POP

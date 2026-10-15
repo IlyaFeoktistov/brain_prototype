@@ -791,7 +791,9 @@ class SpikingBrain:
         self.conductance_cells = torch.zeros(self.n_slots, dtype=torch.bool, device=self.device)
 
         for area in self.areas.values():
-            if area.layers is not None:
+            # Анатомический мозг — у всех клеток: реверсия ГАМК одна для всех
+            # нейронов, ниже неё торможение клетку не тянет.
+            if area.layers is not None or getattr(cfg, "anatomy", False):
                 self.conductance_cells[area.cells] = True
 
         self.conductance = bool(self.conductance_cells.any())
@@ -1165,6 +1167,12 @@ class SpikingBrain:
 
                         proj = self._connect(name, pre, post, k, (weight * root, weight * root), pre_index=pre_index)
 
+                        if proj is not None and spec.name in getattr(cfg, "vogels_areas", ()) and (src_kind, dst_kind) == ("PV", "E"):
+                            # Пластичность торможения PV → E (Vogels et al. 2011;
+                            # D'amour & Froemke 2015) — декорреляция признаков.
+                            proj.vogels = True
+                            proj.cap = cfg.vogels_cap
+
                         if proj is not None and src_kind == "SOM" and dst_kind == "E" and dst_layer in ("L23", "L5"):
                             # Мартинотти — на пучки дендритов в слое 1 (L2/3 и L5).
                             proj.dendrite = True
@@ -1467,11 +1475,14 @@ class SpikingBrain:
                     f"{sensor.name} -> {relay.E.name}", "sensory", (cells + offset)[:, None], relay.E,
                     torch.full((relay.E.size, 1), driver, device=self.device),
                 ))
-                k = min(sensor.k, sensor.size)
+                # Местные тормозные клетки реле получают сетчатку так же (1–3
+                # входа, триады; ~25% клеток таламуса приматов — Arcelli et al.
+                # 1997).
+                k = 2
                 self.projections.append(Projection(
                     f"{sensor.name} -> {relay.I.name}", "sensory",
                     torch.randint(0, sensor.size, (relay.I.size, k), device=self.device, generator=self.generator) + offset,
-                    relay.I, torch.full((relay.I.size, k), driver / k * 4, device=self.device),
+                    relay.I, torch.full((relay.I.size, k), driver, device=self.device),
                 ))
             # Вход органа (через таламус) — в L4 колонки (Potjans: таламус → L4).
             target = area.layers.get("L4", area.layers["L23"]) if area.layers is not None else None

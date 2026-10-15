@@ -2621,6 +2621,10 @@ class BrainConfig:
     # фиксаций — 1 мВ. [не подбиралось] — по правилу.
     inhibitory_target_hz: float = 1.0
     inhibitory_rate: float = 20.0
+    # Колонки, где PV → E учатся по Vogels (анатомический мозг; потолок —
+    # vogels_cap мВ веса, как у прежнего пути «letters: торможение»).
+    vogels_areas: tuple[str, ...] = ()
+    vogels_cap: float = 4.0
 
     def sensors(self) -> list[SensorSpec]:
         """Органы-датчики тела: ухо всегда, глаз — если включён."""

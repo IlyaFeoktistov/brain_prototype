@@ -73,6 +73,13 @@ class Mind:
             # NMDA со скромными весами (Wang 2001); в колонке по данным они
             # взрывали зону (anatomy_bench: E 50–100 Гц, PV 400).
             cfg.areas = [replace(a, columns=0, column_weight=0.0) if a.name == "goal" else a for a in cfg.areas]
+            # Пул торможения (k-WTA кодом) — его работу делают PV колонок и
+            # тормозные клетки гранулярного слоя (Гольджи); «торможение» букв
+            # путём E → E с минусом — заглушка: правило Vogels переходит на
+            # настоящие синапсы PV → E (vogels_areas; D'amour & Froemke 2015).
+            cfg.areas = [replace(a, pool_mv=0.0) for a in cfg.areas]
+            cfg.pathways = [p for p in cfg.pathways if not getattr(p, "vogels", False) or p.src != p.dst]
+            cfg.vogels_areas = ("letters",)
             # «Рабочая память» особым типом клеток (LIF без адаптации +
             # медленный ток только в ПФК) — тоже костыль: у всех пирамидных
             # клеток коры есть NMDA (долг — NMDA у всех E колонок по данным).

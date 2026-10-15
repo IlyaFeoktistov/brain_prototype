@@ -35,7 +35,6 @@ def measure(bias: dict, pop: dict) -> tuple[dict, dict, dict]:
     cfg.autosave = False
     cfg.anatomy = True
     cfg.hand = True
-    cfg.dendritic_context = False
     cfg.size = opts["size"]
     cfg.dt_ms = float(opts["dt"])
     cfg.nucleus_bias_mv = tuple(bias.items())
@@ -62,8 +61,9 @@ def measure(bias: dict, pop: dict) -> tuple[dict, dict, dict]:
 
 base = BrainConfig()
 targets = {(layer, kind): hz for layer, *v in base.column_target_hz for kind, hz in zip(KINDS, v)}
-bias: dict = {}
-pop = {key: 1.0 for key in targets}
+# Старт — уже найденное (anatomy.py), продолжить подбор.
+bias: dict = dict(anatomy.NUCLEUS_BIAS_MV)
+pop = {(l, t): g for l, t, g in anatomy.COLUMN_EXTERNAL_POP}
 
 for step in range(int(opts["steps"])):
     nuclei, columns, cfg = measure(bias, pop)

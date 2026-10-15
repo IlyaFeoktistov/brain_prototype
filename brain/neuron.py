@@ -53,10 +53,7 @@ def _learned(brain, proj) -> torch.Tensor:
 
 def _area_of(brain, index: int):
     for area in brain.areas.values():
-        for kind, pop in (("E", area.E), ("I", area.I), ("SOM", area.SOM), ("VIP", area.VIP)):
-            if pop is None:
-                continue
-
+        for kind, pop in area.populations:
             if pop.start <= index < pop.stop:
                 return area, kind, pop
 

@@ -75,7 +75,8 @@ class Health:
         group = torch.full((brain.n,), -1, dtype=torch.long, device=self.device)
 
         for i, area in enumerate(brain.areas.values()):
-            group[area.E.slice] = 2 * i
+            for pop in area.excitatory:
+                group[pop.slice] = 2 * i
 
             for pop in area.inhibitory:
                 group[pop.slice] = 2 * i + 1

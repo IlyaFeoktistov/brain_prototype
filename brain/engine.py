@@ -56,16 +56,47 @@ class Area:
     I: Population
     SOM: Population | None = None
     VIP: Population | None = None
+    # Колонка по слоям (cfg.layers): слой -> {"E", "PV", "SOM", "VIP"}.
+    # E, I, SOM, VIP выше — популяции слоя 2/3.
+    layers: dict | None = None
+
+    @property
+    def populations(self) -> list[tuple[str, Population]]:
+        """(метка, популяция) всех клеток зоны: «E», «I», «L4.E», «L4.SOM» …"""
+
+        if self.layers is None:
+            pops = [("E", self.E), ("I", self.I), ("SOM", self.SOM), ("VIP", self.VIP)]
+            return [(label, pop) for label, pop in pops if pop is not None]
+
+        out = []
+
+        for layer, group in self.layers.items():
+            for kind, pop in group.items():
+                label = {"E": "E", "PV": "I"}.get(kind, kind) if layer == "L23" else f"{layer}.{kind}"
+                out.append((label, pop))
+
+        return out
+
+    @property
+    def excitatory(self) -> list[Population]:
+        if self.layers is None:
+            return [self.E]
+
+        return [group["E"] for group in self.layers.values()]
 
     @property
     def inhibitory(self) -> list[Population]:
-        return [pop for pop in (self.I, self.SOM, self.VIP) if pop is not None]
+        if self.layers is None:
+            return [pop for pop in (self.I, self.SOM, self.VIP) if pop is not None]
+
+        return [pop for group in self.layers.values() for kind, pop in group.items() if kind != "E"]
 
     @property
     def cells(self) -> slice:
-        """Все клетки зоны подряд: E, I (PV), SOM, VIP."""
+        """Все клетки зоны подряд."""
 
-        return slice(self.E.start, self.inhibitory[-1].stop)
+        pops = [pop for _, pop in self.populations]
+        return slice(pops[0].start, pops[-1].stop)
 
 
 class Projection:
@@ -322,6 +353,11 @@ class SpikingBrain:
             n_i = max(2, int(n * cfg.inhibitory_fraction))
             n_e = n - n_i
 
+            if self._has_layers(spec.name):
+                area, start = self._column(spec, n, start)
+                self.areas[spec.name] = area
+                continue
+
             E = Population(f"{spec.name}.E", start, n_e)
 
             if self._has_microcircuit(spec.name):
@@ -355,10 +391,56 @@ class SpikingBrain:
         self.n_slots = self.n + self.DUMMY_NEURONS
 
     def _has_microcircuit(self, name: str) -> bool:
-        """Зона новой коры с типами тормозных клеток (cfg.interneurons)."""
+        """Зона новой коры с типами тормозных клеток (cfg.interneurons или cfg.layers)."""
 
         cfg = self.cfg
-        return bool(getattr(cfg, "interneurons", False)) and name in getattr(cfg, "microcircuit_areas", ())
+        on = getattr(cfg, "interneurons", False) or getattr(cfg, "layers", False)
+        return bool(on) and name in getattr(cfg, "microcircuit_areas", ())
+
+    def _has_layers(self, name: str) -> bool:
+        """Зона новой коры колонкой по слоям (cfg.layers)."""
+
+        cfg = self.cfg
+        return bool(getattr(cfg, "layers", False)) and name in getattr(cfg, "layered_areas", ())
+
+    def _column_layers(self, name: str) -> list[tuple[str, int, int]]:
+        """Слои колонки зоны (Potjans): у агранулярной — без L4."""
+
+        cells = list(self.cfg.column_cells)
+
+        if name in self.cfg.agranular_areas:
+            cells = [c for c in cells if c[0] != "L4"]
+
+        return cells
+
+    def _column(self, spec, n: int, start: int) -> tuple[Area, int]:
+        """
+        Зона-колонка: n клеток по долям слоёв колонки 1 мм² (Potjans Table
+        5), тормозные слоя — PV / SOM / VIP по долям слоя (остальные типы не
+        строим). area.E / I / SOM / VIP — популяции L2/3.
+        """
+
+        cfg = self.cfg
+        cells = self._column_layers(spec.name)
+        total = sum(e + i for _, e, i in cells)
+        shares = {layer: (pv, som, vip) for layer, pv, som, vip in cfg.layer_interneurons}
+        layers = {}
+
+        for layer, n_e, n_i in cells:
+            group = {}
+            sizes = [("E", max(4, round(n * n_e / total)))]
+            inhibitory = n * n_i / total
+            sizes += [(kind, max(1, round(inhibitory * share))) for kind, share in zip(("PV", "SOM", "VIP"), shares[layer])]
+
+            for kind, size in sizes:
+                group[kind] = Population(f"{spec.name}.{layer}.{kind}", start, size)
+                start += size
+
+            layers[layer] = group
+
+        top = layers["L23"]
+        area = Area(spec.name, spec.title, spec.kind, top["E"], top["PV"], top["SOM"], top["VIP"], layers)
+        return area, start
 
     def _fill(self, values: dict[str, float]) -> torch.Tensor:
         """Параметр нейрона по типу популяции: cortex_E, memory_E, I (и SOM, VIP)."""
@@ -366,7 +448,8 @@ class SpikingBrain:
         out = torch.zeros(self.n_slots, device=self.device)
 
         for area in self.areas.values():
-            out[area.E.slice] = values[f"{area.kind}_E"]
+            for pop in area.excitatory:
+                out[pop.slice] = values[f"{area.kind}_E"]
 
             for pop in area.inhibitory:
                 out[pop.slice] = values["I"]
@@ -383,21 +466,35 @@ class SpikingBrain:
         cfg = self.cfg
         self.is_som = torch.zeros(self.n_slots, dtype=torch.bool, device=self.device)
 
+        # Пресинапсы с облегчением к SOM: все E зон с типами тормозных.
+        self.facil_pre = torch.zeros(self.n_slots, device=self.device)
+
         for area in self.areas.values():
             if area.SOM is None:
                 continue
 
-            for pop, tau, index in (
-                (area.I, cfg.pv_tau_m, cfg.pv_adaptation_index),
-                (area.SOM, cfg.som_tau_m, cfg.som_adaptation_index),
-                (area.VIP, cfg.vip_tau_m, cfg.vip_adaptation_index),
-            ):
-                self.tau_m[pop.slice] = tau
-                self.adapt_b[pop.slice] = cfg.e_adapt_b * index / cfg.e_adaptation_index
+            for _, group in self._typed_groups(area):
+                for pop, tau, index in (
+                    (group["PV"], cfg.pv_tau_m, cfg.pv_adaptation_index),
+                    (group["SOM"], cfg.som_tau_m, cfg.som_adaptation_index),
+                    (group["VIP"], cfg.vip_tau_m, cfg.vip_adaptation_index),
+                ):
+                    self.tau_m[pop.slice] = tau
+                    self.adapt_b[pop.slice] = cfg.e_adapt_b * index / cfg.e_adaptation_index
 
-            self.is_som[area.SOM.slice] = True
+                self.is_som[group["SOM"].slice] = True
+                self.facil_pre[group["E"].slice] = 1.0
 
         self.has_som = bool(self.is_som.any())
+
+    @staticmethod
+    def _typed_groups(area: Area) -> list[tuple[str, dict]]:
+        """Слои зоны с типами тормозных: (слой, {E, PV, SOM, VIP})."""
+
+        if area.layers is not None:
+            return list(area.layers.items())
+
+        return [("L23", {"E": area.E, "PV": area.I, "SOM": area.SOM, "VIP": area.VIP})]
 
     def _init_neurons(self) -> None:
         cfg = self.cfg
@@ -588,8 +685,7 @@ class SpikingBrain:
 
         self.decay_eligibility = math.exp(-dt / cfg.eligibility_tau)
         # Число фоновых входных спайков за шаг ~ Poisson(λ).
-        self.noise_mean = cfg.background_rate_hz * dt / 1000.0
-        self.noise_std = math.sqrt(self.noise_mean)
+        self.noise_mean = torch.full((self.n_slots,), cfg.background_rate_hz * dt / 1000.0, device=self.device)
         self.noise_gain = self._fill(
             {
                 "cortex_E": cfg.background_weight,
@@ -602,6 +698,30 @@ class SpikingBrain:
         for spec in cfg.areas:
             if spec.background is not None:
                 self.noise_gain[self.areas[spec.name].E.slice] = spec.background
+
+        # Колонки (cfg.layers): внешний вход — остальной мозг, Пуассон K × 8 Гц
+        # с PSP 0.15 мВ каждой клетке (Potjans Table 5) вместо слабого шума.
+        for area in self.areas.values():
+            if area.layers is None:
+                continue
+
+            external = {layer: (e, i) for layer, e, i in cfg.external_inputs}
+            gaps = {"E": cfg.v_threshold - cfg.v_rest, "PV": cfg.pv_gap_mv, "SOM": cfg.som_gap_mv, "VIP": cfg.vip_gap_mv}
+            charge = self._potjans_charge()
+
+            for layer, group in area.layers.items():
+                for kind, pop in group.items():
+                    inputs = external[layer][0 if kind == "E" else 1]
+                    self.noise_mean[pop.slice] = inputs * cfg.external_rate_hz * dt / 1000.0
+                    # Заряд PSP (мВ·мс) = вес × τm клетки — как у Potjans
+                    # относительно расстояния до порога.
+                    tau = float(self.tau_m[pop.start])
+                    self.noise_gain[pop.slice] = charge * gaps[kind] / cfg.potjans_gap_mv / tau
+
+        self.noise_std = self.noise_mean.sqrt()
+        # Постоянный ток (мВ): недостающие в малой зоне соседи колонки (см.
+        # _wire_column) — средняя часть их входа.
+        self.dc_mv = torch.zeros(self.n_slots, device=self.device)
 
     def _topographic_pre(self, post: Population, k: int, pre_pop: Population, field: float) -> torch.Tensor:
         """
@@ -652,6 +772,21 @@ class SpikingBrain:
             shape, device=self.device, generator=self.generator
         ))
 
+    def _potjans_charge(self) -> float:
+        """Заряд PSP 0.15 мВ клетки Potjans (τm 10, τsyn 0.5 мс), мВ·мс."""
+
+        cfg = self.cfg
+        tau_m, tau_syn, dt = cfg.potjans_tau_m, cfg.potjans_tau_syn, 0.01
+        current, v, peak = tau_m / tau_syn, 0.0, 0.0
+
+        for _ in range(int(10 * tau_m / dt)):
+            v += (current - v) * dt / tau_m
+            current *= math.exp(-dt / tau_syn)
+            peak = max(peak, v)
+
+        # Вес 1 даёт заряд τm; вес, дающий пик ee_psp_mv, — ee_psp_mv / пик.
+        return cfg.ee_psp_mv / peak * tau_m
+
     def _psp_peak(self, pop: Population) -> float:
         """
         Пик PSP (мВ) клетки популяции от веса 1 — тем же шагом, что в _step:
@@ -670,6 +805,141 @@ class SpikingBrain:
             peak = max(peak, v)
 
         return peak
+
+    def _laminar(self, path, src: Area, dst: Area) -> tuple[Population, Population, Population, bool]:
+        """
+        Из какого слоя в какой идёт путь (ARCHITECTURE 10, «Связи между зонами
+        по слоям»; cfg.pathway_directions): прямой — из L2/3 в L4 (E и PV —
+        прямое торможение), у агранулярной зоны — в L2/3; обратный — из L5 на
+        дендриты L2/3 (слой 1) и VIP; боковой — из L2/3 в L2/3; к ядрам — из
+        L5. Без слоёв — как раньше: E → E и I.
+        Возвращает (пре, пост, тормозные получатели, на дендриты ли).
+        """
+
+        direction = next(
+            (d for s, t, d in getattr(self.cfg, "pathway_directions", ()) if (s, t) == (path.src, path.dst)),
+            "lateral",
+        )
+        pre, post, inhibitory, top_down = src.E, dst.E, dst.I, False
+
+        if src.layers is not None and (direction == "fb" or dst.layers is None and dst.SOM is None):
+            # Обратные пути и выход к ядрам — из L5.
+            pre = src.layers["L5"]["E"]
+
+        if dst.layers is not None:
+            if direction in ("ff", "thalamic") and "L4" in dst.layers:
+                post, inhibitory = dst.layers["L4"]["E"], dst.layers["L4"]["PV"]
+            elif direction == "fb":
+                inhibitory, top_down = dst.VIP, True
+
+        return pre, post, inhibitory, top_down
+
+    def _wire_column(self, spec, area: Area) -> None:
+        """
+        Связи внутри колонки (ARCHITECTURE 10, «Слои колонки»): вероятность E/I
+        между слоями — Potjans Table 5; тормозная доля — по типам в отношениях
+        Campagnola 2022 так, что среднее по клеткам слоя равно числу Potjans.
+        Входов k = вероятность × клеток-источников в зоне. Зона меньше колонки
+        1 мм² — у пути k_data / k раз меньше входов: вес × √(k_data / k), а
+        недостающая средняя часть — постоянный ток dc_mv по частотам полной
+        модели (van Albada, Helias & Diesmann 2015). E → E слоя 2/3 — обучаемая
+        связь зоны (AreaSpec: k_ee заменяет вероятность, веса — её).
+        """
+
+        cfg = self.cfg
+        order = [layer for layer, _, _ in cfg.column_cells]
+        column = {layer: (e, i) for layer, e, i in cfg.column_cells}
+        shares = {layer: dict(zip(("PV", "SOM", "VIP"), v)) for layer, *v in cfg.layer_interneurons}
+        rates = {layer: (e, i) for layer, e, i in cfg.column_rates_hz}
+        ee_layer = dict(cfg.layer_ee_psp_mv)
+        ei_psp = {layer: dict(zip(("PV", "SOM", "VIP"), v)) for layer, *v in cfg.layer_ei_psp_mv}
+        ii_psp = {src: dict(zip(("E", "PV", "SOM", "VIP"), v)) for src, *v in cfg.inhibitory_psp_mv}
+        to_e = {"PV": 0.35, "SOM": 0.23, "VIP": 0.06}
+        from_e = {"PV": 0.42, "SOM": 0.30, "VIP": 0.20}
+        among = {(src, dst): p for src, dst, p, _ in cfg.local_links if src != "E" and dst != "E"}
+        types = ("PV", "SOM", "VIP")
+
+        def potjans(src_layer, src_ei, dst_layer, dst_ei) -> float:
+            row = 2 * order.index(dst_layer) + (dst_ei == "I")
+            col = 2 * order.index(src_layer) + (src_ei == "I")
+            return cfg.column_probability[row][col]
+
+        def mean(weights, layer) -> float:
+            share = shares[layer]
+            return sum(share[t] * weights[t] for t in types) / sum(share[t] for t in types)
+
+        def label(layer, kind) -> str:
+            return ({"E": "E", "PV": "I"}.get(kind, kind)) if layer == "L23" else f"{layer}.{kind}"
+
+        for dst_layer, dst_group in area.layers.items():
+            for dst_kind, post in dst_group.items():
+                for src_layer, src_group in area.layers.items():
+                    for src_kind, pre in src_group.items():
+                        src_ei = "E" if src_kind == "E" else "I"
+                        dst_ei = "E" if dst_kind == "E" else "I"
+                        p = potjans(src_layer, src_ei, dst_layer, dst_ei)
+
+                        # Тормозная доля — по типам (среднее по слою = Potjans).
+                        if src_ei == "E" and dst_ei == "I":
+                            p *= from_e[dst_kind] / mean(from_e, dst_layer)
+                        elif src_ei == "I" and dst_ei == "E":
+                            p *= to_e[src_kind] / mean(to_e, src_layer)
+                        elif src_ei == "I":
+                            pair = among.get((src_kind, dst_kind), 0.0)
+                            norm = sum(
+                                shares[src_layer][a] * shares[dst_layer][b] * among.get((a, b), 0.0)
+                                for a in types for b in types
+                            ) / (sum(shares[src_layer].values()) * sum(shares[dst_layer].values()))
+                            p *= pair / norm if norm > 0 else 0.0
+
+                        if p <= 0:
+                            continue
+
+                        # PSP пары, мВ.
+                        if src_ei == "E" and dst_ei == "E":
+                            if (src_layer, dst_layer) == ("L4", "L23"):
+                                psp = cfg.l4_to_l23_psp_mv
+                            elif src_layer == dst_layer:
+                                psp = ee_layer.get(src_layer, cfg.ee_psp_mv)
+                            else:
+                                psp = cfg.ee_psp_mv
+                        elif src_ei == "E":
+                            psp = ei_psp[src_layer][dst_kind]
+                        else:
+                            psp = ii_psp[src_kind][dst_kind]
+
+                        n_src = column[src_layer][0] if src_ei == "E" else column[src_layer][1] * shares[src_layer][src_kind]
+                        k_data = p * n_src
+                        k = min(round(p * pre.size), pre.size)
+                        weight = psp / self._psp_peak(post)
+                        rate = rates[src_layer][0 if src_ei == "E" else 1] / 1000.0
+                        tau = float(self.tau_m[post.start])
+
+                        if k < 1:
+                            # Связь целиком — средним током.
+                            self.dc_mv[post.slice] += k_data * rate * weight * tau
+                            continue
+
+                        root = math.sqrt(max(1.0, k_data / k))
+                        self.dc_mv[post.slice] += k_data * rate * weight * tau * (1.0 - 1.0 / root)
+                        name = f"{spec.name}: {label(src_layer, src_kind)}->{label(dst_layer, dst_kind)}"
+
+                        if (src_layer, src_kind, dst_layer, dst_kind) == ("L23", "E", "L23", "E"):
+                            # Обучаемая связь зоны: веса и правила — AreaSpec.
+                            proj = self._connect(
+                                name, pre, post, k, spec.ee_weight, plastic=spec.ee_plastic,
+                                cap=spec.ee_cap, modulator=spec.ee_modulator,
+                                ach_suppressed=spec.ee_ach_suppressed,
+                            )
+                            if proj is not None:
+                                proj.scaled = getattr(spec, "ee_scaled", True)
+                            continue
+
+                        proj = self._connect(name, pre, post, k, (weight * root, weight * root))
+
+                        if proj is not None and src_kind == "SOM" and dst_kind == "E" and dst_layer in ("L23", "L5"):
+                            # Мартинотти — на пучки дендритов в слое 1 (L2/3 и L5).
+                            proj.dendrite = True
 
     def _wire_microcircuit(self, spec, area: Area) -> None:
         """
@@ -750,7 +1020,7 @@ class SpikingBrain:
                 seed=self.cfg.seed * 1009 + len(self.projections), device=self.device,
             )
             proj.source_kind = next(
-                a.kind for a in self.areas.values() if pre_pop is a.E or pre_pop in a.inhibitory
+                a.kind for a in self.areas.values() if any(pre_pop is pop for _, pop in a.populations)
             )
             self.projections.append(proj)
             return proj
@@ -793,7 +1063,7 @@ class SpikingBrain:
         proj.modulator = modulator
         proj.ach_suppressed = ach_suppressed
         proj.source_kind = next(
-            a.kind for a in self.areas.values() if pre_pop is a.E or pre_pop in a.inhibitory
+            a.kind for a in self.areas.values() if any(pre_pop is pop for _, pop in a.populations)
         )
         self.projections.append(proj)
 
@@ -850,6 +1120,10 @@ class SpikingBrain:
         for spec in cfg.areas:
             area = self.areas[spec.name]
 
+            if area.layers is not None:
+                self._wire_column(spec, area)
+                continue
+
             self._connect(
                 f"{spec.name}: E->E", area.E, area.E, spec.k_ee,
                 spec.ee_weight, plastic=spec.ee_plastic, cap=spec.ee_cap,
@@ -891,9 +1165,10 @@ class SpikingBrain:
 
             src = self.areas[path.src]
             dst = self.areas[path.dst]
+            pre, post, inhibitory, top_down = self._laminar(path, src, dst)
 
             proj = self._connect(
-                getattr(path, "name", "") or f"{path.src} -> {path.dst}", src.E, dst.E, path.k,
+                getattr(path, "name", "") or f"{path.src} -> {path.dst}", pre, post, path.k,
                 path.weight, plastic=path.plastic, cap=path.cap,
                 modulator=path.modulator, ach_suppressed=path.ach_suppressed,
                 topographic=path.topographic, blocks=getattr(path, "blocks", 0),
@@ -904,12 +1179,12 @@ class SpikingBrain:
             if proj is not None:
                 proj.predictive = path.predictive
                 proj.scaled = getattr(path, "scaled", True)
-                proj.dendrite = getattr(path, "dendrite", False)
+                proj.dendrite = getattr(path, "dendrite", False) or top_down
                 proj.vogels = getattr(path, "vogels", False)
                 proj.scale_up = getattr(path, "scale_up", False)
                 proj.cap = path.cap
             self._connect(
-                f"{path.src} -> {path.dst}.I", src.E, dst.I, path.k_inhibitory,
+                f"{path.src} -> {path.dst}.I", pre, inhibitory, path.k_inhibitory,
                 (path.inhibitory_weight, path.inhibitory_weight),
             )
 
@@ -918,9 +1193,13 @@ class SpikingBrain:
         # первым (как всегда), дальше остальные.
         for sensor, offset in zip(self.sensors, self.sensor_offsets):
             area = self.areas[sensor.area]
+            # Вход органа (через таламус) — в L4 колонки (Potjans: таламус → L4).
+            target = area.layers.get("L4", area.layers["L23"]) if area.layers is not None else None
+            excitatory = target["E"] if target else area.E
+            inhibitory = target["PV"] if target else area.I
 
-            for pop, gain in ((area.E, 1.0), (area.I, sensor.inhibitory_gain)):
-                if sensor.wiring == "oriented" and pop is area.E:
+            for pop, gain in ((excitatory, 1.0), (inhibitory, sensor.inhibitory_gain)):
+                if sensor.wiring == "oriented" and pop is excitatory:
                     pre, weight = self._wire_oriented(sensor, pop.size)
                 else:
                     # Случайные рецепторы своего органа (торможение сетчатки
@@ -1443,8 +1722,9 @@ class SpikingBrain:
                 # До порога — как у клетки этого типа (реобаза × сопротивление).
                 gap = cfg.v_threshold - cfg.v_rest
 
-                for pop, data_gap in ((area.I, cfg.pv_gap_mv), (area.SOM, cfg.som_gap_mv), (area.VIP, cfg.vip_gap_mv)):
-                    self.bias[pop.slice] = gap - data_gap
+                for _, group in self._typed_groups(area):
+                    for kind, data_gap in (("PV", cfg.pv_gap_mv), ("SOM", cfg.som_gap_mv), ("VIP", cfg.vip_gap_mv)):
+                        self.bias[group[kind].slice] = gap - data_gap
 
         # Развитие до рождения (калибровка): гомеостаз быстрый везде.
         self.developing = False
@@ -1657,7 +1937,7 @@ class SpikingBrain:
 
         dv = (
             cfg.v_rest - self.v + exp_term - self.adapt - self.adapt_slow
-            + synaptic + self.bias + self.interoception + modulated + self.clock_mv
+            + synaptic + self.bias + self.dc_mv + self.interoception + modulated + self.clock_mv
             + self.kick_current * (self.kick_left > 0)
         ) * self.decay_m
         v = torch.where(self.refractory <= 0, self.v + dv, self.v)
@@ -1679,7 +1959,10 @@ class SpikingBrain:
         if cfg.base_circuit:
             # Ресурс восстанавливается к 1, спайк тратит долю stp_u.
             self.stp_x.add_((1.0 - self.stp_x) * self.stp_recover)
-            self.stp_x.sub_(cfg.stp_u * self.stp_x * self.spikes * self.cortex_e)
+            # Истощаются синапсы E зон с обучаемыми связями и все E колонок
+            # (E → E и E → PV ослабевают при повторе — Markram et al. 1998;
+            # Campagnola et al. 2022).
+            self.stp_x.sub_(cfg.stp_u * self.stp_x * self.spikes * torch.maximum(self.cortex_e, self.facil_pre))
             # Усиление торможения: каждый спайк E коры поднимает, медленно
             # возвращается к 1 (в равновесии 1 + шаг · τ · частота).
             self.inh_gain.sub_(1.0).mul_(self.decay_inh_gain).add_(1.0)
@@ -1689,7 +1972,7 @@ class SpikingBrain:
             # Облегчение: u спадает к U за τ облегчения, спайк поднимает его на
             # U·(1 − u); ресурс x восстанавливается за τ восстановления, спайк
             # тратит u·x (Tsodyks & Markram 1997; Gupta et al. 2000).
-            spiked = self.spikes * self.cortex_e
+            spiked = self.spikes * self.facil_pre
             self.facil_u.sub_((self.facil_u - cfg.som_facil_u) * self.facil_decay)
             self.facil_x.add_((1.0 - self.facil_x) * self.facil_recover)
             used = self.facil_u * self.facil_x * spiked

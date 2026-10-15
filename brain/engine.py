@@ -7,6 +7,8 @@ import math
 
 import torch
 
+from brain import kernels as _kernels
+
 from brain.wiring import ProceduralProjection, ProceduralRows
 
 
@@ -234,6 +236,34 @@ class EventTable:
 
     def nbytes(self) -> int:
         return self.ptr.numel() * 4 + self.perm.numel() * 4
+
+    def prepare_compact(self, capacity: int, n: int, dummy_neurons: int) -> None:
+        """
+        Буферы плотного списка событий (ядро brain/csrc/events.cu): ёмкость
+        постоянна; пустые ячейки — разные фиктивные синапсы и нейроны (как в
+        events, чтобы не драться за один адрес).
+        """
+
+        device = self.perm.device
+        cells = torch.arange(capacity, device=device)
+        self.capacity, self.n = capacity, n
+        self.empty_synapses = (self.pad + cells % self.dummies).long()
+        self.empty_pre = (n + cells % dummy_neurons).long()
+        self.out_synapses = self.empty_synapses.clone()
+        self.out_pre = self.empty_pre.clone()
+
+    def compact(self, neurons: torch.Tensor, dropped: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Синапсы строк neurons подряд, без пустых ячеек; лишнее — в dropped."""
+
+        neurons = neurons.long()
+        lengths = torch.where(neurons < self.n, self.count.index_select(0, neurons), 0).long()
+        offsets = torch.cumsum(lengths, 0) - lengths
+        self.out_synapses.copy_(self.empty_synapses)
+        self.out_pre.copy_(self.empty_pre)
+        _kernels.compact_events(neurons, self.n, self.start, self.count, self.perm, offsets,
+                                self.out_synapses, self.out_pre)
+        dropped.add_((lengths.sum() - self.capacity).clamp(min=0))
+        return self.out_synapses, self.out_pre
 
     TENSORS = ("ptr", "start", "count", "perm", "cols", "is_hub", "tail_cols")
 
@@ -1885,6 +1915,16 @@ class SpikingBrain:
 
         self.out_all, self.out_plastic = out_all, out_plastic
         self.in_plastic = table(self.net_post[:P], P)
+
+        # Плотный список событий ядром C++/CUDA (brain/kernels.py): ёмкость —
+        # доля синапсов таблицы за шаг (cfg.event_capacity).
+        self.compact = _kernels.compact_events is not None and self.device.type == "cuda"
+
+        if self.compact:
+            fraction = self.cfg.event_capacity
+
+            for t, total in ((self.out_all, S), (self.out_plastic, P), (self.in_plastic, P)):
+                t.prepare_compact(max(32768, int(total * fraction)), self.n, self.DUMMY_NEURONS)
         # Таблицы — новые тензоры: старые CUDA Graph на них не смотрят.
         self._graphs = {}
 
@@ -2047,7 +2087,7 @@ class SpikingBrain:
         # ---- синаптический вход от спайков прошлого шага ----
         fired_before = self._fired()
 
-        synapses, pre_of = self.out_all.events(fired_before)
+        synapses, pre_of = self._events(self.out_all, fired_before)
         post = self.net_post.index_select(0, synapses)
         weight = self.net_weight.index_select(0, synapses)
 
@@ -2132,7 +2172,7 @@ class SpikingBrain:
         if plastic:
             # LTD: пре пришёл после поста. Нейроны рабочей памяти
             # (ковариационное правило) этой ветки не имеют.
-            synapses, pre_of = self.out_plastic.events(fired_before)
+            synapses, pre_of = self._events(self.out_plastic, fired_before)
             post = self.net_post.index_select(0, synapses)
             ltd = self.trace_post.index_select(0, post) * self.ltd_mask.index_select(0, pre_of)
             sign = -cfg.stdp_a_minus
@@ -2275,7 +2315,7 @@ class SpikingBrain:
         if plastic:
             # LTP: пост выстрелил после пре.
             fired_now = self._fired()
-            synapses, _ = self.in_plastic.events(fired_now)
+            synapses, _ = self._events(self.in_plastic, fired_now)
             pre = self.net_pre.index_select(0, synapses)
             self.eligibility.index_add_(
                 0,
@@ -2300,6 +2340,14 @@ class SpikingBrain:
                 torch.sub(trace, trace.mean(), out=self.ltp_kernel[pop.slice])
                 self.ltp_kernel[pop.slice].mul_(self.cfg.context_hebb_gain)
         self.trace_post.mul_(self.decay_minus).add_(self.spikes)
+
+    def _events(self, table: EventTable, neurons: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """События шага: плотным списком (ядро C++/CUDA) или строками таблицы."""
+
+        if self.compact:
+            return table.compact(neurons, self.dropped)
+
+        return table.events(neurons)
 
     def _fired(self) -> torch.Tensor:
         """Индексы выстреливших нейронов, дополненные фиктивными до max_spikes."""

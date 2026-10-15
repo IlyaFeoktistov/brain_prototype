@@ -1250,6 +1250,10 @@ class BrainConfig:
     # максимум 1.54%. 2% — с запасом; 5% тормозило большие мозги
     # (200k: 7 ток/с — шаг тратит время на пустые строки таблицы).
     max_spike_fraction: float = 0.02
+    # Ёмкость плотного списка событий за шаг (ядро C++/CUDA): доля синапсов
+    # таблицы. 2% — все нейроны по ~10 Гц при шаге 2 мс; больше — лишнее в
+    # dropped (стенд здоровья это видит).
+    event_capacity: float = 0.02
     # [замер] пик за шаг: 2k нейронов — 16.9%, 20k — 7.9%, 100k — 1.5%.
     # Поэтому не меньше 2000 строк (но не больше 20% мозга): tiny —
     # 400 (20%), 20 тыс. — 2000 (10%), 100k+ — 2%.
@@ -1470,10 +1474,16 @@ class BrainConfig:
     # общие на тип множители, одинаковые во всех слоях. Цель — частоты в
     # покое у бодрствующих животных (column_target_hz), подбор —
     # data/tools/column_fit.py. 1.0 — без согласования.
-    column_gain_external: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)  # E, PV, SOM, VIP
-    column_gain_from_e: tuple[float, float, float] = (1.0, 1.0, 1.0)  # E → PV, SOM, VIP
-    column_gain_to_e: tuple[float, float, float] = (1.0, 1.0, 1.0)  # PV, SOM, VIP → E
-    column_gain_ii: float = 1.0  # тормозные → тормозные
+    # [согласовано с частотами in vivo] 2026-10-15, column_fit mode=batch (24
+    # копии колонки слуха × 25 поколений, шаг 0.5 мс, частота E весит ×4):
+    # ошибка 0.54; L2/3 E 1.7 (цель 2.6), L5 E 2.3 (2.5), PV 4–23 (6.4), VIP
+    # 4–6 (3.5); L4 E молчат без таламуса (у человека в L4 E почти не связаны —
+    # живут входом реле), SOM почти молчат. E → VIP ×0.1 — измеренный вход
+    # VIP (близкие пары) завышен для средней колонки.
+    column_gain_external: tuple[float, float, float, float] = (0.351, 0.634, 0.548, 0.484)  # E, PV, SOM, VIP
+    column_gain_from_e: tuple[float, float, float] = (1.762, 0.587, 0.1)  # E → PV, SOM, VIP
+    column_gain_to_e: tuple[float, float, float] = (0.982, 0.968, 0.46)  # PV, SOM, VIP → E
+    column_gain_ii: float = 2.259  # тормозные → тормозные
     # Внешний вход по популяциям (слой, тип, множитель) — подстройка фона
     # под частоты in vivo, как у Billeh et al. 2020 (веса фона по типам):
     # data/tools/column_fit.py mode=pop. () — без неё.

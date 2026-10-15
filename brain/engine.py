@@ -779,7 +779,11 @@ class SpikingBrain:
                     # относительно расстояния до порога.
                     tau = float(self.tau_m[pop.start])
                     gain = dict(zip(("E", "PV", "SOM", "VIP"), gain_external))[kind]
-                    gain *= next((g for l, t, g in cfg.column_gain_external_pop if (l, t) == (layer, kind)), 1.0)
+                    # Своё у зоны (зона, слой, тип, ×) — иначе общее (слой, тип, ×).
+                    own = [e[-1] for e in cfg.column_gain_external_pop if len(e) == 4 and tuple(e[:3]) == (area.name, layer, kind)]
+                    gain *= own[0] if own else next(
+                        (e[-1] for e in cfg.column_gain_external_pop if len(e) == 3 and (e[0], e[1]) == (layer, kind)), 1.0,
+                    )
                     self.noise_gain[pop.slice] = gain * charge * gaps[kind] / cfg.potjans_gap_mv / tau
 
         self.noise_std = self.noise_mean.sqrt()
@@ -891,6 +895,33 @@ class SpikingBrain:
             and getattr(path, "psp_mv", None) is None and path.k > 0
         )
 
+    def _external_minus_modeled(self) -> None:
+        """
+        Внешний вход Potjans — всё, что приходит в клетку извне колонки,
+        включая таламус и другие зоны (Table 3). Явные пути модели — уже
+        его часть: внешних входов остаётся K_ext − явные (так у Schmidt et al.
+        2018 в мультиобластной модели). Анатомический мозг.
+        """
+
+        cfg = self.cfg
+
+        if not getattr(cfg, "anatomy", False):
+            return
+
+        external = {layer: (e, i) for layer, e, i in cfg.external_inputs}
+
+        for area in self.areas.values():
+            if area.layers is None:
+                continue
+
+            for layer, group in area.layers.items():
+                for kind, pop in group.items():
+                    total = external[layer][0 if kind == "E" else 1]
+                    left = max(0.0, total - self.modeled_inputs.get(pop.name, 0.0)) / total
+                    self.noise_mean[pop.slice] *= left
+
+        self.noise_std = self.noise_mean.sqrt()
+
     def _thalamic(self, path, dst: Area) -> bool:
         """Путь таламуса в колонку анатомического мозга."""
 
@@ -914,6 +945,7 @@ class SpikingBrain:
 
         cfg = self.cfg
         k_data = 56.0 if inhibitory else 85.0
+        self.modeled_inputs[post.name] = self.modeled_inputs.get(post.name, 0.0) + k_data
         psp = 1.2 if inhibitory else 0.6
         k = max(1, min(round(k_data), pre.size))
         weight = psp / self._psp_peak(post)
@@ -937,6 +969,7 @@ class SpikingBrain:
         cfg = self.cfg
         local = self.local_e_inputs.get(post.name, 0.0)
         k_data = local * (0.21 / 0.79) / max(1, self.cortical_inputs.get(post.name, 1))
+        self.modeled_inputs[post.name] = self.modeled_inputs.get(post.name, 0.0) + k_data
         k = max(1, min(round(k_data), pre.size))
         weight = cfg.ee_psp_mv / self._psp_peak(post)
         root = math.sqrt(max(1.0, k_data / k))
@@ -1426,6 +1459,10 @@ class SpikingBrain:
                 (cfg.ii_weight, cfg.ii_weight),
             )
 
+        # Входы клетки колонки, которые в модели есть явно (таламус, другие
+        # колонки): их вычитают из внешнего входа (_external_minus_modeled).
+        self.modeled_inputs: dict[str, float] = {}
+
         # ---- проводящие пути между зонами ----
         # Сколько врождённых путей между колонками входит в каждую популяцию:
         # доля входов из других зон делится между ними (_cortical_path).
@@ -1547,6 +1584,7 @@ class SpikingBrain:
                     proj.innate_range = (float(weight.min()), float(weight.max()))
                     proj.source_kind = relay.kind
                     self.projections.append(proj)
+                    self.modeled_inputs[pop.name] = self.modeled_inputs.get(pop.name, 0.0) + pre.shape[1]
                     continue
 
                 self.projections.append(
@@ -1555,6 +1593,7 @@ class SpikingBrain:
                     )
                 )
 
+        self._external_minus_modeled()
         self._pack()
 
     def _oriented_layout(self, sensor, cells: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

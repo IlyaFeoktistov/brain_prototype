@@ -28,8 +28,13 @@ import torch
 # спайки (средняя частота зоны < 1 Гц), очаг частых слов — 546 клеток на
 # 240 Гц, ~12 Гц на всю смысловую кору 20 тыс. нейронов.
 PAUSE_RATE_MAX = 3.0
-# На слове активна доля около target_activity зоны; взрыв — в разы больше.
+# На слове активна доля около target_activity зоны; взрыв — в разы больше
+# и с высокой частотой. Одна доля «выстрелила хоть раз» растёт с длиной
+# окна слова (длинное слово — несколько фиксаций): слуховая зона при чтении
+# глазом — 25% клеток при 0.5 Гц, одиночные спайки шума. Средняя частота
+# коры — ниже нескольких Гц (Barth & Poulet 2012), залп — выше.
 WORD_ACTIVE_FACTOR = 5.0
+WORD_RATE_MIN = 3.0
 # Вход клетки по связям внутри зоны (E→E — там замыкаются очаги) —
 # бюджет масштабирования 1.5× врождённого; очаг давал 55×. Пути между
 # зонами только показываются: у «ПФК → смысл» врождённые веса почти
@@ -161,9 +166,9 @@ class Health:
             if self.kinds[name] in QUIET_KINDS and name not in QUIET_SKIP and name not in self.tonic and rate > PAUSE_RATE_MAX:
                 problems.append(f"{name}: в тишине активно {active:.1%} клеток ({rate:.1f} Гц в среднем) — очаг?")
 
-        for name, (active, _, _, _) in snap.word.items():
+        for name, (active, rate, _, _) in snap.word.items():
             target = self.targets.get(name, 0.0)
-            if target > 0 and active > WORD_ACTIVE_FACTOR * target:
+            if target > 0 and active > WORD_ACTIVE_FACTOR * target and rate > WORD_RATE_MIN:
                 problems.append(f"{name}: на слове активно {active:.1%} клеток при норме {target:.0%} — взрыв?")
 
         for name, (top, _) in snap.inputs.items():

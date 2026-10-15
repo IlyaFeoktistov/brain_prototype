@@ -19,7 +19,7 @@ import torch
 from brain.config import BrainConfig, default_areas
 from brain.engine import SpikingBrain
 
-opts = {"neurons": "10000", "evals": "300", "ms": "1000", "area": "auditory"}
+opts = {"neurons": "10000", "evals": "300", "ms": "1000", "area": "auditory", "mode": "gains", "steps": "60", "dt": "2.0"}
 
 for kv in sys.argv[1:]:
     k, v = kv.split("=", 1)
@@ -28,24 +28,26 @@ for kv in sys.argv[1:]:
 TYPES = ("E", "PV", "SOM", "VIP")
 
 
-def build(gains: list[float]) -> SpikingBrain:
+def build(gains: list[float], pop: dict | None = None) -> SpikingBrain:
     cfg = BrainConfig()
     cfg.layers = True
     cfg.eye = False
     cfg.compile_step = False
     cfg.size = opts["neurons"]
+    cfg.dt_ms = float(opts["dt"])
     cfg.areas = [a for a in default_areas() if a.name == opts["area"]]
     cfg.pathways = []
     cfg.column_gain_external = tuple(gains[0:4])
     cfg.column_gain_from_e = tuple(gains[4:7])
     cfg.column_gain_to_e = tuple(gains[7:10])
     cfg.column_gain_ii = gains[10]
+    cfg.column_gain_external_pop = tuple((l, t, g) for (l, t), g in (pop or {}).items())
     return SpikingBrain(cfg)
 
 
-def measure(gains: list[float]) -> dict:
+def measure(gains: list[float], pop: dict | None = None) -> dict:
     torch.manual_seed(0)
-    brain = build(gains)
+    brain = build(gains, pop)
     brain.plasticity = False
     brain.run(300.0)
     rates = brain.observe(float(opts["ms"]))
@@ -109,8 +111,31 @@ def nelder_mead(f, x0: list[float], step: float, evals: int) -> None:
                     values[i] = f(simplex[i])
 
 
-start = [0.0] * 11
-nelder_mead(f, start, 0.7, int(opts["evals"]))
+if opts["mode"] == "pop":
+    # Фон по популяциям (Billeh et al. 2020): множитель внешнего входа
+    # каждой популяции × (цель / частота)^0.3 — «стреляет больше нормы —
+    # меньше фона»; общие множители — из config.py.
+    base = BrainConfig()
+    gains = list(base.column_gain_external) + list(base.column_gain_from_e) + list(base.column_gain_to_e) + [base.column_gain_ii]
+    pop = {key: 1.0 for key in targets}
+
+    for step in range(int(opts["steps"])):
+        rates = measure(gains, pop)
+        value = loss(rates, targets)
+        print(f"{step:3d} ошибка {value:.3f}  " + " ".join(f"{k[0]}{k[1]}={r:.1f}" for k, r in rates.items()), flush=True)
+
+        if value < best[0]:
+            best[:] = [value, gains, rates]
+            best_pop = dict(pop)
+
+        for key, r in rates.items():
+            pop[key] *= min(1.5, max(0.67, ((targets[key] + 0.5) / (r + 0.5)) ** 0.3))
+
+    print("column_gain_external_pop =", tuple((l, t, round(g, 3)) for (l, t), g in best_pop.items()))
+else:
+    start = [0.0] * 11
+    nelder_mead(f, start, 0.7, int(opts["evals"]))
+
 value, gains, rates = best
 print(f"\nлучшее: ошибка {value:.3f}")
 print("column_gain_external =", tuple(round(g, 3) for g in gains[0:4]))

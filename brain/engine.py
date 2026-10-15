@@ -746,6 +746,7 @@ class SpikingBrain:
                     # относительно расстояния до порога.
                     tau = float(self.tau_m[pop.start])
                     gain = dict(zip(("E", "PV", "SOM", "VIP"), cfg.column_gain_external))[kind]
+                    gain *= next((g for l, t, g in cfg.column_gain_external_pop if (l, t) == (layer, kind)), 1.0)
                     self.noise_gain[pop.slice] = gain * charge * gaps[kind] / cfg.potjans_gap_mv / tau
 
         self.noise_std = self.noise_mean.sqrt()

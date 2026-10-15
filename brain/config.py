@@ -1463,6 +1463,10 @@ class BrainConfig:
     column_gain_from_e: tuple[float, float, float] = (1.0, 1.0, 1.0)  # E → PV, SOM, VIP
     column_gain_to_e: tuple[float, float, float] = (1.0, 1.0, 1.0)  # PV, SOM, VIP → E
     column_gain_ii: float = 1.0  # тормозные → тормозные
+    # Внешний вход по популяциям (слой, тип, множитель) — подстройка фона
+    # под частоты in vivo, как у Billeh et al. 2020 (веса фона по типам):
+    # data/tools/column_fit.py mode=pop. () — без неё.
+    column_gain_external_pop: tuple[tuple[str, str, float], ...] = ()
     # Частоты в покое, бодрствование, Гц. Человек (решётка Юта ~1–1.5 мм —
     # L2/3, у людей с эпилепсией; Le Van Quyen et al. 2016, доп. таблица —
     # сверить): обычные клетки (E) 2.6, быстрые (~PV) 6.4. SST и VIP у

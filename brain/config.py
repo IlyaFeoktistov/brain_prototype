@@ -1336,7 +1336,16 @@ class BrainConfig:
     layers: bool = False
     # Зоны-карты (V1, сложные, буквы, рука) пока без слоёв: связи внутри их
     # колонки должны идти по месту (ретинотопия), а не случайно — следующий шаг.
-    layered_areas: tuple[str, ...] = ("auditory", "association", "prefrontal", "motor", "goal", "category")
+    layered_areas: tuple[str, ...] = (
+        "auditory", "association", "prefrontal", "motor", "goal", "category", "visual", "letters", "hand",
+    )
+    # Зоны-карты: связи внутри колонки — к ближайшим по карте клеткам (в коре
+    # местные связи падают с расстоянием, σ ~100 мкм — Campagnola Fig. 2A; на
+    # карте зрения это сотые доли градуса, у нас — соседние места), а не
+    # случайно по всей зоне. V1 — одна колонка: L4 — простые клетки (вход
+    # сетчатки), L2/3 — сложные (Hubel & Wiesel 1962; Alonso & Martinez
+    # 1998: простые L4 → сложные L2/3); отдельной зоны «complex» нет.
+    map_areas: tuple[str, ...] = ("visual", "letters", "hand")
     # Без L4 (Beul & Hilgetag 2015): моторная кора — агранулярная.
     agranular_areas: tuple[str, ...] = ("motor", "hand")
     # Клеток колонки 1 мм² (Potjans Table 5): (слой, E, I).
@@ -1393,14 +1402,33 @@ class BrainConfig:
     # Allen) и пороги по типам свои: тот же PSP по амплитуде дал бы вдвое
     # больший заряд. Поэтому внешний вход держит их рабочую точку: заряд
     # PSP × (расстояние до порога клетки / 15 мВ).
+    # Согласование с частотами in vivo (как у всех моделей по данным: Potjans
+    # — g и внешний вход, Billeh et al. 2020 — веса под частоты типов):
+    # общие на тип множители, одинаковые во всех слоях. Цель — частоты в
+    # покое у бодрствующих животных (column_target_hz), подбор —
+    # data/tools/column_fit.py. 1.0 — без согласования.
+    column_gain_external: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)  # E, PV, SOM, VIP
+    column_gain_from_e: tuple[float, float, float] = (1.0, 1.0, 1.0)  # E → PV, SOM, VIP
+    column_gain_to_e: tuple[float, float, float] = (1.0, 1.0, 1.0)  # PV, SOM, VIP → E
+    column_gain_ii: float = 1.0  # тормозные → тормозные
+    # Частоты в покое, бодрствование, Гц: E — крыса S1 (de Kock & Sakmann
+    # 2009; в таблице Potjans Table 6; L5 2–3 — середина); тормозные L2/3 —
+    # мышь S1, медианы (Sachidhanandam, Sermet & Petersen 2016: PV 17.8, VIP
+    # 9.8, SST 1.6). Глубже L2/3 тормозные по слоям не измерены — как в L2/3.
+    column_target_hz: tuple[tuple[str, float, float, float, float], ...] = (
+        ("L23", 0.3, 17.8, 1.6, 9.8), ("L4", 1.4, 17.8, 1.6, 9.8),
+        ("L5", 2.5, 17.8, 1.6, 9.8), ("L6", 0.5, 17.8, 1.6, 9.8),
+    )
+    # Торможение в колонках — проводимость, а не ток: тормозной ток ∝ (v −
+    # E_ГАМК). Реверсия ГАМК-А у пирамидных клеток коры −74 мВ (Gulledge &
+    # Stuart 2003, перфорированный патч); IPSP Campagnola мерили при −55 мВ —
+    # там ток равен измеренному. У покоя (−70) торможение почти только
+    # шунтирует, ниже реверсии клетку не тянет.
+    gaba_reversal_mv: float = -74.0
+    ipsp_holding_mv: float = -55.0
     potjans_tau_m: float = 10.0
     potjans_tau_syn: float = 0.5
     potjans_gap_mv: float = 15.0
-    # Частоты полной модели в покое, Гц (Potjans Table 6, Fig. 6B): (E, I) —
-    # для тока, заменяющего недостающих в малой зоне соседей.
-    column_rates_hz: tuple[tuple[str, float, float], ...] = (
-        ("L23", 0.86, 2.8), ("L4", 4.45, 5.8), ("L5", 7.59, 8.6), ("L6", 1.09, 7.7),
-    )
     # Направление путей между зонами по иерархии (Felleman & Van Essen 1991;
     # Markov et al. 2014): ff — вверх (из L2/3 в L4), fb — вниз (из L5 в
     # слой 1: дендриты L2/3, и VIP), lateral — между равными (из L2/3 в

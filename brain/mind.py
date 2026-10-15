@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from pathlib import Path
 import time
 
@@ -43,6 +45,19 @@ class Mind:
         if cfg.hand and not any(a.name == "hand" for a in cfg.areas):
             cfg.areas = cfg.areas + hand_areas()
             cfg.pathways = cfg.pathways + hand_pathways()
+
+        if cfg.layers and any(a.name == "complex" for a in cfg.areas):
+            # Колонка V1 (ARCHITECTURE 10): сложные клетки — её слой 2/3, а не
+            # отдельная зона; пути из «complex» идут из V1.
+            complex_share = next(a.share for a in cfg.areas if a.name == "complex")
+            cfg.areas = [
+                replace(a, share=a.share + complex_share) if a.name == "visual" else a
+                for a in cfg.areas if a.name != "complex"
+            ]
+            cfg.pathways = [
+                replace(p, src="visual" if p.src == "complex" else p.src)
+                for p in cfg.pathways if (p.src, p.dst) != ("visual", "complex")
+            ]
 
         if cfg.mouth_letters and not any(p.src == "auditory" and p.dst == "motor" for p in cfg.pathways):
             cfg.areas, cfg.pathways = letter_mouth(

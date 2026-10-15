@@ -716,12 +716,22 @@ class SpikingBrain:
                     # Заряд PSP (мВ·мс) = вес × τm клетки — как у Potjans
                     # относительно расстояния до порога.
                     tau = float(self.tau_m[pop.start])
-                    self.noise_gain[pop.slice] = charge * gaps[kind] / cfg.potjans_gap_mv / tau
+                    gain = dict(zip(("E", "PV", "SOM", "VIP"), cfg.column_gain_external))[kind]
+                    self.noise_gain[pop.slice] = gain * charge * gaps[kind] / cfg.potjans_gap_mv / tau
 
         self.noise_std = self.noise_mean.sqrt()
         # Постоянный ток (мВ): недостающие в малой зоне соседи колонки (см.
         # _wire_column) — средняя часть их входа.
         self.dc_mv = torch.zeros(self.n_slots, device=self.device)
+        self.dc_inh_mv = torch.zeros(self.n_slots, device=self.device)
+        # Торможение проводимостью — у клеток колонок (cfg.layers).
+        self.conductance_cells = torch.zeros(self.n_slots, dtype=torch.bool, device=self.device)
+
+        for area in self.areas.values():
+            if area.layers is not None:
+                self.conductance_cells[area.cells] = True
+
+        self.conductance = bool(self.conductance_cells.any())
 
     def _topographic_pre(self, post: Population, k: int, pre_pop: Population, field: float) -> torch.Tensor:
         """
@@ -834,6 +844,48 @@ class SpikingBrain:
 
         return pre, post, inhibitory, top_down
 
+    def _place_maps(self) -> None:
+        """
+        Места клеток колонок-карт (cfg.map_areas): у V1 — карта сетчатки
+        (место и ориентация, как у простых клеток), у следующих ступеней —
+        вдоль поля по порядку (как _retinotopic_pre), у руки — по порядку
+        клавиш. Все популяции зоны — в одних единицах: местные связи идут к
+        ближайшим (_nearest_pre).
+        """
+
+        self.map_pos: dict[str, torch.Tensor] = {}
+
+        for name in getattr(self.cfg, "map_areas", ()):
+            area = self.areas.get(name)
+
+            if area is None or area.layers is None:
+                continue
+
+            for _, pop in area.populations:
+                if name == "visual" and self.eye_sensor is not None:
+                    layout = self.field_layout.get(pop.name) or self._oriented_layout(self.eye_sensor, pop.size)
+                    self.field_layout.setdefault(pop.name, layout)
+                    rows, cols = layout[1], layout[2]
+                else:
+                    width = self.field_width if name != "hand" and self.field_width else 1.0
+                    cols = (torch.arange(pop.size, device=self.device).float() + 0.5) * width / pop.size
+                    rows = torch.zeros_like(cols)
+
+                self.field_cols.setdefault(pop.name, cols)
+                self.map_pos[pop.name] = torch.stack([rows, cols], 1)
+
+    def _nearest_pre(self, post: Population, k: int, pre_pop: Population) -> torch.Tensor:
+        """k ближайших по карте клеток источника (ничья — случайно)."""
+
+        a, b = self.map_pos[post.name], self.map_pos[pre_pop.name]
+        dist = torch.cdist(a, b)
+        dist = dist + torch.rand(dist.shape, device=self.device, generator=self.generator) * 1e-3
+
+        if post is pre_pop:
+            dist.fill_diagonal_(float("inf"))
+
+        return pre_pop.start + dist.topk(k, dim=1, largest=False).indices
+
     def _wire_column(self, spec, area: Area) -> None:
         """
         Связи внутри колонки (ARCHITECTURE 10, «Слои колонки»): вероятность E/I
@@ -842,7 +894,7 @@ class SpikingBrain:
         Входов k = вероятность × клеток-источников в зоне. Зона меньше колонки
         1 мм² — у пути k_data / k раз меньше входов: вес × √(k_data / k), а
         недостающая средняя часть — постоянный ток dc_mv по частотам полной
-        модели (van Albada, Helias & Diesmann 2015). E → E слоя 2/3 — обучаемая
+        покоя in vivo (van Albada, Helias & Diesmann 2015). E → E слоя 2/3 — обучаемая
         связь зоны (AreaSpec: k_ee заменяет вероятность, веса — её).
         """
 
@@ -850,7 +902,8 @@ class SpikingBrain:
         order = [layer for layer, _, _ in cfg.column_cells]
         column = {layer: (e, i) for layer, e, i in cfg.column_cells}
         shares = {layer: dict(zip(("PV", "SOM", "VIP"), v)) for layer, *v in cfg.layer_interneurons}
-        rates = {layer: (e, i) for layer, e, i in cfg.column_rates_hz}
+        # Соседи стреляют, как в покое у бодрствующих (column_target_hz).
+        rates = {layer: dict(zip(("E", "PV", "SOM", "VIP"), v)) for layer, *v in cfg.column_target_hz}
         ee_layer = dict(cfg.layer_ee_psp_mv)
         ei_psp = {layer: dict(zip(("PV", "SOM", "VIP"), v)) for layer, *v in cfg.layer_ei_psp_mv}
         ii_psp = {src: dict(zip(("E", "PV", "SOM", "VIP"), v)) for src, *v in cfg.inhibitory_psp_mv}
@@ -895,6 +948,16 @@ class SpikingBrain:
                         if p <= 0:
                             continue
 
+                        # Согласование с частотами in vivo (column_gain_*).
+                        if src_ei == "E" and dst_ei == "I":
+                            gain = cfg.column_gain_from_e[types.index(dst_kind)]
+                        elif src_ei == "I" and dst_ei == "E":
+                            gain = cfg.column_gain_to_e[types.index(src_kind)]
+                        elif src_ei == "I":
+                            gain = cfg.column_gain_ii
+                        else:
+                            gain = 1.0
+
                         # PSP пары, мВ.
                         if src_ei == "E" and dst_ei == "E":
                             if (src_layer, dst_layer) == ("L4", "L23"):
@@ -911,31 +974,47 @@ class SpikingBrain:
                         n_src = column[src_layer][0] if src_ei == "E" else column[src_layer][1] * shares[src_layer][src_kind]
                         k_data = p * n_src
                         k = min(round(p * pre.size), pre.size)
-                        weight = psp / self._psp_peak(post)
-                        rate = rates[src_layer][0 if src_ei == "E" else 1] / 1000.0
+                        weight = gain * psp / self._psp_peak(post)
+                        rate = rates[src_layer][src_kind] / 1000.0
                         tau = float(self.tau_m[post.start])
+
+                        dc = self.dc_inh_mv if weight < 0 else self.dc_mv
 
                         if k < 1:
                             # Связь целиком — средним током.
-                            self.dc_mv[post.slice] += k_data * rate * weight * tau
+                            dc[post.slice] += k_data * rate * weight * tau
                             continue
 
                         root = math.sqrt(max(1.0, k_data / k))
-                        self.dc_mv[post.slice] += k_data * rate * weight * tau * (1.0 - 1.0 / root)
+                        dc[post.slice] += k_data * rate * weight * tau * (1.0 - 1.0 / root)
                         name = f"{spec.name}: {label(src_layer, src_kind)}->{label(dst_layer, dst_kind)}"
+
+                        pre_index = None
+
+                        if spec.name in getattr(cfg, "map_areas", ()):
+                            if spec.name == "visual" and (src_layer, src_kind, dst_layer, dst_kind) == ("L4", "E", "L23", "E"):
+                                # Сложные клетки L2/3 собирают простые L4 своей
+                                # ориентации рядом (Alonso & Martinez 1998).
+                                pre_index = self._complex_pre(post, k, pre, 5.0)
+                            else:
+                                pre_index = self._nearest_pre(post, min(k, pre.size - (pre is post)), pre)
+                            k = pre_index.shape[1]
 
                         if (src_layer, src_kind, dst_layer, dst_kind) == ("L23", "E", "L23", "E"):
                             # Обучаемая связь зоны: веса и правила — AreaSpec.
                             proj = self._connect(
                                 name, pre, post, k, spec.ee_weight, plastic=spec.ee_plastic,
                                 cap=spec.ee_cap, modulator=spec.ee_modulator,
-                                ach_suppressed=spec.ee_ach_suppressed,
+                                ach_suppressed=spec.ee_ach_suppressed, pre_index=pre_index,
                             )
                             if proj is not None:
                                 proj.scaled = getattr(spec, "ee_scaled", True)
+
+                            if spec.columns > 1:
+                                self._wire_columns(spec, area)
                             continue
 
-                        proj = self._connect(name, pre, post, k, (weight * root, weight * root))
+                        proj = self._connect(name, pre, post, k, (weight * root, weight * root), pre_index=pre_index)
 
                         if proj is not None and src_kind == "SOM" and dst_kind == "E" and dst_layer in ("L23", "L5"):
                             # Мартинотти — на пучки дендритов в слое 1 (L2/3 и L5).
@@ -1003,6 +1082,7 @@ class SpikingBrain:
         shift: int = 0,
         retinotopic: float = 0.0,
         complex_cells: bool = False,
+        pre_index: torch.Tensor | None = None,
     ) -> Projection | None:
         if blocks > 0:
             k = blocks
@@ -1014,7 +1094,7 @@ class SpikingBrain:
 
         # Врождённый путь с постоянным весом — не храним, а вычисляем
         # (топографический хранится: хеш получателей не знает карты).
-        if self.cfg.procedural_wiring and not plastic and weight[0] == weight[1] != 0 and not topographic and not blocks and not retinotopic:
+        if self.cfg.procedural_wiring and pre_index is None and not plastic and weight[0] == weight[1] != 0 and not topographic and not blocks and not retinotopic:
             proj = ProceduralProjection(
                 name, pre_pop, post, k, weight[0],
                 seed=self.cfg.seed * 1009 + len(self.projections), device=self.device,
@@ -1025,7 +1105,10 @@ class SpikingBrain:
             self.projections.append(proj)
             return proj
 
-        if blocks > 0:
+        if pre_index is not None:
+            # Готовые источники (колонка-карта: ближайшие по месту).
+            pre = pre_index
+        elif blocks > 0:
             # Блок в блок: клетка получателя — от всех клеток блока того же
             # номера у источника (колонка → колонка, как столбики артикуляций).
             # shift — со сдвигом: блок b получает от блока b − shift (цепочка
@@ -1110,11 +1193,14 @@ class SpikingBrain:
 
         for sensor in self.sensors:
             if sensor.wiring == "oriented":
-                E = self.areas[sensor.area].E
+                area = self.areas[sensor.area]
+                E = area.layers["L4"]["E"] if area.layers is not None else area.E
                 self.field_layout[E.name] = self._oriented_layout(sensor, E.size)
                 self.field_cols[E.name] = self.field_layout[E.name][2]
                 self.field_width = sensor.cols
                 self.eye_sensor = sensor
+
+        self._place_maps()
 
         # ---- локальные микросхемы зон ----
         for spec in cfg.areas:
@@ -1683,6 +1769,8 @@ class SpikingBrain:
         self.pending_dend = torch.zeros(self.delay_slots, self.n_slots * branches, device=self.device)
         self.tick = torch.zeros(1, dtype=torch.long, device=self.device)
         self.i_syn = z()
+        # Тормозной ток (проводимость; cfg.layers): отдельно от возбуждающего.
+        self.i_inh = z()
         self.i_slow = z()
         # Дендритный ток (контекст из рабочей памяти, см. dendritic_context).
         self.i_dend = torch.zeros(self.n_slots * max(1, cfg.dendrite_branches), device=self.device)
@@ -1849,6 +1937,13 @@ class SpikingBrain:
             # стреляет выше нормы).
             weight = torch.where(weight < 0, weight * self.inh_gain.index_select(0, post), weight)
 
+        if self.conductance:
+            # Торможение — проводимость (cfg.layers): копится отдельно, к соме
+            # приходит × движущая сила (см. ниже). Задержка у тормозных путей
+            # между зонами не учитывается — местные идут через шаг.
+            inhibition = torch.zeros_like(drive).index_add_(0, post, weight.clamp(max=0.0))
+            weight = weight.clamp(min=0.0)
+
         if self.delay_slots > 1:
             # В путь: каждый синапс доставит спайк через свою задержку; к соме
             # приходит то, что было в пути и пришло сейчас.
@@ -1890,6 +1985,9 @@ class SpikingBrain:
             )
 
         self.i_syn.mul_(self.decay_syn).add_(drive * self.syn_scale)
+
+        if self.conductance:
+            self.i_inh.mul_(self.decay_syn).add_(inhibition * self.syn_scale)
         self.i_slow.mul_(self.decay_slow).add_(drive.clamp(min=0.0) * self.slow_scale)
         self.i_slow.clamp_(max=self.slow_max)
 
@@ -1904,6 +2002,14 @@ class SpikingBrain:
         )
 
         synaptic = self.i_syn + self.i_slow
+
+        if self.conductance:
+            # Движущая сила ГАМК-А: ток ∝ (v − E_ГАМК), нормирован к −55 мВ,
+            # где мерили IPSP (Campagnola et al. 2022); у реверсии торможение
+            # только шунтирует, ниже неё не тянет (Gulledge & Stuart 2003).
+            force = ((self.v - cfg.gaba_reversal_mv) / (cfg.ipsp_holding_mv - cfg.gaba_reversal_mv)).clamp(min=0.0)
+            force = torch.where(self.conductance_cells, force, 1.0)
+            synaptic = synaptic + (self.i_inh + self.dc_inh_mv) * force
 
         if cfg.dendritic_context:
             # Плато на дендрите усиливает возбуждающий вход сомы:
@@ -2783,7 +2889,7 @@ class SpikingBrain:
     # читает и пишет по фиксированным адресам. Поэтому их
     # всегда восстанавливают через copy_, а не присваиванием.
     _DYNAMIC = (
-        "v", "i_syn", "i_slow", "i_dend", "pool", "area_pool", "adapt", "adapt_slow", "refractory", "spikes",
+        "v", "i_syn", "i_inh", "i_slow", "i_dend", "pool", "area_pool", "adapt", "adapt_slow", "refractory", "spikes",
         "trace_pre", "trace_pre_rise", "ltp_kernel", "trace_post", "counts", "eligibility",
         "eligibility_scale", "dropped", "bias", "interoception", "kick_current", "kick_left", "stp_x", "facil_x", "facil_u", "inh_gain",
         "chemistry", "pending", "pending_dend", "tick",

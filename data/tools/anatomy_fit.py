@@ -5,9 +5,11 @@
 «стреляет больше нормы — меньше фона» (как веса фона по типам у Billeh et
 al. 2020). Цели — anatomy.RATES_HZ и column_target_hz.
 
-    PYTHONPATH=. .venv/bin/python data/tools/anatomy_fit.py [steps=20] [ms=500] [dt=0.5]
+    PYTHONPATH=. .venv/bin/python data/tools/anatomy_fit.py [steps=20] [ms=500] [dt=0.5] [fresh=0] [write=1]
 
-Печатает числа для config.py / anatomy.py.
+Стартует с чисел brain/anatomy.py (fresh=1 — фон колонок с нуля), в конце
+печатает найденное и записывает его туда же (NUCLEUS_BIAS_MV,
+COLUMN_EXTERNAL_POP); write=0 — только напечатать.
 """
 
 import math
@@ -19,7 +21,7 @@ from brain import anatomy
 from brain.config import BrainConfig
 from brain.mind import Mind
 
-opts = {"steps": "20", "ms": "500", "dt": "0.5", "size": "small", "fresh": "0"}
+opts = {"steps": "20", "ms": "500", "dt": "0.5", "size": "small", "fresh": "0", "write": "1"}
 
 for kv in sys.argv[1:]:
     k, v = kv.split("=", 1)
@@ -97,3 +99,18 @@ for step in range(int(opts["steps"])):
 
 print("nucleus_bias_mv =", tuple((n, round(v, 2)) for n, v in bias.items()))
 print("column_gain_external_pop =", tuple((*key, round(g, 3)) for key, g in pop.items()))
+
+if opts["write"] == "1":
+    # Записать найденное в brain/anatomy.py вместо прежних чисел.
+    from pathlib import Path
+
+    path = Path(anatomy.__file__)
+    text = path.read_text(encoding="utf-8")
+    start = text.index("NUCLEUS_BIAS_MV = ")
+    end = text.index("\n", text.index("COLUMN_EXTERNAL_POP = ")) + 1
+    found = (
+        f"NUCLEUS_BIAS_MV = {tuple((n, round(v, 2)) for n, v in bias.items())}\n"
+        f"COLUMN_EXTERNAL_POP = {tuple((*key, round(g, 3)) for key, g in pop.items())}\n"
+    )
+    path.write_text(text[:start] + found + text[end:], encoding="utf-8")
+    print(f"записано в {path}")

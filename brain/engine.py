@@ -2150,7 +2150,13 @@ class SpikingBrain:
             # только шунтирует, ниже неё не тянет (Gulledge & Stuart 2003).
             force = ((self.v - cfg.gaba_reversal_mv) / (cfg.ipsp_holding_mv - cfg.gaba_reversal_mv)).clamp(min=0.0)
             force = torch.where(self.conductance_cells, force, 1.0)
-            synaptic = synaptic + (self.i_inh + self.dc_inh_mv) * force
+            # Возбуждение — тоже проводимость: ток ∝ (E_AMPA − v), нормирован
+            # к −70 мВ, где мерили EPSP. Сильный фон открывает каналы и сам
+            # укорачивает мембрану — высокопроводящее состояние коры in vivo
+            # (Destexhe & Paré 1999; Destexhe, Rudolph & Paré 2003).
+            excite = ((cfg.ampa_reversal_mv - self.v) / (cfg.ampa_reversal_mv - cfg.epsp_holding_mv)).clamp(min=0.0)
+            excite = torch.where(self.conductance_cells, excite, 1.0)
+            synaptic = (synaptic + self.dc_mv) * excite + (self.i_inh + self.dc_inh_mv) * force
 
         if cfg.dendritic_context:
             # Плато на дендрите усиливает возбуждающий вход сомы:
@@ -2184,7 +2190,7 @@ class SpikingBrain:
 
         dv = (
             cfg.v_rest - self.v + exp_term - self.adapt - self.adapt_slow
-            + synaptic + self.bias + self.dc_mv + self.interoception + modulated + self.clock_mv
+            + synaptic + self.bias + self.interoception + modulated + self.clock_mv
             + self.kick_current * (self.kick_left > 0)
         ) * self.decay_m
         v = torch.where(self.refractory <= 0, self.v + dv, self.v)

@@ -1486,6 +1486,10 @@ class BrainConfig:
     # шунтирует, ниже реверсии клетку не тянет.
     gaba_reversal_mv: float = -74.0
     ipsp_holding_mv: float = -55.0
+    # Возбуждение в колонках — тоже проводимость: реверсия AMPA ~0 мВ
+    # (Hestrin et al. 1990); EPSP Campagnola мерили при −70 мВ.
+    ampa_reversal_mv: float = 0.0
+    epsp_holding_mv: float = -70.0
     potjans_tau_m: float = 10.0
     potjans_tau_syn: float = 0.5
     potjans_gap_mv: float = 15.0

@@ -258,6 +258,7 @@ class EventTable:
         self.empty_pre = (n + cells % dummy_neurons).long()
         self.out_synapses = self.empty_synapses.clone()
         self.out_pre = self.empty_pre.clone()
+        self.total = torch.zeros(1, dtype=torch.long, device=device)
 
     def compact(self, neurons: torch.Tensor, dropped: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Синапсы строк neurons подряд, без пустых ячеек; лишнее — в dropped."""
@@ -271,6 +272,22 @@ class EventTable:
                                 self.out_synapses, self.out_pre)
         dropped.add_((lengths.sum() - self.capacity).clamp(min=0))
         return self.out_synapses, self.out_pre
+
+    def compact_head(self, neurons: torch.Tensor, dropped: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Как compact, но без заполнения пустых ячеек: ядра шага (deliver,
+        ltd, ltp) читают только первые total событий. Сброс всего буфера
+        (два копирования по ёмкости) стоил больше, чем сами события.
+        """
+
+        neurons = neurons.long()
+        lengths = torch.where(neurons < self.n, self.count.index_select(0, neurons), 0).long()
+        offsets = torch.cumsum(lengths, 0) - lengths
+        _kernels.compact_events(neurons, self.n, self.start, self.count, self.perm, offsets,
+                                self.out_synapses, self.out_pre)
+        torch.sum(lengths, 0, keepdim=True, out=self.total)
+        dropped.add_((self.total - self.capacity).clamp(min=0).squeeze(0))
+        return self.out_synapses, self.out_pre, self.total
 
     TENSORS = ("ptr", "start", "count", "perm", "cols", "is_hub", "tail_cols")
 
@@ -2177,9 +2194,12 @@ class SpikingBrain:
         # Задержка каждого синапса — лишние шаги сверху обычного одного (0 —
         # приходит на следующем шаге, как всегда). Между зонами — axon_delay_ms
         # ±50%; свой генератор — проводка не сдвигается.
-        self.net_delay = torch.zeros(self.net_weight.shape, dtype=torch.int16, device=self.device)
+        # Без задержек массив не нужен (0.56 ГБ на 279 млн синапсов).
+        self.net_delay = None
+        self.delay_slots = 1
 
         if getattr(self.cfg, "axon_delays", False):
+            self.net_delay = torch.zeros(self.net_weight.shape, dtype=torch.int16, device=self.device)
             delays = torch.Generator(device=self.device).manual_seed(self.cfg.seed + 11)
             steps = self.cfg.axon_delay_ms / self.cfg.dt_ms
 
@@ -2194,7 +2214,7 @@ class SpikingBrain:
                 extra = (steps * jitter).round().clamp(min=1) - 1
                 self.net_delay[p.offset: p.offset + n] = extra.to(torch.int16)
 
-        self.delay_slots = int(self.net_delay.max()) + 1
+            self.delay_slots = int(self.net_delay.max()) + 1
 
         self.n_synapses = self.net_weight.numel() - self.DUMMY_SYNAPSES
         self.n_plastic = sum(p.weight.numel() for p in self.plastic)
@@ -2260,7 +2280,29 @@ class SpikingBrain:
 
         # Пути на дендриты из любой зоны (PathwaySpec.dendrite): часы → рот.
         dendritic = [p for p in net if getattr(p, "dendrite", False)]
+        suppressed = [p for p in net if getattr(p, "ach_suppressed", False)]
         self.dendrite_syn = None
+        self.ach_mask = None
+        # Оба признака постоянны внутри пути: ядро доставки (brain/csrc)
+        # находит путь синапса поиском по началам путей — масок на каждый
+        # синапс не нужно (0.84 ГБ на 279 млн синапсов). Маски — только для
+        # шага на PyTorch (процессор).
+        paths = sorted((p for p in net if p.weight.numel()), key=lambda p: p.offset)
+        flags = [int(p in dendritic) | (int(p in suppressed) << 1) for p in paths]
+        self.path_start = torch.tensor([p.offset for p in paths] + [self.n_synapses], dtype=torch.long, device=self.device)
+        self.path_flags = torch.tensor(flags + [0], dtype=torch.uint8, device=self.device)
+        # Получатель синапса — из места в матрице пути [получатель × входы]:
+        # post.start + (синапс − начало пути) // входов. Хвост — фиктивные
+        # синапсы (получатель — сам фиктивный нейрон, вес 0, сюда не доходят).
+        self.path_post = torch.tensor([p.post.start for p in paths] + [self.n], dtype=torch.long, device=self.device)
+        self.path_fanin = torch.tensor([p.pre.shape[1] for p in paths] + [1 << 40], dtype=torch.long, device=self.device)
+        self.ach_paths = bool(suppressed)
+
+        if self.device.type == "cuda" and _kernels.deliver is not None:
+            # net_post на видеокарте не нужен (1.1 ГБ на 279 млн синапсов).
+            self.net_post = None
+            self._build_tables()
+            return
 
         if dendritic:
             self.dendrite_syn = torch.zeros(self.net_weight.numel(), dtype=torch.bool, device=self.device)
@@ -2270,9 +2312,6 @@ class SpikingBrain:
 
         # Пути, передачу по которым подавляет ацетилхолин: доля подавления
         # на каждом синапсе (0 — не подавляется).
-        self.ach_mask = None
-        suppressed = [p for p in net if getattr(p, "ach_suppressed", False)]
-
         if suppressed:
             self.ach_mask = torch.zeros(self.net_weight.numel(), dtype=torch.float16, device=self.device)
 
@@ -2473,7 +2512,7 @@ class SpikingBrain:
                 return
 
         self.out_all, self.out_plastic = out_all, out_plastic
-        self.in_plastic = table(self.net_post[:P], P)
+        self.in_plastic = table(self.net_post[:P] if self.net_post is not None else self._plastic_posts(), P)
 
         # Плотный список событий ядром C++/CUDA (brain/kernels.py): ёмкость —
         # доля синапсов таблицы за шаг (cfg.event_capacity).
@@ -2689,91 +2728,111 @@ class SpikingBrain:
         # ---- синаптический вход от спайков прошлого шага ----
         fired_before = self._fired()
 
-        synapses, pre_of = self._events(self.out_all, fired_before)
-        post = self.net_post.index_select(0, synapses)
-        weight = self.net_weight.index_select(0, synapses)
-
-        if self.ach_mask is not None:
-            # Ацетилхолин подавляет передачу по отмеченным путям.
-            weight = weight * (1.0 - self.acetylcholine * self.ach_mask.index_select(0, synapses))
-
-        if cfg.dendritic_context:
-            # Рабочая память -> смысл: на дальний дендрит, не в сому.
-            to_dendrite = (
-                self.dendrite_pre.index_select(0, pre_of)
-                & self.dendrite_post.index_select(0, post)
+        if self._fused():
+            # Доставка одним ядром (brain/csrc/events.cu) — тот же счёт, что
+            # ниже, только по настоящим событиям шага.
+            synapses, pre_of, total = self.out_all.compact_head(fired_before, self.dropped)
+            self.i_dend.mul_(self.decay_dend)
+            inhibition = torch.zeros_like(drive)
+            ngf = torch.zeros_like(drive)
+            glutamate = torch.zeros_like(drive) if self.nmda_on else None
+            _kernels.deliver(
+                synapses, pre_of, total, self.path_post, self.path_fanin, self.net_weight,
+                self.path_start, self.path_flags, self.ach_paths, self.cfg.ach_suppression, self.acetylcholine,
+                self.dendrite_pre, self.dendrite_post,
+                self.net_branch, max(1, cfg.dendrite_branches),
+                self.typed_pre, self.cell_type, len(KINDS),
+                self.stp_u4, self.stp_x4, self.stp_U4,
+                self.is_lamp5, self.ngf_d, 1.0 / (1.0 - cfg.lamp5_desens_u), KINDS.index("LAMP5"),
+                self.stp_x, self.inh_gain,
+                self.i_dend, drive, glutamate, inhibition, ngf,
             )
+        else:
+            synapses, pre_of = self._events(self.out_all, fired_before)
+            post = self._posts().index_select(0, synapses)
+            weight = self.net_weight.index_select(0, synapses)
 
-            if self.dendrite_syn is not None:
-                to_dendrite = to_dendrite | self.dendrite_syn.index_select(0, synapses)
-            branches = max(1, cfg.dendrite_branches)
-            slot = post.long() * branches + self.net_branch.index_select(0, synapses).long()
+            if self.ach_mask is not None:
+                # Ацетилхолин подавляет передачу по отмеченным путям.
+                weight = weight * (1.0 - self.acetylcholine * self.ach_mask.index_select(0, synapses))
 
-            if self.delay_slots > 1:
-                # В путь: придёт к ветке через свою задержку.
-                ahead = (self.tick + self.net_delay.index_select(0, synapses).long()) % self.delay_slots
-                self.pending_dend.view(-1).index_add_(0, ahead * self.i_dend.numel() + slot, weight * to_dendrite)
-                now = self.tick % self.delay_slots
-                dendrite = self.pending_dend.index_select(0, now).squeeze(0)
-                self.pending_dend.index_fill_(0, now, 0.0)
-            else:
-                dendrite = torch.zeros_like(self.i_dend).index_add_(0, slot, weight * to_dendrite)
-            self.i_dend.mul_(self.decay_dend).add_(dendrite)
-            weight = weight * ~to_dendrite
+            if cfg.dendritic_context:
+                # Рабочая память -> смысл: на дальний дендрит, не в сому.
+                to_dendrite = (
+                    self.dendrite_pre.index_select(0, pre_of)
+                    & self.dendrite_post.index_select(0, post)
+                )
 
-        if self.has_som:
-            # Синапсы клеток с типами: свои U, ресурс и облегчение к каждому
-            # типу получателя (cfg.column_stp). Сила спайка = u·x до выброса /
-            # U: состояние уже после спайка — x_до = x / (1 − u).
-            typed = self.typed_pre.index_select(0, pre_of)
-            slot = pre_of.long() * len(KINDS) + self.cell_type.index_select(0, post).clamp(min=0)
-            u = self.stp_u4.view(-1).index_select(0, slot)
-            x = self.stp_x4.view(-1).index_select(0, slot)
-            gain = u * x / (1.0 - u).clamp(min=1e-3) / self.stp_U4.view(-1).index_select(0, slot)
-            # У LAMP5 — ещё десенситизация рецепторов (ngf_d, до спайка).
-            d = self.ngf_d.index_select(0, pre_of) / (1.0 - cfg.lamp5_desens_u)
-            gain = torch.where(self.is_lamp5.index_select(0, pre_of), gain * d, gain)
-            weight = torch.where(typed, weight * gain, weight)
+                if self.dendrite_syn is not None:
+                    to_dendrite = to_dendrite | self.dendrite_syn.index_select(0, synapses)
+                branches = max(1, cfg.dendrite_branches)
+                slot = post.long() * branches + self.net_branch.index_select(0, synapses).long()
 
-        if cfg.base_circuit:
-            # Истощение: синапс отдаёт долю оставшегося ресурса пресинапса
-            # (у клеток с типами — своё, выше).
-            depletion = self.stp_x.index_select(0, pre_of)
+                if self.delay_slots > 1:
+                    # В путь: придёт к ветке через свою задержку.
+                    ahead = (self.tick + self.net_delay.index_select(0, synapses).long()) % self.delay_slots
+                    self.pending_dend.view(-1).index_add_(0, ahead * self.i_dend.numel() + slot, weight * to_dendrite)
+                    now = self.tick % self.delay_slots
+                    dendrite = self.pending_dend.index_select(0, now).squeeze(0)
+                    self.pending_dend.index_fill_(0, now, 0.0)
+                else:
+                    dendrite = torch.zeros_like(self.i_dend).index_add_(0, slot, weight * to_dendrite)
+                self.i_dend.mul_(self.decay_dend).add_(dendrite)
+                weight = weight * ~to_dendrite
 
             if self.has_som:
-                depletion = torch.where(typed, 1.0, depletion)
-            weight = weight * depletion
-            # Торможение к клетке × её усиление (растёт, если клетка
-            # стреляет выше нормы).
-            weight = torch.where(weight < 0, weight * self.inh_gain.index_select(0, post), weight)
+                # Синапсы клеток с типами: свои U, ресурс и облегчение к каждому
+                # типу получателя (cfg.column_stp). Сила спайка = u·x до выброса /
+                # U: состояние уже после спайка — x_до = x / (1 − u).
+                typed = self.typed_pre.index_select(0, pre_of)
+                slot = pre_of.long() * len(KINDS) + self.cell_type.index_select(0, post).clamp(min=0)
+                u = self.stp_u4.view(-1).index_select(0, slot)
+                x = self.stp_x4.view(-1).index_select(0, slot)
+                gain = u * x / (1.0 - u).clamp(min=1e-3) / self.stp_U4.view(-1).index_select(0, slot)
+                # У LAMP5 — ещё десенситизация рецепторов (ngf_d, до спайка).
+                d = self.ngf_d.index_select(0, pre_of) / (1.0 - cfg.lamp5_desens_u)
+                gain = torch.where(self.is_lamp5.index_select(0, pre_of), gain * d, gain)
+                weight = torch.where(typed, weight * gain, weight)
 
-        if self.conductance:
-            # Торможение — проводимость (cfg.layers): копится отдельно, к соме
-            # приходит × движущая сила (см. ниже). Задержка у тормозных путей
-            # между зонами не учитывается — местные идут через шаг.
-            inh = weight.clamp(max=0.0)
-            # От LAMP5 — в медленный ток (lamp5_tau_syn), остальное — в быстрый.
-            slow = self.cell_type.index_select(0, pre_of) == KINDS.index("LAMP5")
-            inhibition = torch.zeros_like(drive).index_add_(0, post, torch.where(slow, 0.0, inh))
-            ngf = torch.zeros_like(drive).index_add_(0, post, torch.where(slow, inh, 0.0))
-            weight = weight.clamp(min=0.0)
+            if cfg.base_circuit:
+                # Истощение: синапс отдаёт долю оставшегося ресурса пресинапса
+                # (у клеток с типами — своё, выше).
+                depletion = self.stp_x.index_select(0, pre_of)
 
-            if self.nmda_on:
-                # NMDA — от тех же возбуждающих синапсов (задержка пути для
-                # медленного тока не важна).
-                glutamate = torch.zeros_like(drive).index_add_(0, post, weight)
+                if self.has_som:
+                    depletion = torch.where(typed, 1.0, depletion)
+                weight = weight * depletion
+                # Торможение к клетке × её усиление (растёт, если клетка
+                # стреляет выше нормы).
+                weight = torch.where(weight < 0, weight * self.inh_gain.index_select(0, post), weight)
 
-        if self.delay_slots > 1:
-            # В путь: каждый синапс доставит спайк через свою задержку; к соме
-            # приходит то, что было в пути и пришло сейчас.
-            ahead = (self.tick + self.net_delay.index_select(0, synapses).long()) % self.delay_slots
-            self.pending.view(-1).index_add_(0, ahead * self.n_slots + post.long(), weight)
-            now = self.tick % self.delay_slots
-            drive.add_(self.pending.index_select(0, now).squeeze(0))
-            self.pending.index_fill_(0, now, 0.0)
-            self.tick.add_(1)
-        else:
-            drive.index_add_(0, post, weight)
+            if self.conductance:
+                # Торможение — проводимость (cfg.layers): копится отдельно, к соме
+                # приходит × движущая сила (см. ниже). Задержка у тормозных путей
+                # между зонами не учитывается — местные идут через шаг.
+                inh = weight.clamp(max=0.0)
+                # От LAMP5 — в медленный ток (lamp5_tau_syn), остальное — в быстрый.
+                slow = self.cell_type.index_select(0, pre_of) == KINDS.index("LAMP5")
+                inhibition = torch.zeros_like(drive).index_add_(0, post, torch.where(slow, 0.0, inh))
+                ngf = torch.zeros_like(drive).index_add_(0, post, torch.where(slow, inh, 0.0))
+                weight = weight.clamp(min=0.0)
+
+                if self.nmda_on:
+                    # NMDA — от тех же возбуждающих синапсов (задержка пути для
+                    # медленного тока не важна).
+                    glutamate = torch.zeros_like(drive).index_add_(0, post, weight)
+
+            if self.delay_slots > 1:
+                # В путь: каждый синапс доставит спайк через свою задержку; к соме
+                # приходит то, что было в пути и пришло сейчас.
+                ahead = (self.tick + self.net_delay.index_select(0, synapses).long()) % self.delay_slots
+                self.pending.view(-1).index_add_(0, ahead * self.n_slots + post.long(), weight)
+                now = self.tick % self.delay_slots
+                drive.add_(self.pending.index_select(0, now).squeeze(0))
+                self.pending.index_fill_(0, now, 0.0)
+                self.tick.add_(1)
+            else:
+                drive.index_add_(0, post, weight)
 
         if self.proc_rows is not None:
             # Врождённые пути с постоянным весом: получатели — из хеша.
@@ -2790,22 +2849,28 @@ class SpikingBrain:
         if plastic:
             # LTD: пре пришёл после поста. Нейроны рабочей памяти
             # (ковариационное правило) этой ветки не имеют.
-            synapses, pre_of = self._events(self.out_plastic, fired_before)
-            post = self.net_post.index_select(0, synapses)
-            ltd = self.trace_post.index_select(0, post) * self.ltd_mask.index_select(0, pre_of)
-            sign = -cfg.stdp_a_minus
+            if self._fused():
+                synapses, pre_of, total = self.out_plastic.compact_head(fired_before, self.dropped)
+                _kernels.ltd(synapses, pre_of, total, self.path_start, self.path_post, self.path_fanin, self.trace_post, self.ltd_mask,
+                             self.symmetric_area, cfg.stdp_a_plus, cfg.stdp_a_minus,
+                             self.eligibility_scale, self.eligibility)
+            else:
+                synapses, pre_of = self._events(self.out_plastic, fired_before)
+                post = self._posts().index_select(0, synapses)
+                ltd = self.trace_post.index_select(0, post) * self.ltd_mask.index_select(0, pre_of)
+                sign = -cfg.stdp_a_minus
 
-            if self.symmetric_area is not None:
-                # Симметричное окно: пре после поста — тоже потенциация.
-                zone = self.symmetric_area.index_select(0, post)
-                same = (zone > 0) & (zone == self.symmetric_area.index_select(0, pre_of))
-                sign = torch.where(same, cfg.stdp_a_plus, -cfg.stdp_a_minus)
+                if self.symmetric_area is not None:
+                    # Симметричное окно: пре после поста — тоже потенциация.
+                    zone = self.symmetric_area.index_select(0, post)
+                    same = (zone > 0) & (zone == self.symmetric_area.index_select(0, pre_of))
+                    sign = torch.where(same, cfg.stdp_a_plus, -cfg.stdp_a_minus)
 
-            self.eligibility.index_add_(
-                0,
-                synapses,
-                (ltd * (sign / self.eligibility_scale)).to(self.eligibility.dtype),
-            )
+                self.eligibility.index_add_(
+                    0,
+                    synapses,
+                    (ltd * (sign / self.eligibility_scale)).to(self.eligibility.dtype),
+                )
 
         self.i_syn.mul_(self.decay_syn).add_(drive * self.syn_scale)
 
@@ -2994,16 +3059,21 @@ class SpikingBrain:
         if plastic:
             # LTP: пост выстрелил после пре.
             fired_now = self._fired()
-            synapses, _ = self._events(self.in_plastic, fired_now)
-            pre = self.net_pre.index_select(0, synapses)
-            self.eligibility.index_add_(
-                0,
-                synapses,
-                (
-                    self.ltp_kernel.index_select(0, pre)
-                    * (cfg.stdp_a_plus / self.eligibility_scale)
-                ).to(self.eligibility.dtype),
-            )
+            if self._fused():
+                synapses, _, total = self.in_plastic.compact_head(fired_now, self.dropped)
+                _kernels.ltp(synapses, total, self.net_pre, self.ltp_kernel, cfg.stdp_a_plus,
+                             self.eligibility_scale, self.eligibility)
+            else:
+                synapses, _ = self._events(self.in_plastic, fired_now)
+                pre = self.net_pre.index_select(0, synapses)
+                self.eligibility.index_add_(
+                    0,
+                    synapses,
+                    (
+                        self.ltp_kernel.index_select(0, pre)
+                        * (cfg.stdp_a_plus / self.eligibility_scale)
+                    ).to(self.eligibility.dtype),
+                )
             self.eligibility_scale.mul_(self.decay_eligibility)
 
         self.trace_pre.mul_(self.decay_plus).add_(self.spikes)
@@ -3019,6 +3089,39 @@ class SpikingBrain:
                 torch.sub(trace, trace.mean(), out=self.ltp_kernel[pop.slice])
                 self.ltp_kernel[pop.slice].mul_(self.cfg.context_hebb_gain)
         self.trace_post.mul_(self.decay_minus).add_(self.spikes)
+
+    def _posts(self) -> torch.Tensor:
+        """Получатель каждого синапса — для шага на PyTorch (на видеокарте его считает ядро)."""
+
+        if self.net_post is None:
+            lengths = self.path_start[1:] - self.path_start[:-1]
+            local = torch.arange(self.n_synapses, device=self.device) - torch.repeat_interleave(self.path_start[:-1], lengths)
+            path = torch.repeat_interleave(torch.arange(len(lengths), device=self.device), lengths)
+            post = self.path_post[path] + local // self.path_fanin[path]
+            ids = self.n + torch.arange(self.DUMMY_SYNAPSES, device=self.device) % self.DUMMY_NEURONS
+            self.net_post = torch.cat([post, ids]).to(torch.int32)
+
+        return self.net_post
+
+    def _plastic_posts(self) -> torch.Tensor:
+        """Получатели пластичных синапсов (они первые в общем массиве) — для таблицы входов."""
+
+        return torch.cat([
+            torch.arange(p.post.start, p.post.stop, device=self.device, dtype=torch.int32)[:, None]
+            .expand_as(p.pre).flatten()
+            for p in self.plastic
+        ])
+
+    def _fused(self) -> bool:
+        """Доставка и STDP своими ядрами: есть ядра и такой состав шага, какой они считают."""
+
+        return (
+            self.compact and _kernels.deliver is not None and self.delay_slots <= 1
+            and self.cfg.dendritic_context and self.has_som and self.cfg.base_circuit and self.conductance
+            and self.eligibility.dtype == torch.float16 and self.net_pre.dtype == torch.int32
+            and self.cell_type.dtype == torch.long and self.net_branch.dtype == torch.int8
+            and self.acetylcholine.dtype == torch.float32
+        )
 
     def _events(self, table: EventTable, neurons: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """События шага: плотным списком (ядро C++/CUDA) или строками таблицы."""
@@ -4054,7 +4157,7 @@ class SpikingBrain:
         return sum(
             t.numel() * t.element_size()
             for t in (
-                self.net_pre, self.net_post, self.net_weight,
+                self.net_pre, self.net_weight,
                 self.ear_pre, self.ear_post, self.ear_weight,
                 self.eligibility, self.early, self.birth_weight,
             )

@@ -1123,17 +1123,24 @@ class SpikingBrain:
     def _cortical_path(self, path, pre: Population, post: Population) -> tuple[int, float]:
         """
         Путь между колонками по данным: входов из других зон у клетки — 21%
-        всех, изнутри зоны — 79% (Markov et al. 2011, FLN_i; так же у Schmidt
-        et al. 2018), то есть 0.21 / 0.79 от её местных возбуждающих входов;
-        поровну между путями, входящими в популяцию (доли по парам зон у нас
-        не измерены). PSP — как E → E у Potjans (0.15 мВ). Масштаб — как
+        всех (Markov et al. 2011, FLN; так же у Schmidt et al. 2018); все —
+        местные колонки плюс внешние Potjans (K_ext — всё, что не из колонки
+        1 мм²). Прежде — 0.21 / 0.79 от местных: 79% у Markov — вся своя зона,
+        а не колонка, и у L4 человека (местных связей почти нет, L4 → L4 p
+        0.007) межзонных выходило ~260 — путь V1 → буквы был немым. Поровну
+        между путями, входящими в популяцию (доли по парам зон у нас не
+        измерены). PSP — как E → E у Potjans (0.15 мВ). Масштаб — как
         внутри колонки: вес × √(k_data / k), недостающее — ток по частоте
         слоя-источника in vivo. Возвращает (k, вес).
         """
 
         cfg = self.cfg
         local = self.local_e_inputs.get(post.name, 0.0)
-        k_data = local * (0.21 / 0.79) / max(1, self.cortical_inputs.get(post.name, 1))
+        parts = post.name.split(".")
+        layer_post = parts[1] if len(parts) == 3 else "L23"
+        external = dict((l, (e, i)) for l, e, i in cfg.external_inputs).get(layer_post, (0, 0))
+        outside = external[0] if parts[-1] == "E" else external[1]
+        k_data = 0.21 * (local + outside) / max(1, self.cortical_inputs.get(post.name, 1))
         self.modeled_inputs[post.name] = self.modeled_inputs.get(post.name, 0.0) + k_data
         k = max(1, min(round(k_data), pre.size))
         weight = cfg.ee_psp_mv / self._psp_peak(post)
@@ -1672,7 +1679,8 @@ class SpikingBrain:
                     tau = float(self.tau_m[post.start])
                     dc = self.dc_inh_mv if w < 0 else self.dc_mv
                     self._missing(post, pre, k * hz / 1000.0 * w * tau * (1.0 - 1.0 / root), hz / 1000.0)
-                    self._connect(f"{spec.name}: {name}", pre, post, built, (w * root, w * root))
+                    index = self._lgn_local(area, pre, post, built) if spec.name == "lgn" and getattr(cfg, "eye", False) else None
+                    self._connect(f"{spec.name}: {name}", pre, post, built, (w * root, w * root), pre_index=index)
 
                 continue
 
@@ -1807,6 +1815,10 @@ class SpikingBrain:
                 # Ацетилхолин подавляет выброс на окончаниях пути (Hasselmo
                 # 1995) — и на тормозных клетках тоже.
                 ach_suppressed=path.ach_suppressed,
+                # Прямое торможение — из той же окрестности, что вход на E
+                # (та же карта поля): без неё ветка на PV шла со всего V1, и
+                # любая активность V1 гасила всю зону букв (ответ ×0.98).
+                topographic=path.topographic, retinotopic=getattr(path, "retinotopic", 0.0),
             )
 
         # ---- органы-датчики: рецепторы -> своя зона ----
@@ -1949,6 +1961,41 @@ class SpikingBrain:
         self._build_mean_field()
         self._pack()
         self._init_nmda()
+
+    def _lgn_local(self, area, pre: Population, post: Population, k: int) -> torch.Tensor:
+        """
+        Местный контур LGN — по месту в поле зрения: тормозные клетки реле
+        локальны (дендриты и триады — у своих клеток реле; Sherman & Guillery
+        2006). Клетка реле j — место рецептора j (ON и OFF, строка, столбец);
+        тормозная — место «своей» клетки реле (ровно по ядру). Входы — k
+        ближайших по полю (со случайным сдвигом). Случайные по всему ядру
+        связи гасили на слово клетки, его не видящие (15 → 8 Гц).
+        """
+
+        cfg = self.cfg
+        R, C = cfg.retina_rows, cfg.retina_cols
+
+        def place(pop):
+            if pop is area.E:
+                j = torch.arange(pop.size, device=self.device)
+            else:
+                j = ((torch.arange(pop.size, device=self.device).float() + 0.5) * area.E.size / pop.size).long()
+            j = j % (R * C)
+            return torch.stack([(j // C).float(), (j % C).float()], 1)
+
+        a, b = place(post), place(pre)
+        g = self.generator
+        out = []
+
+        for chunk in torch.split(torch.arange(post.size, device=self.device), 512):
+            d = torch.cdist(a[chunk], b)
+            d = d + torch.rand(d.shape, device=self.device, generator=g) * 1.5
+
+            if pre is post:
+                d[torch.arange(len(chunk), device=self.device), chunk] = float("inf")
+            out.append(d.topk(min(k, pre.size - (pre is post)), dim=1, largest=False).indices)
+
+        return pre.start + torch.cat(out).to(torch.int32)
 
     def _oriented_layout(self, sensor, cells: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """

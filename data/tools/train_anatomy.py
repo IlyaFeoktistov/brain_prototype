@@ -26,7 +26,7 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 from brain.session import Session
 
-opts = {"stage": "letters", "n": "200", "load": "", "save": "", "step": "letter", "dwell": "300", "seed": "0"}
+opts = {"stage": "letters", "n": "200", "load": "", "save": "", "step": "letter", "dwell": "300", "seed": "0", "save_every": "0"}
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
 cfg.autosave = False

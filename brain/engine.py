@@ -1395,6 +1395,18 @@ class SpikingBrain:
                         n_src = column[src_layer][0] if src_ei == "E" else column[src_layer][1] * shares[src_layer][src_kind]
                         k_data = p * n_src
 
+                        if cfg.column_contacts_on and not (src_kind == "LAMP5" and src_layer == dst_layer):
+                            # Синапсы Potjans → связанные клетки (config column_contacts_*);
+                            # выход LAMP5 в слое — доля соседей под облаком ГАМК, не синапсы.
+                            if src_ei == dst_ei == "E":
+                                contacts = next((m for a, b, m in cfg.column_contacts_ee if (a, b) == (src_layer, dst_layer)),
+                                                cfg.column_contacts_ee_default)
+                            else:
+                                contacts = {("E", "I"): cfg.column_contacts_ei, ("I", "E"): cfg.column_contacts_ie,
+                                            ("I", "I"): cfg.column_contacts_ii}[(src_ei, dst_ei)]
+                            k_data /= contacts
+                            p /= contacts
+
                         if src_ei == "E":
                             # Местных возбуждающих входов клетки — для доли
                             # входов из других зон (_cortical_path).

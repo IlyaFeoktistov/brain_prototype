@@ -100,17 +100,31 @@ if opts["fresh"] == "1":
 # лучший шаг, а не последний.
 best = (math.inf, dict(bias), dict(pop))
 
+if own and not pop:
+    # Фон по зонам уже записан — сразу он (без горящего замера «без фона»).
+    e_scale = float(opts.get("e_scale", "1.0"))
+    pop = {key: g * (e_scale if key[2] == "E" else 1.0) for key, g in own.items()}
+
 for step in range(int(opts["steps"])):
     nuclei, columns, cfg = measure(bias, pop)
 
     if not pop:
         pop = {key: own.get(key, common.get(key[1:], 1.0)) for key in columns}
+        # e_scale — старт фона E ×e_scale: после нового возбуждающего
+        # механизма (NMDA) прежний фон перевозбуждал мозг с первого шага.
+        e_scale = float(opts.get("e_scale", "1.0"))
+        pop = {key: g * (e_scale if key[2] == "E" else 1.0) for key, g in pop.items()}
         nuclei, columns, cfg = measure(bias, pop)
     errors = [math.log((r + 0.5) / (anatomy.RATES_HZ[n] + 0.5)) ** 2 for n, r in nuclei.items()]
     # LAMP5 — вне ошибки: частота in vivo не измерена (цель — «как VIP»
     # [сверить]), а при десенситизации (Karayannis 2010) их синапсы в покое
     # почти не действуют; погоня за ней портила E → PV.
-    errors += [math.log((r + 0.5) / (targets[k[1:]] + 0.5)) ** 2 for k, r in columns.items() if k[2] != "LAMP5"]
+    # e_only=1 — подбирается только фон E (и ядер): популяции колонки тесно
+    # связаны, и подстройка каждой отдельно раскачивала E ↔ PV/VIP; E несут
+    # сигнал по цепи, фон тормозных — из подбора колонки (column_fit).
+    e_only = opts.get("e_only", "0") == "1"
+    errors += [math.log((r + 0.5) / (targets[k[1:]] + 0.5)) ** 2 for k, r in columns.items()
+               if k[2] != "LAMP5" and (k[2] == "E" or not e_only)]
 
     if opts["trace"]:
         # Числа каждого шага — чтобы сломанный шаг можно было собрать заново
@@ -130,6 +144,7 @@ for step in range(int(opts["steps"])):
             anatomy.write_fitted(tuple(bias.items()), tuple((*key, g) for key, g in pop.items()))
 
     worst = sorted([kv for kv in columns.items() if kv[0][2] != "LAMP5"], key=lambda kv: -abs(math.log((kv[1] + 0.5) / (targets[kv[0][1:]] + 0.5))))[:8]
+    print("        L2/3 E: " + " ".join(f"{a}={r:.1f}" for (a, l, k), r in columns.items() if l == "L23" and k == "E"), flush=True)
     print("        хуже всех: " + " ".join(f"{a}.{l}{k}={r:.1f}/{targets[(l, k)]}" for (a, l, k), r in worst), flush=True)
 
     for name, r in nuclei.items():
@@ -157,11 +172,12 @@ for step in range(int(opts["steps"])):
         print("        E → PV/SOM/VIP/LAMP5 ×" + " ".join(f"{g:.3f}" for g in from_e), flush=True)
 
     for key, r in columns.items():
-        if key[2] == "LAMP5":
+        if key[2] == "LAMP5" or (e_only and key[2] != "E"):
             continue
         # Мягко (±15%, показатель 0.15): популяции колонки связаны в петлю
         # (E ↔ PV ↔ VIP), резкий шаг (±30%) раскачивал её от шага к шагу.
-        pop[key] *= min(1.15, max(0.87, ((targets[key[1:]] + 0.5) / (r + 0.5)) ** 0.15))
+        cap = float(opts.get("pop_cap", "1.15"))
+        pop[key] *= min(cap, max(1.0 / cap, ((targets[key[1:]] + 0.5) / (r + 0.5)) ** 0.15))
 
 print(f"лучший шаг — ошибка {best[0]:.3f}")
 bias, pop = best[1], best[2]

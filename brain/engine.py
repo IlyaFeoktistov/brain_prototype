@@ -1029,6 +1029,39 @@ class SpikingBrain:
 
         self.mean_field.append((post, pre, mv / rate_khz, rate_khz, ach, slow))
 
+    def _init_nmda(self) -> None:
+        """
+        NMDA у клеток E колонок (cfg.nmda): медленный ток от тех же
+        возбуждающих входов (построенных и среднего поля), с блоком магнием.
+        Сила — по пику: при −70 мВ NMDA даёт nmda_share_at_rest пика EPSP
+        (Hunt et al. 2023), то есть r · B(−70) · пик(τ_NMDA) = доля · пик(τ_AMPA).
+        """
+
+        cfg = self.cfg
+        self.nmda_r = torch.zeros(self.n_slots, device=self.device)
+        self.i_nmda = torch.zeros(self.n_slots, device=self.device)
+        self.nmda_mf = torch.zeros(self.n_slots, device=self.device)
+        self.nmda_on = bool(getattr(cfg, "nmda", False) and getattr(cfg, "anatomy", False) and self.conductance)
+        tau = getattr(cfg, "nmda_tau_ms", 100.0)
+        self.decay_nmda = math.exp(-cfg.dt_ms / tau)
+
+        if not self.nmda_on:
+            return
+
+        block = 1.0 / (1.0 + cfg.mg_mm / 3.57 * math.exp(0.062 * 70.0))
+
+        for area in self.areas.values():
+            if area.layers is None:
+                continue
+
+            for group in area.layers.values():
+                pop = group["E"]
+                r = cfg.nmda_share_at_rest * self._psp_peak(pop) / (block * self._psp_peak(pop, tau))
+                self.nmda_r[pop.slice] = r
+
+        # Скачок τm/τ — тот же интеграл, что у быстрого синапса того же веса.
+        self.nmda_scale = self.nmda_r * self.tau_m / tau
+
     def _build_mean_field(self) -> None:
         """Матрицы среднего поля: популяция-получатель ← популяция-источник (мВ на кГц)."""
 
@@ -1893,6 +1926,7 @@ class SpikingBrain:
         self._external_minus_modeled()
         self._build_mean_field()
         self._pack()
+        self._init_nmda()
 
     def _oriented_layout(self, sensor, cells: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -2655,6 +2689,11 @@ class SpikingBrain:
             ngf = torch.zeros_like(drive).index_add_(0, post, torch.where(slow, inh, 0.0))
             weight = weight.clamp(min=0.0)
 
+            if self.nmda_on:
+                # NMDA — от тех же возбуждающих синапсов (задержка пути для
+                # медленного тока не важна).
+                glutamate = torch.zeros_like(drive).index_add_(0, post, weight)
+
         if self.delay_slots > 1:
             # В путь: каждый синапс доставит спайк через свою задержку; к соме
             # приходит то, что было в пути и пришло сейчас.
@@ -2704,6 +2743,9 @@ class SpikingBrain:
         if self.conductance:
             self.i_inh.mul_(self.decay_syn).add_(inhibition * self.syn_scale)
             self.i_ngf.mul_(self.decay_ngf).add_(ngf * self.ngf_scale)
+
+            if self.nmda_on:
+                self.i_nmda.mul_(self.decay_nmda).add_(glutamate * self.nmda_scale)
         self.i_slow.mul_(self.decay_slow).add_(drive.clamp(min=0.0) * self.slow_scale)
         self.i_slow.clamp_(max=self.slow_max)
 
@@ -2769,6 +2811,13 @@ class SpikingBrain:
                     slow = ((self.mf_slow * g) @ self.mf_rate).index_select(0, self.mf_post_id)
                     self.ngf_mf.mul_(self.decay_ngf).add_(slow * (1.0 - self.decay_ngf))
                     dc_i = dc_i + self.ngf_mf
+
+            if self.nmda_on:
+                # Недостающие соседи — тот же NMDA через фильтр τ_NMDA; блок
+                # магнием (Jahr & Stevens 1990) — по текущему потенциалу.
+                self.nmda_mf.mul_(self.decay_nmda).add_(dc_e * (1.0 - self.decay_nmda))
+                block = 1.0 / (1.0 + cfg.mg_mm / 3.57 * torch.exp(-0.062 * self.v))
+                synaptic = synaptic + (self.i_nmda + self.nmda_r * self.nmda_mf) * block
 
             synaptic = (synaptic + dc_e) * excite + (self.i_inh + self.i_ngf + dc_i) * force
 
@@ -3776,7 +3825,7 @@ class SpikingBrain:
     # читает и пишет по фиксированным адресам. Поэтому их
     # всегда восстанавливают через copy_, а не присваиванием.
     _DYNAMIC = (
-        "v", "i_syn", "i_inh", "i_ngf", "ngf_mf", "i_slow", "i_dend", "pool", "area_pool", "adapt", "adapt_slow", "refractory", "spikes",
+        "v", "i_syn", "i_inh", "i_ngf", "ngf_mf", "i_nmda", "nmda_mf", "i_slow", "i_dend", "pool", "area_pool", "adapt", "adapt_slow", "refractory", "spikes",
         "trace_pre", "trace_pre_rise", "ltp_kernel", "trace_post", "counts", "eligibility",
         "eligibility_scale", "dropped", "bias", "interoception", "kick_current", "kick_left", "stp_x", "stp_u4", "stp_x4", "inh_gain",
         "chemistry", "pending", "pending_dend", "tick", "mf_rate",

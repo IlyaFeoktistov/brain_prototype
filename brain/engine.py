@@ -3144,7 +3144,7 @@ class SpikingBrain:
             torch.arange(p.post.start, p.post.stop, device=self.device, dtype=torch.int32)[:, None]
             .expand_as(p.pre).flatten()
             for p in self.plastic
-        ])
+        ] + [torch.zeros(0, dtype=torch.int32, device=self.device)])
 
     def _fused(self) -> bool:
         """Доставка и STDP своими ядрами: есть ядра и такой состав шага, какой они считают."""

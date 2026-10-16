@@ -18,7 +18,7 @@ from pathlib import Path
 
 import torch
 
-compact_events = deliver = ltd = ltp = None
+compact_events = deliver = ltd = ltp = plastic_update = None
 
 if torch.cuda.is_available() and os.environ.get("BRAIN_KERNELS", "1") == "1":
     # ninja и компилятор ищутся в PATH — добавить bin окружения проекта.
@@ -93,6 +93,9 @@ if torch.cuda.is_available() and os.environ.get("BRAIN_KERNELS", "1") == "1":
         @ltp.register_fake
         def _(*args) -> None:
             return None
+
+        def plastic_update(weight, eligibility, early, path_start, step, cap, spend, total: int) -> None:
+            _ext.plastic_update(weight, eligibility, early, path_start, step, cap, spend, total)
     except Exception as error:  # нет компилятора, другая CUDA — прежний путь
         print(f"ядра C++/CUDA не собрались, шаг на PyTorch: {error}")
-        compact_events = deliver = ltd = ltp = None
+        compact_events = deliver = ltd = ltp = plastic_update = None

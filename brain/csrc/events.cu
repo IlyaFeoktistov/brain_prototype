@@ -212,9 +212,41 @@ void ltp(torch::Tensor synapses, torch::Tensor total, torch::Tensor net_pre, tor
       reinterpret_cast<__half*>(eligibility.data_ptr()));
 }
 
+// Химическая пластичность всех пластичных синапсов разом (они первые в
+// общем массиве): вес += след × шаг пути, в [0, потолок пути], свежая
+// часть += изменение, след тратится у путей, где он сразу становится весом.
+// Раньше — цикл Python по путям, 5–6 мелких операций на путь каждые 50 мс.
+__global__ void plastic_update_kernel(
+    float* __restrict__ weight, __half* __restrict__ eligibility, __half* __restrict__ early,
+    const int64_t* __restrict__ path_start, int64_t paths, const float* __restrict__ step,
+    const float* __restrict__ cap, const uint8_t* __restrict__ spend, int64_t total) {
+  for (int64_t i = blockIdx.x * (int64_t)blockDim.x + threadIdx.x; i < total; i += (int64_t)gridDim.x * blockDim.x) {
+    const int64_t path = path_of(path_start, paths, i);
+    const float k = step[path];
+    if (k == 0.0f) continue;
+    const float before = weight[i];
+    // Без слияния в FMA — тот же счёт, что у PyTorch (умножить, потом сложить).
+    const float after = fminf(fmaxf(__fadd_rn(before, __fmul_rn(__half2float(eligibility[i]), k)), 0.0f), cap[path]);
+    weight[i] = after;
+    early[i] = __hadd(early[i], __float2half(after - before));
+    if (spend[path]) eligibility[i] = __float2half(0.0f);
+  }
+}
+
+void plastic_update(torch::Tensor weight, torch::Tensor eligibility, torch::Tensor early,
+                    torch::Tensor path_start, torch::Tensor step, torch::Tensor cap, torch::Tensor spend,
+                    int64_t total) {
+  auto stream = at::cuda::getCurrentCUDAStream();
+  plastic_update_kernel<<<BLOCKS, THREADS, 0, stream>>>(
+      weight.data_ptr<float>(), reinterpret_cast<__half*>(eligibility.data_ptr()),
+      reinterpret_cast<__half*>(early.data_ptr()), path_start.data_ptr<int64_t>(), path_start.size(0),
+      step.data_ptr<float>(), cap.data_ptr<float>(), spend.data_ptr<uint8_t>(), total);
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("compact_events", &compact_events, "Плотный список событий шага");
   m.def("deliver", &deliver, "Доставка спайков шага");
   m.def("ltd", &ltd, "LTD по событиям шага");
   m.def("ltp", &ltp, "LTP по событиям шага");
+  m.def("plastic_update", &plastic_update, "Химическая пластичность всех путей");
 }

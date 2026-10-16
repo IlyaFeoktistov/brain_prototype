@@ -3369,8 +3369,39 @@ class SpikingBrain:
             spikes = torch.where(spikes < 0, counts, spikes)
 
         self._plastic_counts = counts
+        fused = self.device.type == "cuda" and _kernels.plastic_update is not None
+
+        if fused:
+            # Все пути без своего потолка — одним ядром (тот же счёт, что ниже).
+            steps = []
+
+            for proj in self.plastic:
+                factor = {
+                    "hebbian": 1.0,
+                    "acetylcholine": ach,
+                    "dopamine": phasic * integrate,
+                    "dopamine_d2": -phasic * integrate,
+                }.get(proj.modulator, 0.0)
+                simple = proj.modulator != "climbing" and getattr(proj, "ceiling", None) is None
+                unit = proj.cap / cfg.learned_cap_psp if getattr(proj, "data_weight", False) else 1.0
+                steps.append(float(torch.tensor(unit * factor, dtype=torch.float32)) if simple else 0.0)
+
+            if not hasattr(self, "_plastic_paths"):
+                self._plastic_paths = (
+                    torch.tensor([p.offset for p in self.plastic] + [self.n_plastic], dtype=torch.long, device=self.device),
+                    torch.tensor([float(p.cap) for p in self.plastic] + [0.0], dtype=torch.float32, device=self.device),
+                    torch.tensor([int(p.modulator in ("hebbian", "acetylcholine")) for p in self.plastic] + [0],
+                                 dtype=torch.uint8, device=self.device),
+                )
+
+            start, caps, spend = self._plastic_paths
+            step = torch.tensor(steps + [0.0], dtype=torch.float32).to(self.device, non_blocking=True)
+            _kernels.plastic_update(self.net_weight, self.eligibility, self.early, start, step, caps, spend, self.n_plastic)
 
         for proj in self.plastic:
+            if fused and proj.modulator != "climbing" and getattr(proj, "ceiling", None) is None:
+                continue
+
             if proj.modulator == "climbing":
                 if spikes is not None:
                     self._climbing(proj, spikes)

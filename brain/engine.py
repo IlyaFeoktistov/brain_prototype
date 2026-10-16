@@ -1829,6 +1829,49 @@ class SpikingBrain:
                     if getattr(sensor, "psp_mv", None) is not None:
                         weight = torch.full((pop.size, k), sensor.psp_mv / self._psp_peak(pop), device=self.device)
 
+                if relay is not None and getattr(cfg, "anatomy", False):
+                    # Анатомический мозг: таламус → L4 по данным, как у
+                    # остальных путей таламус → кора (_thalamic_path): на E —
+                    # 85 таламических клеток по 1.0 мВ, на PV — 56 по 2.0
+                    # (Bruno & Sakmann 2006; Schoonover et al. 2014;
+                    # Cruikshank et al. 2007). Синапсы таламуса только
+                    # возбуждают: у ориентированного поля — лишь «+» подполя
+                    # (форма поля Хьюбела — Визеля), «толкай» дают PV L4 со
+                    # своим входом таламуса, а не отрицательные веса (прежнее
+                    # упрощение гасило слово: «+» и «−» поровну, L4 E молчали).
+                    from brain import anatomy
+
+                    if sensor.wiring == "oriented" and pop is excitatory:
+                        pre = pre[:, weight[0] > 0]
+                    k_data = 56.0 if pop is inhibitory else 85.0
+                    psp = 2.0 if pop is inhibitory else 1.0
+                    built = pre.shape[1]
+                    w = psp / self._psp_peak(pop)
+
+                    if sensor.wiring == "oriented" and pop is excitatory:
+                        # Все таламические входы клетки — из её места поля
+                        # (ретинотопия): недостающие видят то же, что её
+                        # построенные, — их несут сами построенные (вес ×
+                        # k_data / k). Среднее поле от всего LGN гасило слово:
+                        # зрячие клетки LGN 14 Гц, прочие 9.5 → 3.6 (через
+                        # ретикулярное), вход L4 на слово падал 15 → 12 мВ.
+                        scale = k_data / built
+                    else:
+                        root = math.sqrt(max(1.0, k_data / built))
+                        rate = anatomy.RATES_HZ.get(relay.name, 10.0) / 1000.0
+                        tau = float(self.tau_m[pop.start])
+                        self._missing(pop, relay.E, k_data * rate * w * tau * (1.0 - 1.0 / root), rate)
+                        scale = root
+                    proj = Projection(
+                        f"{relay.name} -> {pop.name}", "net", (pre + relay.E.start).to(torch.int32), pop,
+                        torch.full(pre.shape, w * scale, device=self.device),
+                    )
+                    proj.pre_pop = relay.E
+                    proj.source_kind = relay.kind
+                    self.projections.append(proj)
+                    self.modeled_inputs[pop.name] = self.modeled_inputs.get(pop.name, 0.0) + k_data
+                    continue
+
                 if relay is not None:
                     # Реле → L4 (таламокортикальный путь).
                     proj = Projection(

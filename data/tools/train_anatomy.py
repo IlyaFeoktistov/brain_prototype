@@ -13,7 +13,7 @@ chemical_plasticity).
   copy     — учитель пишет букву, мозг печатает: совпало — сладкое, нет — горькое;
   talk     — вопрос из teach-data.txt, ответ рукой, учитель оценивает.
 
-    PYTHONPATH=. .venv/bin/python data/tools/train_anatomy.py stage=letters [n=200] [load=МОЗГ] [save=МОЗГ]
+    PYTHONPATH=. .venv/bin/python data/tools/train_anatomy.py stage=letters [n=200] [alphabet=отл] [load=МОЗГ] [save=МОЗГ]
 """
 
 import random
@@ -26,7 +26,7 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 from brain.session import Session
 
-opts = {"stage": "letters", "n": "200", "load": "", "save": "", "step": "letter", "dwell": "300", "seed": "0", "save_every": "0"}
+opts = {"stage": "letters", "n": "200", "load": "", "save": "", "step": "letter", "dwell": "300", "seed": "0", "save_every": "0", "alphabet": ""}
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
 cfg.autosave = False
@@ -98,8 +98,11 @@ n = int(opts["n"])
 stage = opts["stage"]
 
 if stage == "letters":
+    # alphabet= — свой набор букв (малый опыт: учится ли зона различать несколько букв).
+    shown = opts["alphabet"] or ALPHABET
+
     for i in range(n):
-        point(rng.choice(ALPHABET), "letter")
+        point(rng.choice(shown), "letter")
         session.live(200.0)
 
         if i % 10 == 9:

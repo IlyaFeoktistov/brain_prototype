@@ -54,18 +54,46 @@ def measure(gains: list[float], pop: dict | None = None) -> dict:
     torch.manual_seed(0)
     brain = build(gains, pop)
     brain.plasticity = False
-    brain.run(300.0)
+    brain.run(float(opts["warmup"]))
     rates = brain.observe(float(opts["ms"]))
     area = brain.areas[opts["area"]]
     return {(layer, kind): float(rates[pop.slice].mean()) for layer, group in area.layers.items() for kind, pop in group.items()}
 
 
+# Тормозная проводимость к возбуждающей у клеток E в покое, бодрствование:
+# 1.7 ± 1.1 (Rudolph et al. 2007, кошка) — цель для силы торможения.
+GI_GE = 1.7
+
+
+def conductance_ratio(brain, cells) -> float:
+    """g_I/g_E клеток cells: ток ÷ движущая сила при нормировке (возбуждение
+    — к −70 мВ, 70 мВ до E_AMPA; торможение — к −55, 19 мВ до E_ГАМК), со
+    средним полем недостающих соседей и фоном."""
+
+    c = brain.cfg
+    nxt = brain.stp_u4 + brain.stp_U4 * (1 - brain.stp_u4)
+    gain = torch.where(brain.typed_pre[:, None], nxt * brain.stp_x4 / brain.stp_U4, 1.0)
+    gain = torch.where(brain.is_lamp5[:, None], gain * brain.ngf_d[:, None], gain)
+    n = gain.shape[1]
+    G = torch.ones(brain.mf_size.shape[0], n + 1, device=brain.device)
+    G[:, :n] = torch.zeros(brain.mf_size.shape[0], n, device=brain.device).index_add_(0, brain.mf_pre_id, gain)
+    G[:, :n] /= brain.mf_size[:, None]
+    g = G.index_select(1, brain.mf_post_type).t()
+    dc_e = brain.dc_mv + (((brain.mf_exc - brain.acetylcholine * brain.mf_ach) * g) @ brain.mf_rate).index_select(0, brain.mf_post_id)
+    dc_i = brain.dc_inh_mv + ((brain.mf_inh * g) @ brain.mf_rate).index_select(0, brain.mf_post_id)
+    e = (brain.i_syn + brain.i_slow + dc_e) / (c.ampa_reversal_mv - c.epsp_holding_mv)
+    i = -(brain.i_inh + brain.i_ngf + brain.ngf_mf + dc_i) / (c.ipsp_holding_mv - c.gaba_reversal_mv)
+    return float(i[cells].mean() / e[cells].mean().clamp(min=1e-6))
+
+
 def loss(rates: dict, targets: dict) -> float:
     # E — главные клетки коры: их частота весит вчетверо (иначе поиск
     # находит «дешёвое» решение — молчащие E при верных тормозных).
-    # Ключ («после», слой, тип) — замер после толчка, цель та же.
-    weights = {key: 4.0 if key[-1] == "E" else 1.0 for key in rates}
-    errors = [weights[key] * math.log((r + 0.5) / (targets[key[-2:]] + 0.5)) ** 2 for key, r in rates.items()]
+    # Ключ («после», слой, тип) — замер после толчка, цель та же; ключ
+    # («gI/gE»,) — отношение проводимостей E в покое (цель GI_GE, вес 4).
+    weights = {key: 4.0 if key[-1] in ("E", "gI/gE") else 1.0 for key in rates}
+    errors = [weights[key] * (math.log(max(r, 1e-3) / GI_GE) ** 2 if key == ("gI/gE",)
+              else math.log((r + 0.5) / (targets[key[-2:]] + 0.5)) ** 2) for key, r in rates.items()]
     return sum(errors) / sum(weights.values())
 
 
@@ -147,6 +175,16 @@ def measure_batch(population: list[list[float]]) -> list[dict]:
     brain.plasticity = False
     brain.run(float(opts["warmup"]))
     rest = brain.observe(float(opts["ms"]))
+    # g_I/g_E клеток E каждой копии — в конце покоя (среднее 4 замеров).
+    ratios = [[] for _ in copies]
+
+    for _ in range(4):
+        brain.run(25.0)
+
+        for j, c in enumerate(copies):
+            cells = torch.cat([torch.arange(g["E"].start, g["E"].stop, device=brain.device)
+                               for g in brain.areas[c.name].layers.values()])
+            ratios[j].append(conductance_ratio(brain, cells))
     after = None
 
     if opts["kick"] != "0":
@@ -173,6 +211,7 @@ def measure_batch(population: list[list[float]]) -> list[dict]:
         area = brain.areas[copy.name]
         pops = [(layer, kind, pop) for layer, group in area.layers.items() for kind, pop in group.items()]
         item = {(layer, kind): float(rest[pop.slice].mean()) for layer, kind, pop in pops}
+        item[("gI/gE",)] = sum(ratios[copies.index(copy)]) / 4
 
         if after is not None:
             item.update({("после", layer, kind): float(after[pop.slice].mean()) for layer, kind, pop in pops})
@@ -189,7 +228,6 @@ if opts["mode"] == "batch":
     import random
 
     rng = random.Random(1)
-    n = 11
     base = BrainConfig()
     mean = [math.log(g) for g in list(base.column_gain_external) + list(base.column_gain_from_e)
             + list(base.column_gain_to_e) + [base.column_gain_ii]]
@@ -197,7 +235,8 @@ if opts["mode"] == "batch":
     if opts["start"]:
         # Старт: 11 множителей через запятую.
         mean = [math.log(float(g)) for g in opts["start"].split(",")]
-    sigma = 0.6
+    n = len(mean)
+    sigma = float(opts.get("sigma", "0.6"))
     size = int(opts["batch"])
     elite = max(2, size // 4)
 
@@ -215,13 +254,29 @@ if opts["mode"] == "batch":
         calls[0] += size
         print(f"поколение {generation:2d} лучшая {scored[0][0]:.3f} (всего {best[0]:.3f}) шаг {sigma:.2f}  "
               + " ".join(f"{g:.2f}" for g in best[1]), flush=True)
+        r = best[2]
+        print("        покой " + " ".join(f"{k[0]}{k[1]}={v:.1f}" for k, v in r.items() if len(k) == 2)
+              + f"  gI/gE {r[('gI/gE',)]:.2f}  после: "
+              + " ".join(f"{k[1]}{k[2]}={v:.1f}" for k, v in r.items() if len(k) == 3 and k[2] == "E"), flush=True)
 elif opts["mode"] == "pop":
     # Фон по популяциям (Billeh et al. 2020): множитель внешнего входа
     # каждой популяции × (цель / частота)^0.3 — «стреляет больше нормы —
     # меньше фона»; общие множители — из config.py.
+    import json
+
     base = BrainConfig()
     gains = list(base.column_gain_external) + list(base.column_gain_from_e) + list(base.column_gain_to_e) + [base.column_gain_ii]
     pop = {key: 1.0 for key in targets}
+    # fit_from_e=1 — ещё и сила E → тип тормозных (по средней частоте типа во
+    # всех слоях), как у Billeh et al. 2020: единый множитель на класс связей
+    # под спонтанные частоты in vivo; тормозных гонит сеть, а не фон.
+    fit_from_e = opts.get("fit_from_e", "0") == "1"
+    save = opts.get("save", "data/measure/logs/colfit-best.json")
+
+    if opts.get("load"):
+        saved = json.load(open(opts["load"], encoding="utf-8"))
+        gains = saved["gains"]
+        pop = {tuple(k.split(".")): v for k, v in saved["pop"].items()}
 
     for step in range(int(opts["steps"])):
         rates = measure(gains, pop)
@@ -229,12 +284,26 @@ elif opts["mode"] == "pop":
         print(f"{step:3d} ошибка {value:.3f}  " + " ".join(f"{k[0]}{k[1]}={r:.1f}" for k, r in rates.items()), flush=True)
 
         if value < best[0]:
-            best[:] = [value, gains, rates]
+            best[:] = [value, list(gains), rates]
             best_pop = dict(pop)
+            # Лучшее — сразу в файл: остановленный подбор не теряет найденное.
+            json.dump({"error": value, "gains": list(gains), "pop": {".".join(k): v for k, v in pop.items()},
+                       "rates": {".".join(k): r for k, r in rates.items()}}, open(save, "w", encoding="utf-8"),
+                      ensure_ascii=False, indent=1)
+
+        if fit_from_e:
+            for i, kind in enumerate(TYPES[1:]):
+                hz = [r for (layer, k), r in rates.items() if k == kind]
+                aim = [targets[(layer, k)] for (layer, k) in rates if k == kind]
+                ratio = ((sum(aim) / len(aim) + 0.5) / (sum(hz) / len(hz) + 0.5)) ** 0.15
+                gains[5 + i] *= min(1.2, max(1 / 1.2, ratio))
 
         for key, r in rates.items():
-            pop[key] *= min(1.5, max(0.67, ((targets[key] + 0.5) / (r + 0.5)) ** 0.3))
+            # Мягко: у SOM, VIP, LAMP5 отклик крутой (облегчение входа от E).
+            power, cap = float(opts.get("power", "0.15")), float(opts.get("cap", "1.2"))
+            pop[key] *= min(cap, max(1.0 / cap, ((targets[key] + 0.5) / (r + 0.5)) ** power))
 
+    print("column_gain_from_e =", tuple(round(g, 3) for g in best[1][5:9]))
     print("column_gain_external_pop =", tuple((l, t, round(g, 3)) for (l, t), g in best_pop.items()))
 elif opts["mode"] == "gains":
     start = [0.0] * 11

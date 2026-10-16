@@ -1277,6 +1277,13 @@ class SpikingBrain:
                             # Внутри слоя — как измерено (Oláh мерил в L2/3).
                             p = from_e[dst_kind] if src_ei == "E" else (
                                 to_e[src_kind] if dst_ei == "E" else among.get((src_kind, dst_kind), 0.0))
+                        elif src_kind == "LAMP5":
+                            # Облако аксона нейроглиаформной клетки — плотное и
+                            # местное, в своём слое (Oláh et al. 2009: соседи
+                            # ближе 100 мкм): между слоями объёмного действия нет.
+                            # (Число Potjans × 0.87/среднее давало 0.35–0.47 —
+                            # слои гасили друг друга по очереди.)
+                            p = 0.0
                         elif src_ei == "E" and dst_ei == "I":
                             p *= from_e[dst_kind] / mean(from_e, dst_layer)
                         elif src_ei == "I" and dst_ei == "E":
@@ -1299,7 +1306,9 @@ class SpikingBrain:
                         elif src_ei == "I" and dst_ei == "E":
                             gain = gain_to_e[INHIBITORY_KINDS.index(src_kind)]
                         elif src_ei == "I":
-                            gain = gain_ii
+                            # LAMP5 — без поправки на срезанные аксоны (его
+                            # вероятность — объёмная, Oláh 2009).
+                            gain = 1.0 if src_kind == "LAMP5" else gain_ii
                         else:
                             gain = 1.0
 
@@ -2470,8 +2479,13 @@ class SpikingBrain:
         self.stp_x4 = torch.ones(self.n_slots, len(KINDS), device=self.device)
         # Десенситизация рецепторов ГАМК-А от LAMP5 (нейроглиаформных):
         # второе, медленное состояние их синапсов (Karayannis et al. 2010).
-        self.ngf_d = torch.ones(self.n_slots, device=self.device)
         self.is_lamp5 = self.cell_type == KINDS.index("LAMP5")
+        # Старт — устоявшаяся сила при частоте покоя LAMP5 (1/(1 + U·f·τ)):
+        # восстановление идёт минуты, мозг не «рождается» с отдохнувшими
+        # синапсами — иначе любой замер покоя был бы переходным процессом.
+        lamp5_hz = cfg.column_target_hz[0][1 + KINDS.index("LAMP5")] if cfg.column_target_hz else 0.0
+        steady = 1.0 / (1.0 + cfg.lamp5_desens_u * lamp5_hz * cfg.lamp5_desens_tau_s)
+        self.ngf_d = torch.where(self.is_lamp5, steady, 1.0).to(torch.float32)
         self.ngf_rec = cfg.dt_ms / (cfg.lamp5_desens_tau_s * 1000.0)
         self.inh_gain = torch.ones(self.n_slots, device=self.device)
         # У маленьких мозгов зоны малы, и случайные пики занимают

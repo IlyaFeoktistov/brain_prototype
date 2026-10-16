@@ -1401,9 +1401,12 @@ class SpikingBrain:
                             if src_ei == dst_ei == "E":
                                 contacts = next((m for a, b, m in cfg.column_contacts_ee if (a, b) == (src_layer, dst_layer)),
                                                 cfg.column_contacts_ee_default)
+                            elif src_ei == "E":
+                                contacts = cfg.column_contacts_ei
+                            elif dst_ei == "E":
+                                contacts = dict(cfg.column_contacts_ie).get(src_kind, cfg.column_contacts_ie_default)
                             else:
-                                contacts = {("E", "I"): cfg.column_contacts_ei, ("I", "E"): cfg.column_contacts_ie,
-                                            ("I", "I"): cfg.column_contacts_ii}[(src_ei, dst_ei)]
+                                contacts = cfg.column_contacts_ii
                             k_data /= contacts
                             p /= contacts
 

@@ -1557,16 +1557,22 @@ class BrainConfig:
     # et al. 2006), L4 → L2/3 4.5 (Feldmeyer et al. 2002), L4 → L4 3.4
     # (Feldmeyer et al. 1999), L5 → L5 5.5 (Markram et al. 1997), прочие E →
     # E — как L2/3; E → I — ~3 (пирамида → FS человека, Molnár et al. 2016).
-    # Тормозные (I → E, I → I) — не найдены [сверить], пока 1; поэтому
-    # выключено: деление только возбуждения сдвинуло бы баланс к торможению.
+    # Тормозные — коннектом V1 мыши (Schneider-Mizell et al. 2025, объёмная
+    # ЭМ, 9235 синапсов между тормозными в 3569 связях — 2.59 на связь):
+    # перисоматические → предпочтительные мишени 3.1, дистальные 3.6 — у нас
+    # PV → E 3.1, SOM → E 3.6, прочие I → E и I → I 2.59. Классы коннектома —
+    # по морфологии и связям, не по маркерам PV/SST [сверить]. Для масштаба:
+    # корзинчатая → пирамида 15 (одна пара, кошка; Tamás et al. 1997), 3.2 ±
+    # 2.0 только на соме (Kubota et al. 2016).
     column_contacts_on: bool = False
     column_contacts_ee: tuple[tuple[str, str, float], ...] = (
         ("L23", "L23", 2.8), ("L4", "L23", 4.5), ("L4", "L4", 3.4), ("L5", "L5", 5.5),
     )
     column_contacts_ee_default: float = 2.8
     column_contacts_ei: float = 3.0
-    column_contacts_ie: float = 1.0
-    column_contacts_ii: float = 1.0
+    column_contacts_ie: tuple[tuple[str, float], ...] = (("PV", 3.1), ("SOM", 3.6))
+    column_contacts_ie_default: float = 2.59
+    column_contacts_ii: float = 2.59
     # Вероятность связи E/I между слоями (Potjans Table 5): строка — к кому,
     # столбцы — от L23E, L23I, L4E, L4I, L5E, L5I, L6E, L6I.
     column_probability: tuple[tuple[float, ...], ...] = (

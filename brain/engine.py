@@ -1410,6 +1410,11 @@ class SpikingBrain:
                             k_data /= contacts
                             p /= contacts
 
+                        if src_ei == dst_ei == "E" and src_layer == dst_layer == "L23":
+                            # Местных партнёров у человека — подбор (config column_ee_partners_l23).
+                            k_data *= cfg.column_ee_partners_l23
+                            p *= cfg.column_ee_partners_l23
+
                         if src_ei == "E":
                             # Местных возбуждающих входов клетки — для доли
                             # входов из других зон (_cortical_path).

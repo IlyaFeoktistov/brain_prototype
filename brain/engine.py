@@ -2291,6 +2291,13 @@ class SpikingBrain:
         flags = [int(p in dendritic) | (int(p in suppressed) << 1) for p in paths]
         self.path_start = torch.tensor([p.offset for p in paths] + [self.n_synapses], dtype=torch.long, device=self.device)
         self.path_flags = torch.tensor(flags + [0], dtype=torch.uint8, device=self.device)
+        # LTD пропорциональна весу синапса (stdp_ltd_weight_dependent): на
+        # путь — 1 / средний врождённый вес, 0 — шаг LTD от веса не зависит.
+        self.path_ltd_ref = None
+
+        if self.cfg.stdp_ltd_weight_dependent:
+            refs = [1.0 / p.innate_mean if p.plastic and p.innate_mean > 0 else 0.0 for p in paths]
+            self.path_ltd_ref = torch.tensor(refs + [0.0], dtype=torch.float32, device=self.device)
         # Получатель синапса — из места в матрице пути [получатель × входы]:
         # post.start + (синапс − начало пути) // входов. Хвост — фиктивные
         # синапсы (получатель — сам фиктивный нейрон, вес 0, сюда не доходят).
@@ -2853,7 +2860,7 @@ class SpikingBrain:
                 synapses, pre_of, total = self.out_plastic.compact_head(fired_before, self.dropped)
                 _kernels.ltd(synapses, pre_of, total, self.path_start, self.path_post, self.path_fanin, self.trace_post, self.ltd_mask,
                              self.symmetric_area, cfg.stdp_a_plus, cfg.stdp_a_minus,
-                             self.eligibility_scale, self.eligibility)
+                             self.net_weight, self.path_ltd_ref, self.eligibility_scale, self.eligibility)
             else:
                 synapses, pre_of = self._events(self.out_plastic, fired_before)
                 post = self._posts().index_select(0, synapses)
@@ -2865,6 +2872,13 @@ class SpikingBrain:
                     zone = self.symmetric_area.index_select(0, post)
                     same = (zone > 0) & (zone == self.symmetric_area.index_select(0, pre_of))
                     sign = torch.where(same, cfg.stdp_a_plus, -cfg.stdp_a_minus)
+
+                if self.path_ltd_ref is not None:
+                    # LTD пропорциональна весу (как в ядре ltd).
+                    path = torch.searchsorted(self.path_start, synapses, right=True) - 1
+                    ref = self.path_ltd_ref.index_select(0, path)
+                    depress = (ref > 0) & (torch.as_tensor(sign, device=self.device) < 0)
+                    sign = torch.where(depress, sign * self.net_weight.index_select(0, synapses) * ref, sign)
 
                 self.eligibility.index_add_(
                     0,
@@ -3433,6 +3447,47 @@ class SpikingBrain:
 
             if spend:
                 proj.eligibility.zero_()
+
+        if cfg.heterosynaptic_conservation:
+            self._conserve()
+
+    def _conserve(self) -> None:
+        """
+        Гетеросинаптическое сохранение суммы входа (Royer & Paré 2003,
+        вставочные клетки миндалины; обзор для коры и гиппокампа —
+        Chistiakova et al. 2014): усиление части входов клетки ослабляет
+        остальные её входы, ослабление — усиливает, общий вес почти не
+        меняется. У каждой строки пути коры (modulator "hebbian") сумма
+        возвращается к врождённой (входов × средний врождённый вес): фон
+        не растит путь целиком, выученное — перераспределение веса.
+        """
+
+        paths = [p for p in self.plastic if p.modulator == "hebbian" and p.weight.numel()]
+
+        if not paths:
+            return
+
+        if self.device.type == "cuda" and _kernels.conserve_rows is not None:
+            if not hasattr(self, "_conserve_rows"):
+                start, length, target, cap = [], [], [], []
+
+                for p in paths:
+                    rows, fanin = p.weight.shape
+                    start.append(p.offset + torch.arange(rows, dtype=torch.long) * fanin)
+                    length.append(torch.full((rows,), fanin, dtype=torch.int32))
+                    target.append(torch.full((rows,), fanin * p.innate_mean, dtype=torch.float32))
+                    cap.append(torch.full((rows,), float(p.cap), dtype=torch.float32))
+
+                self._conserve_rows = tuple(torch.cat(t).to(self.device) for t in (start, length, target, cap))
+
+            _kernels.conserve_rows(self.net_weight, self.early, *self._conserve_rows)
+            return
+
+        for p in paths:
+            before = p.weight.clone()
+            total = p.weight.sum(1, keepdim=True).clamp(min=1e-9)
+            p.weight.mul_(p.weight.shape[1] * p.innate_mean / total).clamp_(max=p.cap)
+            p.early.add_((p.weight - before).to(p.early.dtype))
 
     def _climbing(self, proj, spikes: torch.Tensor) -> None:
         """

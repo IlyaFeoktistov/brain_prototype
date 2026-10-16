@@ -661,6 +661,18 @@ def apply(cfg) -> None:
 
     names = {a.name for a in cfg.areas}
     cfg.areas = cfg.areas + [a for a in areas(cfg) if a.name not in names and (a.cells or a.share)]
+    # Окно STDP коры по данным: L2/3 зрительной коры, пары спайков — LTP
+    # +103% · exp(−Δt/13.5 мс), LTD −51% · exp(Δt/34.5 мс) (Froemke & Dan
+    # 2002 [сверить амплитуды]): узкое окно LTP без сдвига пика, широкое LTD,
+    # по интегралу LTD чуть сильнее (1.26) — некоррелированный фон веса не
+    # растит (Song, Miller & Abbott 2000). У человека (L2/3 височной коры)
+    # окно LTP шире (Testa-Silva et al. 2010; Verhoog et al. 2013) — долг.
+    # Прежнее окно (LTP exp(−t/80) − exp(−t/30), LTD τ 40) подбиралось под
+    # переходы слов старого мозга и по интегралу было втрое за LTP.
+    cfg.stdp_tau_plus, cfg.stdp_ltp_rise, cfg.stdp_tau_minus = 13.5, 0.0, 34.5
+    cfg.stdp_a_minus = cfg.stdp_a_plus * 51.0 / 103.0
+    cfg.stdp_ltd_weight_dependent = True
+    cfg.heterosynaptic_conservation = True
     names = {a.name for a in cfg.areas}
 
     if cfg.hand and "purkinje" in names:

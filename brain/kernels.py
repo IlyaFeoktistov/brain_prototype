@@ -18,7 +18,7 @@ from pathlib import Path
 
 import torch
 
-compact_events = deliver = ltd = ltp = plastic_update = None
+compact_events = deliver = ltd = ltp = plastic_update = conserve_rows = None
 
 if torch.cuda.is_available() and os.environ.get("BRAIN_KERNELS", "1") == "1":
     # ninja и компилятор ищутся в PATH — добавить bin окружения проекта.
@@ -74,10 +74,11 @@ if torch.cuda.is_available() and os.environ.get("BRAIN_KERNELS", "1") == "1":
         def ltd(
             synapses: torch.Tensor, pre_of: torch.Tensor, total: torch.Tensor,
             path_start: torch.Tensor, path_post: torch.Tensor, path_fanin: torch.Tensor, trace_post: torch.Tensor, ltd_mask: torch.Tensor, symmetric_area: torch.Tensor | None,
-            a_plus: float, a_minus: float, scale: torch.Tensor, eligibility: torch.Tensor,
+            a_plus: float, a_minus: float, net_weight: torch.Tensor, ltd_ref: torch.Tensor | None,
+            scale: torch.Tensor, eligibility: torch.Tensor,
         ) -> None:
             _ext.ltd(synapses, pre_of, total, path_start, path_post, path_fanin, trace_post, ltd_mask, symmetric_area,
-                     a_plus, a_minus, scale, eligibility)
+                     a_plus, a_minus, net_weight, ltd_ref, scale, eligibility)
 
         @ltd.register_fake
         def _(*args) -> None:
@@ -96,6 +97,9 @@ if torch.cuda.is_available() and os.environ.get("BRAIN_KERNELS", "1") == "1":
 
         def plastic_update(weight, eligibility, early, path_start, step, cap, spend, total: int) -> None:
             _ext.plastic_update(weight, eligibility, early, path_start, step, cap, spend, total)
+
+        def conserve_rows(weight, early, row_start, row_len, row_target, row_cap) -> None:
+            _ext.conserve_rows(weight, early, row_start, row_len, row_target, row_cap)
     except Exception as error:  # нет компилятора, другая CUDA — прежний путь
         print(f"ядра C++/CUDA не собрались, шаг на PyTorch: {error}")
-        compact_events = deliver = ltd = ltp = plastic_update = None
+        compact_events = deliver = ltd = ltp = plastic_update = conserve_rows = None

@@ -123,6 +123,7 @@ __global__ void ltd_kernel(
     const int64_t* __restrict__ path_start, const int64_t* __restrict__ path_post,
     const int64_t* __restrict__ path_fanin, int64_t paths, const float* __restrict__ trace_post, const float* __restrict__ ltd_mask,
     const float* __restrict__ symmetric_area, float a_plus, float a_minus,
+    const float* __restrict__ net_weight, const float* __restrict__ ltd_ref,
     const float* __restrict__ scale, __half* __restrict__ eligibility) {
   const int64_t end = events_total(total, capacity);
   const float inv = 1.0f / *scale;
@@ -137,6 +138,9 @@ __global__ void ltd_kernel(
       const float zone = symmetric_area[post];
       if (zone > 0.0f && zone == symmetric_area[pre]) sign = a_plus;
     }
+    // LTD пропорциональна весу (Bi & Poo 1998; van Rossum et al. 2000):
+    // ltd_ref пути — 1 / средний врождённый вес, 0 — без зависимости.
+    if (ltd_ref && sign < 0.0f && ltd_ref[path] > 0.0f) sign *= net_weight[syn] * ltd_ref[path];
     const __half add = __float2half(trace_post[post] * ltd_mask[pre] * (sign * inv));
     eligibility[syn] = __hadd(eligibility[syn], add);  // синапс в списке шага один раз
   }
@@ -193,13 +197,15 @@ void deliver(torch::Tensor synapses, torch::Tensor pre_of, torch::Tensor total,
 void ltd(torch::Tensor synapses, torch::Tensor pre_of, torch::Tensor total,
          torch::Tensor path_start, torch::Tensor path_post, torch::Tensor path_fanin,
          torch::Tensor trace_post, torch::Tensor ltd_mask, c10::optional<torch::Tensor> symmetric_area,
-         double a_plus, double a_minus, torch::Tensor scale, torch::Tensor eligibility) {
+         double a_plus, double a_minus, torch::Tensor net_weight, c10::optional<torch::Tensor> ltd_ref,
+         torch::Tensor scale, torch::Tensor eligibility) {
   auto stream = at::cuda::getCurrentCUDAStream();
   ltd_kernel<<<BLOCKS, THREADS, 0, stream>>>(
       synapses.data_ptr<int64_t>(), pre_of.data_ptr<int64_t>(), total.data_ptr<int64_t>(), synapses.size(0),
       path_start.data_ptr<int64_t>(), path_post.data_ptr<int64_t>(), path_fanin.data_ptr<int64_t>(),
       path_start.size(0), trace_post.data_ptr<float>(), ltd_mask.data_ptr<float>(),
-      opt<float>(symmetric_area), (float)a_plus, (float)a_minus, scale.data_ptr<float>(),
+      opt<float>(symmetric_area), (float)a_plus, (float)a_minus,
+      net_weight.data_ptr<float>(), opt<float>(ltd_ref), scale.data_ptr<float>(),
       reinterpret_cast<__half*>(eligibility.data_ptr()));
 }
 
@@ -243,10 +249,52 @@ void plastic_update(torch::Tensor weight, torch::Tensor eligibility, torch::Tens
       step.data_ptr<float>(), cap.data_ptr<float>(), spend.data_ptr<uint8_t>(), total);
 }
 
+// Гетеросинаптическое сохранение суммы (Royer & Paré 2003; Chistiakova et
+// al. 2014): усиление одних входов клетки ослабляет остальные, и наоборот —
+// сумма входа строки пути [получатель × входы] возвращается к целевой.
+// Блок на строку: сумма, потом все веса и свежая часть × цель / сумма.
+__global__ void conserve_rows_kernel(
+    float* __restrict__ weight, __half* __restrict__ early, const int64_t* __restrict__ row_start,
+    const int32_t* __restrict__ row_len, const float* __restrict__ row_target, const float* __restrict__ row_cap) {
+  const int64_t row = blockIdx.x;
+  const int64_t base = row_start[row];
+  const int32_t len = row_len[row];
+  __shared__ float part[256];
+  float sum = 0.0f;
+  for (int32_t j = threadIdx.x; j < len; j += blockDim.x) sum += weight[base + j];
+  part[threadIdx.x] = sum;
+  __syncthreads();
+  for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+    if (threadIdx.x < s) part[threadIdx.x] += part[threadIdx.x + s];
+    __syncthreads();
+  }
+  const float total = part[0];
+  if (total <= 0.0f) return;
+  const float factor = row_target[row] / total;
+  const float cap = row_cap[row];
+  for (int32_t j = threadIdx.x; j < len; j += blockDim.x) {
+    const float before = weight[base + j];
+    const float after = fminf(before * factor, cap);
+    weight[base + j] = after;
+    early[base + j] = __hadd(early[base + j], __float2half(after - before));
+  }
+}
+
+void conserve_rows(torch::Tensor weight, torch::Tensor early, torch::Tensor row_start, torch::Tensor row_len,
+                   torch::Tensor row_target, torch::Tensor row_cap) {
+  const int64_t rows = row_start.size(0);
+  if (rows == 0) return;
+  auto stream = at::cuda::getCurrentCUDAStream();
+  conserve_rows_kernel<<<rows, 256, 0, stream>>>(
+      weight.data_ptr<float>(), reinterpret_cast<__half*>(early.data_ptr()), row_start.data_ptr<int64_t>(),
+      row_len.data_ptr<int32_t>(), row_target.data_ptr<float>(), row_cap.data_ptr<float>());
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("compact_events", &compact_events, "Плотный список событий шага");
   m.def("deliver", &deliver, "Доставка спайков шага");
   m.def("ltd", &ltd, "LTD по событиям шага");
   m.def("ltp", &ltp, "LTP по событиям шага");
+  m.def("conserve_rows", &conserve_rows, "Сохранение суммы входа строки");
   m.def("plastic_update", &plastic_update, "Химическая пластичность всех путей");
 }

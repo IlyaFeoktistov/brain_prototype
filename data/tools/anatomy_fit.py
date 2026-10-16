@@ -30,9 +30,16 @@ for kv in sys.argv[1:]:
 from brain.engine import KINDS
 
 
+# Сила E → тип тормозных (общая для зон) — подстраивается по средней
+# частоте типа, как в column_fit fit_from_e (Billeh et al. 2020): тормозных
+# гонит сеть, фоном их не опустить.
+from_e = list(BrainConfig().column_gain_from_e)
+
+
 def measure(bias: dict, pop: dict) -> tuple[dict, dict, dict]:
     torch.manual_seed(0)
     cfg = BrainConfig()
+    cfg.column_gain_from_e = tuple(from_e)
     cfg.save_path = "/nonexistent/brain.pt"
     cfg.autosave = False
     cfg.anatomy = True
@@ -100,7 +107,10 @@ for step in range(int(opts["steps"])):
         pop = {key: own.get(key, common.get(key[1:], 1.0)) for key in columns}
         nuclei, columns, cfg = measure(bias, pop)
     errors = [math.log((r + 0.5) / (anatomy.RATES_HZ[n] + 0.5)) ** 2 for n, r in nuclei.items()]
-    errors += [math.log((r + 0.5) / (targets[k[1:]] + 0.5)) ** 2 for k, r in columns.items()]
+    # LAMP5 — вне ошибки: частота in vivo не измерена (цель — «как VIP»
+    # [сверить]), а при десенситизации (Karayannis 2010) их синапсы в покое
+    # почти не действуют; погоня за ней портила E → PV.
+    errors += [math.log((r + 0.5) / (targets[k[1:]] + 0.5)) ** 2 for k, r in columns.items() if k[2] != "LAMP5"]
 
     if opts["trace"]:
         # Числа каждого шага — чтобы сломанный шаг можно было собрать заново
@@ -108,7 +118,7 @@ for step in range(int(opts["steps"])):
         import json
 
         with open(opts["trace"], "a", encoding="utf-8") as f:
-            f.write(json.dumps({"step": step, "error": sum(errors) / len(errors), "bias": bias,
+            f.write(json.dumps({"step": step, "error": sum(errors) / len(errors), "bias": bias, "from_e": from_e,
                                 "pop": [[*key, g] for key, g in pop.items()]}, ensure_ascii=False) + "\n")
     print(f"шаг {step:2d} ошибка {sum(errors) / len(errors):.3f}  "
           + " ".join(f"{n}={r:.1f}" for n, r in nuclei.items()), flush=True)
@@ -119,7 +129,7 @@ for step in range(int(opts["steps"])):
             # Лучшее — сразу в файл: прерванный подбор не теряет найденное.
             anatomy.write_fitted(tuple(bias.items()), tuple((*key, g) for key, g in pop.items()))
 
-    worst = sorted(columns.items(), key=lambda kv: -abs(math.log((kv[1] + 0.5) / (targets[kv[0][1:]] + 0.5))))[:8]
+    worst = sorted([kv for kv in columns.items() if kv[0][2] != "LAMP5"], key=lambda kv: -abs(math.log((kv[1] + 0.5) / (targets[kv[0][1:]] + 0.5))))[:8]
     print("        хуже всех: " + " ".join(f"{a}.{l}{k}={r:.1f}/{targets[(l, k)]}" for (a, l, k), r in worst), flush=True)
 
     for name, r in nuclei.items():
@@ -133,7 +143,22 @@ for step in range(int(opts["steps"])):
         limit = float(opts["max_mv"])
         bias[name] = bias.get(name, 0.0) + max(-limit, min(limit, step_mv))
 
+    if opts.get("fit_from_e", "1") == "1":
+        # Только PV и SOM: VIP гонит не местный E, а top-down пути между
+        # зонами (их PV/VIP — _cortical_path), LAMP5 — вне подбора (выше).
+        for i, kind in enumerate(KINDS[1:]):
+            if kind not in ("PV", "SOM"):
+                continue
+            hz = [r for k, r in columns.items() if k[2] == kind]
+            aim = [targets[k[1:]] for k in columns if k[2] == kind]
+            ratio = ((sum(aim) / len(aim) + 0.5) / (sum(hz) / len(hz) + 0.5)) ** 0.15
+            from_e[i] *= min(1.15, max(1 / 1.15, ratio))
+
+        print("        E → PV/SOM/VIP/LAMP5 ×" + " ".join(f"{g:.3f}" for g in from_e), flush=True)
+
     for key, r in columns.items():
+        if key[2] == "LAMP5":
+            continue
         # Мягко (±15%, показатель 0.15): популяции колонки связаны в петлю
         # (E ↔ PV ↔ VIP), резкий шаг (±30%) раскачивал её от шага к шагу.
         pop[key] *= min(1.15, max(0.87, ((targets[key[1:]] + 0.5) / (r + 0.5)) ** 0.15))

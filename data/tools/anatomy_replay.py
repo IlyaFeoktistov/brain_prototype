@@ -34,6 +34,8 @@ cfg.size = opts["size"]
 cfg.dt_ms = float(opts["dt"])
 cfg.nucleus_bias_mv = tuple(row["bias"].items())
 cfg.column_gain_external_pop = tuple(tuple(p) for p in row["pop"])
+if row.get("from_e"):
+    cfg.column_gain_from_e = tuple(row["from_e"])
 brain = Mind(cfg).brain
 brain.plasticity = False
 cols = []

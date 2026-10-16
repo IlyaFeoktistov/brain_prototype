@@ -26,7 +26,7 @@ RATES_HZ = {
     # VB кролика; LGN мыши — Niell & Stryker 2010 [сверить]).
     "lgn": 10.0, "mgn": 10.0, "thalamus": 15.0, "md": 10.0,
     # Ретикулярное ядро наяву ~10–30 Гц (Steriade 2005 [сверить]).
-    "trn": 15.0,
+    "trn": 15.0, "trn_mgn": 15.0, "trn_md": 15.0, "trn_motor": 15.0,
     # Базальные ганглии (бодрствующая крыса/мышь; сводка — Lindahl &
     # Hellgren Kotaleski 2016, Table 1): MSN ~0.5, FSI ~15, GPe ~40, STN
     # ~15, SNr/GPi ~60 Гц.
@@ -123,8 +123,16 @@ def areas(cfg) -> list[AreaSpec]:
               cells=2 * cfg.retina_rows * cfg.retina_cols if cfg.eye else 0),
         _area("mgn", "медиальное коленчатое тело (реле слуха)", 0.0, cells=cfg.sensory_size),
         _area("md", "медиодорсальное ядро таламуса (реле ПФК)", 0.003),
-        # Ретикулярное ядро — только тормозные (ГАМК), тормозят реле.
-        _area("trn", "ретикулярное ядро таламуса", 0.003),
+        # Ретикулярное ядро — только тормозные (ГАМК), тормозят реле. Оно
+        # разделено на секторы по модальностям: зрительный сектор связан с
+        # LGN и V1, слуховой — с MGN и слуховой корой и т. д. (Guillery &
+        # Harting 2003; Pinault 2004). Одно общее ядро связывало все реле:
+        # моторная и слуховая петли через него тормозили LGN, весь таламус
+        # качался вместе ~25 Гц. trn — зрительный сектор.
+        _area("trn", "ретикулярное ядро: зрительный сектор", 0.00075),
+        _area("trn_mgn", "ретикулярное ядро: слуховой сектор", 0.00075),
+        _area("trn_md", "ретикулярное ядро: сектор MD (ПФК)", 0.00075),
+        _area("trn_motor", "ретикулярное ядро: моторный сектор", 0.00075),
         # ---- базальные ганглии ----
         # Быстрые тормозные стриатума — 1–2% клеток (Tepper et al. 2010).
         _area("fsi", "стриатум: быстрые тормозные (PV)", 0.001),
@@ -194,17 +202,18 @@ def pathways(cfg) -> list[PathwaySpec]:
     # в 2–3 раза сильнее (Golshani, Liu & Jones 2001). Реле → TRN —
     # коллатерали; TRN → реле — ГАМК, IPSP ~1–2 мВ [сверить].
     relays = [("visual", "lgn"), ("auditory", "mgn"), ("prefrontal", "md"), ("goal", "md"), ("motor", "thalamus")]
+    sector = {"lgn": "trn", "mgn": "trn_mgn", "md": "trn_md", "thalamus": "trn_motor"}
 
     for cortex, relay in relays:
         out += [
             _path(cortex, relay, 50, 0.3, "ct"),
-            _path(cortex, "trn", 50, 0.7, "ct"),
+            _path(cortex, sector[relay], 50, 0.7, "ct"),
         ]
 
-    for relay in ("lgn", "mgn", "md", "thalamus"):
+    for relay, trn in sector.items():
         out += [
-            _path(relay, "trn", 20, 1.5),
-            _path("trn", relay, 20, -1.5),
+            _path(relay, trn, 20, 1.5),
+            _path(trn, relay, 20, -1.5),
         ]
 
     # Реле ПФК: MD → ПФК и цель (в L4, как вход таламуса).
@@ -464,9 +473,9 @@ def cortex_chain(cfg) -> list[PathwaySpec]:
     out += [
         _path("thalamus", "premotor", 20, 0.6, "thalamic"),
         _path("premotor", "thalamus", 50, 0.3, "ct"),
-        _path("premotor", "trn", 50, 0.7, "ct"),
+        _path("premotor", "trn_motor", 50, 0.7, "ct"),
         _path("hand", "thalamus", 50, 0.3, "ct"),
-        _path("hand", "trn", 50, 0.7, "ct"),
+        _path("hand", "trn_motor", 50, 0.7, "ct"),
         # Гиперпрямой путь и вход быстрых тормозных стриатума — от моторной
         # коры, как от ПФК (Nambu et al. 2002; Mallet et al. 2005).
         _path("premotor", "stn", 50, 0.5),
@@ -537,7 +546,7 @@ NUCLEUS_BIAS_MV = (
     ('raphe', -3.33),
     ('nbm', 14.79),
     ('orexin', -1.07),
-    ('vta', 29.71),
+    ('vta', 30.14),
     ('amygdala', 10.45),
     ('scn', -6.63),
     ('striatum_d1', 7.7),
@@ -545,68 +554,71 @@ NUCLEUS_BIAS_MV = (
     ('gpe', 46.09),
     ('gpi', 104.74),
     ('thalamus', 58.99),
-    ('entorhinal', -2.81),
+    ('entorhinal', 2.53),
     ('dentate', -75.93),
-    ('ca3', 18.99),
-    ('ca1', 27.26),
+    ('ca3', 19.45),
+    ('ca1', 29.31),
     ('granule', 6.79),
     ('lgn', 28.14),
     ('mgn', 33.66),
-    ('md', 26.29),
-    ('trn', -17.45),
+    ('md', 26.06),
+    ('trn', 4.38),
+    ('trn_mgn', 5.55),
+    ('trn_md', 0.22),
+    ('trn_motor', 0.55),
     ('fsi', 27.8),
     ('stn', 18.36),
     ('cea', 14.56),
     ('lhb', 17.78),
-    ('dmh', 14.51),
-    ('colliculus', 27.29),
+    ('dmh', 13.67),
+    ('colliculus', 29.74),
     ('purkinje', 14.17),
-    ('dcn', 60.27),
-    ('io', -1.58),
+    ('dcn', 62.68),
+    ('io', -2.22),
 )
 # (зона, слой, тип клетки, множитель внешнего фона)
 COLUMN_EXTERNAL_POP = (
-    ('auditory', 'L23', 'E', 5.829), ('auditory', 'L23', 'PV', 3.111), ('auditory', 'L23', 'SOM', 0.97), ('auditory', 'L23', 'VIP', 0.95), ('auditory', 'L23', 'LAMP5', 0.931),
+    ('auditory', 'L23', 'E', 6.08), ('auditory', 'L23', 'PV', 3.111), ('auditory', 'L23', 'SOM', 0.97), ('auditory', 'L23', 'VIP', 0.95), ('auditory', 'L23', 'LAMP5', 0.931),
     ('auditory', 'L4', 'E', 1.757), ('auditory', 'L4', 'PV', 1.67), ('auditory', 'L4', 'SOM', 1.253), ('auditory', 'L4', 'VIP', 0.798), ('auditory', 'L4', 'LAMP5', 0.798),
-    ('auditory', 'L5', 'E', 2.799), ('auditory', 'L5', 'PV', 1.687), ('auditory', 'L5', 'SOM', 0.765), ('auditory', 'L5', 'VIP', 1.176), ('auditory', 'L5', 'LAMP5', 0.459),
+    ('auditory', 'L5', 'E', 2.924), ('auditory', 'L5', 'PV', 1.687), ('auditory', 'L5', 'SOM', 0.765), ('auditory', 'L5', 'VIP', 1.176), ('auditory', 'L5', 'LAMP5', 0.459),
     ('auditory', 'L6', 'E', 1.486), ('auditory', 'L6', 'PV', 1.791), ('auditory', 'L6', 'SOM', 0.74), ('auditory', 'L6', 'VIP', 1.448), ('auditory', 'L6', 'LAMP5', 0.821),
-    ('association', 'L23', 'E', 8.595), ('association', 'L23', 'PV', 3.182), ('association', 'L23', 'SOM', 0.97), ('association', 'L23', 'VIP', 0.95), ('association', 'L23', 'LAMP5', 0.931),
+    ('association', 'L23', 'E', 10.664), ('association', 'L23', 'PV', 3.182), ('association', 'L23', 'SOM', 0.97), ('association', 'L23', 'VIP', 0.95), ('association', 'L23', 'LAMP5', 0.931),
     ('association', 'L4', 'E', 2.624), ('association', 'L4', 'PV', 1.67), ('association', 'L4', 'SOM', 1.253), ('association', 'L4', 'VIP', 0.798), ('association', 'L4', 'LAMP5', 0.798),
-    ('association', 'L5', 'E', 2.251), ('association', 'L5', 'PV', 1.698), ('association', 'L5', 'SOM', 0.796), ('association', 'L5', 'VIP', 1.176), ('association', 'L5', 'LAMP5', 0.347),
+    ('association', 'L5', 'E', 2.724), ('association', 'L5', 'PV', 1.698), ('association', 'L5', 'SOM', 0.796), ('association', 'L5', 'VIP', 1.176), ('association', 'L5', 'LAMP5', 0.347),
     ('association', 'L6', 'E', 1.406), ('association', 'L6', 'PV', 1.805), ('association', 'L6', 'SOM', 0.742), ('association', 'L6', 'VIP', 1.501), ('association', 'L6', 'LAMP5', 0.731),
-    ('prefrontal', 'L23', 'E', 5.546), ('prefrontal', 'L23', 'PV', 3.16), ('prefrontal', 'L23', 'SOM', 0.975), ('prefrontal', 'L23', 'VIP', 0.805), ('prefrontal', 'L23', 'LAMP5', 0.931),
+    ('prefrontal', 'L23', 'E', 6.386), ('prefrontal', 'L23', 'PV', 3.16), ('prefrontal', 'L23', 'SOM', 0.975), ('prefrontal', 'L23', 'VIP', 0.805), ('prefrontal', 'L23', 'LAMP5', 0.931),
     ('prefrontal', 'L4', 'E', 1.442), ('prefrontal', 'L4', 'PV', 1.57), ('prefrontal', 'L4', 'SOM', 1.253), ('prefrontal', 'L4', 'VIP', 0.665), ('prefrontal', 'L4', 'LAMP5', 0.604),
-    ('prefrontal', 'L5', 'E', 2.666), ('prefrontal', 'L5', 'PV', 1.633), ('prefrontal', 'L5', 'SOM', 0.837), ('prefrontal', 'L5', 'VIP', 0.973), ('prefrontal', 'L5', 'LAMP5', 0.347),
+    ('prefrontal', 'L5', 'E', 2.933), ('prefrontal', 'L5', 'PV', 1.633), ('prefrontal', 'L5', 'SOM', 0.837), ('prefrontal', 'L5', 'VIP', 0.973), ('prefrontal', 'L5', 'LAMP5', 0.347),
     ('prefrontal', 'L6', 'E', 1.431), ('prefrontal', 'L6', 'PV', 1.788), ('prefrontal', 'L6', 'SOM', 0.688), ('prefrontal', 'L6', 'VIP', 1.483), ('prefrontal', 'L6', 'LAMP5', 0.678),
-    ('motor', 'L23', 'E', 5.417), ('motor', 'L23', 'PV', 3.12), ('motor', 'L23', 'SOM', 1.108), ('motor', 'L23', 'VIP', 0.719), ('motor', 'L23', 'LAMP5', 0.793),
-    ('motor', 'L4', 'E', 0.067), ('motor', 'L4', 'PV', 1.263), ('motor', 'L4', 'SOM', 1.253), ('motor', 'L4', 'VIP', 0.604), ('motor', 'L4', 'LAMP5', 0.604),
-    ('motor', 'L5', 'E', 1.951), ('motor', 'L5', 'PV', 1.557), ('motor', 'L5', 'SOM', 0.812), ('motor', 'L5', 'VIP', 0.89), ('motor', 'L5', 'LAMP5', 0.347),
+    ('motor', 'L23', 'E', 6.435), ('motor', 'L23', 'PV', 3.12), ('motor', 'L23', 'SOM', 1.108), ('motor', 'L23', 'VIP', 0.719), ('motor', 'L23', 'LAMP5', 0.793),
+    ('motor', 'L4', 'E', 0.05), ('motor', 'L4', 'PV', 1.263), ('motor', 'L4', 'SOM', 1.253), ('motor', 'L4', 'VIP', 0.604), ('motor', 'L4', 'LAMP5', 0.604),
+    ('motor', 'L5', 'E', 2.216), ('motor', 'L5', 'PV', 1.557), ('motor', 'L5', 'SOM', 0.812), ('motor', 'L5', 'VIP', 0.89), ('motor', 'L5', 'LAMP5', 0.347),
     ('motor', 'L6', 'E', 1.209), ('motor', 'L6', 'PV', 1.711), ('motor', 'L6', 'SOM', 0.658), ('motor', 'L6', 'VIP', 1.431), ('motor', 'L6', 'LAMP5', 0.638),
-    ('goal', 'L23', 'E', 5.568), ('goal', 'L23', 'PV', 3.17), ('goal', 'L23', 'SOM', 0.97), ('goal', 'L23', 'VIP', 0.805), ('goal', 'L23', 'LAMP5', 0.931),
+    ('goal', 'L23', 'E', 6.31), ('goal', 'L23', 'PV', 3.17), ('goal', 'L23', 'SOM', 0.97), ('goal', 'L23', 'VIP', 0.805), ('goal', 'L23', 'LAMP5', 0.931),
     ('goal', 'L4', 'E', 1.658), ('goal', 'L4', 'PV', 1.536), ('goal', 'L4', 'SOM', 1.253), ('goal', 'L4', 'VIP', 0.671), ('goal', 'L4', 'LAMP5', 0.604),
-    ('goal', 'L5', 'E', 2.561), ('goal', 'L5', 'PV', 1.642), ('goal', 'L5', 'SOM', 0.79), ('goal', 'L5', 'VIP', 1.006), ('goal', 'L5', 'LAMP5', 0.369),
+    ('goal', 'L5', 'E', 2.863), ('goal', 'L5', 'PV', 1.642), ('goal', 'L5', 'SOM', 0.79), ('goal', 'L5', 'VIP', 1.006), ('goal', 'L5', 'LAMP5', 0.369),
     ('goal', 'L6', 'E', 1.441), ('goal', 'L6', 'PV', 1.8), ('goal', 'L6', 'SOM', 0.662), ('goal', 'L6', 'VIP', 1.474), ('goal', 'L6', 'LAMP5', 0.699),
-    ('limbic', 'L23', 'E', 3.711), ('limbic', 'L23', 'PV', 2.535), ('limbic', 'L23', 'SOM', 1.255), ('limbic', 'L23', 'VIP', 0.719), ('limbic', 'L23', 'LAMP5', 0.705),
+    ('limbic', 'L23', 'E', 3.988), ('limbic', 'L23', 'PV', 2.535), ('limbic', 'L23', 'SOM', 1.255), ('limbic', 'L23', 'VIP', 0.719), ('limbic', 'L23', 'LAMP5', 0.705),
     ('limbic', 'L5', 'E', 2.23), ('limbic', 'L5', 'PV', 1.374), ('limbic', 'L5', 'SOM', 1.007), ('limbic', 'L5', 'VIP', 0.89), ('limbic', 'L5', 'LAMP5', 0.405),
     ('limbic', 'L6', 'E', 1.164), ('limbic', 'L6', 'PV', 1.513), ('limbic', 'L6', 'SOM', 0.649), ('limbic', 'L6', 'VIP', 1.431), ('limbic', 'L6', 'LAMP5', 0.638),
-    ('category', 'L23', 'E', 5.089), ('category', 'L23', 'PV', 3.086), ('category', 'L23', 'SOM', 0.97), ('category', 'L23', 'VIP', 0.95), ('category', 'L23', 'LAMP5', 0.931),
+    ('category', 'L23', 'E', 5.642), ('category', 'L23', 'PV', 3.086), ('category', 'L23', 'SOM', 0.97), ('category', 'L23', 'VIP', 0.95), ('category', 'L23', 'LAMP5', 0.931),
     ('category', 'L4', 'E', 2.261), ('category', 'L4', 'PV', 1.67), ('category', 'L4', 'SOM', 1.253), ('category', 'L4', 'VIP', 0.798), ('category', 'L4', 'LAMP5', 0.798),
-    ('category', 'L5', 'E', 2.61), ('category', 'L5', 'PV', 1.697), ('category', 'L5', 'SOM', 0.769), ('category', 'L5', 'VIP', 1.176), ('category', 'L5', 'LAMP5', 0.459),
+    ('category', 'L5', 'E', 2.871), ('category', 'L5', 'PV', 1.697), ('category', 'L5', 'SOM', 0.769), ('category', 'L5', 'VIP', 1.176), ('category', 'L5', 'LAMP5', 0.459),
     ('category', 'L6', 'E', 1.381), ('category', 'L6', 'PV', 1.793), ('category', 'L6', 'SOM', 0.714), ('category', 'L6', 'VIP', 1.497), ('category', 'L6', 'LAMP5', 0.817),
     ('visual', 'L23', 'E', 6.009), ('visual', 'L23', 'PV', 2.994), ('visual', 'L23', 'SOM', 0.97), ('visual', 'L23', 'VIP', 0.95), ('visual', 'L23', 'LAMP5', 0.931),
     ('visual', 'L4', 'E', 1.924), ('visual', 'L4', 'PV', 1.662), ('visual', 'L4', 'SOM', 1.253), ('visual', 'L4', 'VIP', 0.798), ('visual', 'L4', 'LAMP5', 0.798),
-    ('visual', 'L5', 'E', 3.157), ('visual', 'L5', 'PV', 1.695), ('visual', 'L5', 'SOM', 0.762), ('visual', 'L5', 'VIP', 1.176), ('visual', 'L5', 'LAMP5', 0.453),
+    ('visual', 'L5', 'E', 3.82), ('visual', 'L5', 'PV', 1.695), ('visual', 'L5', 'SOM', 0.762), ('visual', 'L5', 'VIP', 1.176), ('visual', 'L5', 'LAMP5', 0.453),
     ('visual', 'L6', 'E', 1.729), ('visual', 'L6', 'PV', 1.799), ('visual', 'L6', 'SOM', 0.712), ('visual', 'L6', 'VIP', 1.448), ('visual', 'L6', 'LAMP5', 0.788),
-    ('letters', 'L23', 'E', 9.14), ('letters', 'L23', 'PV', 3.17), ('letters', 'L23', 'SOM', 0.97), ('letters', 'L23', 'VIP', 0.95), ('letters', 'L23', 'LAMP5', 0.931),
+    ('letters', 'L23', 'E', 12.165), ('letters', 'L23', 'PV', 3.17), ('letters', 'L23', 'SOM', 0.97), ('letters', 'L23', 'VIP', 0.95), ('letters', 'L23', 'LAMP5', 0.931),
     ('letters', 'L4', 'E', 2.99), ('letters', 'L4', 'PV', 1.67), ('letters', 'L4', 'SOM', 1.253), ('letters', 'L4', 'VIP', 0.798), ('letters', 'L4', 'LAMP5', 0.798),
-    ('letters', 'L5', 'E', 2.5), ('letters', 'L5', 'PV', 1.708), ('letters', 'L5', 'SOM', 0.765), ('letters', 'L5', 'VIP', 1.176), ('letters', 'L5', 'LAMP5', 0.347),
+    ('letters', 'L5', 'E', 2.75), ('letters', 'L5', 'PV', 1.708), ('letters', 'L5', 'SOM', 0.765), ('letters', 'L5', 'VIP', 1.176), ('letters', 'L5', 'LAMP5', 0.347),
     ('letters', 'L6', 'E', 1.384), ('letters', 'L6', 'PV', 1.817), ('letters', 'L6', 'SOM', 0.689), ('letters', 'L6', 'VIP', 1.527), ('letters', 'L6', 'LAMP5', 0.763),
-    ('hand', 'L23', 'E', 5.813), ('hand', 'L23', 'PV', 3.025), ('hand', 'L23', 'SOM', 1.202), ('hand', 'L23', 'VIP', 0.719), ('hand', 'L23', 'LAMP5', 0.855),
-    ('hand', 'L4', 'E', 0.067), ('hand', 'L4', 'PV', 1.263), ('hand', 'L4', 'SOM', 1.253), ('hand', 'L4', 'VIP', 0.604), ('hand', 'L4', 'LAMP5', 0.604),
-    ('hand', 'L5', 'E', 2.229), ('hand', 'L5', 'PV', 1.614), ('hand', 'L5', 'SOM', 0.816), ('hand', 'L5', 'VIP', 0.903), ('hand', 'L5', 'LAMP5', 0.347),
+    ('hand', 'L23', 'E', 7.737), ('hand', 'L23', 'PV', 3.025), ('hand', 'L23', 'SOM', 1.202), ('hand', 'L23', 'VIP', 0.719), ('hand', 'L23', 'LAMP5', 0.855),
+    ('hand', 'L4', 'E', 0.05), ('hand', 'L4', 'PV', 1.263), ('hand', 'L4', 'SOM', 1.253), ('hand', 'L4', 'VIP', 0.604), ('hand', 'L4', 'LAMP5', 0.604),
+    ('hand', 'L5', 'E', 2.456), ('hand', 'L5', 'PV', 1.614), ('hand', 'L5', 'SOM', 0.816), ('hand', 'L5', 'VIP', 0.903), ('hand', 'L5', 'LAMP5', 0.347),
     ('hand', 'L6', 'E', 1.266), ('hand', 'L6', 'PV', 1.719), ('hand', 'L6', 'SOM', 0.659), ('hand', 'L6', 'VIP', 1.442), ('hand', 'L6', 'LAMP5', 0.638),
-    ('premotor', 'L23', 'E', 4.431), ('premotor', 'L23', 'PV', 2.535), ('premotor', 'L23', 'SOM', 1.203), ('premotor', 'L23', 'VIP', 0.719), ('premotor', 'L23', 'LAMP5', 0.705),
-    ('premotor', 'L5', 'E', 1.879), ('premotor', 'L5', 'PV', 1.483), ('premotor', 'L5', 'SOM', 0.892), ('premotor', 'L5', 'VIP', 0.919), ('premotor', 'L5', 'LAMP5', 0.347),
+    ('premotor', 'L23', 'E', 5.422), ('premotor', 'L23', 'PV', 2.535), ('premotor', 'L23', 'SOM', 1.203), ('premotor', 'L23', 'VIP', 0.719), ('premotor', 'L23', 'LAMP5', 0.705),
+    ('premotor', 'L5', 'E', 2.127), ('premotor', 'L5', 'PV', 1.483), ('premotor', 'L5', 'SOM', 0.892), ('premotor', 'L5', 'VIP', 0.919), ('premotor', 'L5', 'LAMP5', 0.347),
     ('premotor', 'L6', 'E', 1.094), ('premotor', 'L6', 'PV', 1.595), ('premotor', 'L6', 'SOM', 0.634), ('premotor', 'L6', 'VIP', 1.431), ('premotor', 'L6', 'LAMP5', 0.638),
 )
 

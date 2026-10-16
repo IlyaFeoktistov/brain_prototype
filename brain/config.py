@@ -2830,9 +2830,14 @@ class BrainConfig:
                 "eye", "visual", 2 * self.retina_rows * self.retina_cols, 40, self.v1_weight,
                 rows=self.retina_rows, cols=self.retina_cols, wiring="oriented",
                 relay="lgn" if relay else "",
-                # Ганглиозные клетки сетчатки в темноте стреляют сами —
-                # единицы–десятки Гц (Barlow & Levick 1969) — 8 Гц [сверить].
-                spontaneous_hz=8.0 if relay else 0.0,
+                # Ганглиозные клетки сетчатки стреляют и без стимула: у
+                # макаки поддерживаемая частота P- и M-клеток ~10–30 Гц
+                # (Troy & Lee 1994; кошка — Barlow & Levick 1969) — 20 Гц.
+                # Клетка LGN живёт этим входом и передаёт часть его спайков
+                # (Kaplan 1987; Sincich et al. 2007): при прежних 8 Гц LGN
+                # стрелял сам от фона (17.5 Гц в покое), и слово давало ему
+                # контраст лишь ×1.4 при ×5.6 у сетчатки.
+                spontaneous_hz=20.0 if relay else 0.0,
             ))
 
         if relay:

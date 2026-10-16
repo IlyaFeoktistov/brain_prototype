@@ -1855,6 +1855,23 @@ class SpikingBrain:
                     layer = torch.randint(0, 2, (pop.size, k), device=self.device, generator=self.generator)
                     pre = layer * sensor.rows * sensor.cols + row * sensor.cols + col
                     weight = torch.full((pop.size, k), sensor.weight / self._psp_peak(pop), device=self.device)
+                elif (relay is not None and getattr(cfg, "anatomy", False) and sensor.wiring == "oriented"
+                      and pop is inhibitory):
+                    # Быстрые тормозные L4 V1: поле шире, чем у E, но местное
+                    # (не всё поле зрения) — своё место и входы из окрестности
+                    # ~вдвое шире поля простой клетки (±3 строки, ±4 столбца;
+                    # поле E — ~5 × 4 px). Входы со всего поля (прежнее «широкое
+                    # торможение») гасили весь L4 на букву в одном месте.
+                    k = min(sensor.k, sensor.size)
+                    _, r0, c0 = self._oriented_layout(sensor, pop.size)
+                    g = self.generator
+                    r = (r0[:, None] + (torch.rand((pop.size, k), device=self.device, generator=g) * 6 - 3)).round().long()
+                    c = (c0[:, None] + (torch.rand((pop.size, k), device=self.device, generator=g) * 8 - 4)).round().long()
+                    r = r.clamp(0, sensor.rows - 1)
+                    c = c.clamp(0, sensor.cols - 1)
+                    layer = torch.randint(0, 2, (pop.size, k), device=self.device, generator=g)
+                    pre = layer * sensor.rows * sensor.cols + r * sensor.cols + c
+                    weight = torch.full((pop.size, k), sensor.weight, device=self.device)
                 else:
                     # Случайные рецепторы своего органа (торможение сетчатки
                     # в V1 — тоже широкое, без формы поля).
@@ -1886,7 +1903,7 @@ class SpikingBrain:
                     built = pre.shape[1]
                     w = psp / self._psp_peak(pop)
 
-                    if sensor.wiring == "oriented" and pop is excitatory:
+                    if sensor.wiring == "oriented":
                         # Все таламические входы клетки — из её места поля
                         # (ретинотопия): недостающие видят то же, что её
                         # построенные, — их несут сами построенные (вес ×

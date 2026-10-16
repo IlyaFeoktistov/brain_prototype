@@ -101,6 +101,15 @@ if stage == "letters":
     for i in range(n):
         point(rng.choice(ALPHABET), "letter")
         session.live(200.0)
+
+        if i % 10 == 9:
+            print(f"{i + 1}/{n} букв, {time.time() - start:.0f} с, саккад {len(session.saccades)}", flush=True)
+
+        every = int(opts.get("save_every", "0"))
+
+        if opts["save"] and every and (i + 1) % every == 0:
+            # Промежуточный мозг — для проверки обучения по ходу.
+            mind.save(opts["save"].replace(".pt", f"-{i + 1}.pt"))
 elif stage == "read":
     lines = corpus()
 

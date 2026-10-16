@@ -151,9 +151,11 @@ for it in range(int(opts["iters"])):
         break
 
     if value < best[0]:
+        first = best[0] == math.inf
         best = (value, dict(bias), dict(pop))
 
-        if opts["write"] == "1":
+        # Первый замер — старт (он и так в файле), писать только улучшения.
+        if opts["write"] == "1" and not first:
             anatomy.write_fitted(tuple(bias.items()), tuple((*k, round(g, 3)) for k, g in pop.items()))
     elif value > best[0] + float(opts["worse"]):
         # Хуже лучшего больше шума замера (worse — ~двойной разброс ошибки

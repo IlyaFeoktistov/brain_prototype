@@ -1110,7 +1110,12 @@ class SpikingBrain:
             # Старт — частота по данным (как прежний постоянный ток).
             self.mf_rate[i] = rate
 
-        self.mf_decay = math.exp(-self.cfg.dt_ms / 10.0)
+        # Сглаживание частоты источника: недостающие соседи передают
+        # медленную среднюю частоту своей популяции, а не её быстрые
+        # колебания — их колебания у каждой клетки свои, не общие. С 10 мс
+        # флуктуации построенных клеток рассылались всем клеткам как общий вход,
+        # и кора колебалась синхронно (выброс — тишина каждые 20–40 мс).
+        self.mf_decay = math.exp(-self.cfg.dt_ms / getattr(self.cfg, "mean_field_tau_ms", 50.0))
         self.mf_on = bool(terms)
         self.mf_slow_on = bool(self.mf_slow.any())
         self.ngf_mf = torch.zeros(self.n_slots, device=dev)

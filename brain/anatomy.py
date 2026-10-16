@@ -496,7 +496,10 @@ def cortex_chain(cfg) -> list[PathwaySpec]:
 # данным, величина [не измерено в наших единицах]:
 # - ацетилхолин: никотиновые возбуждают VIP (Fu et al. 2014; Letzkus et al.
 #   2011), мускариновые M1 деполяризуют пирамидные клетки (McCormick & Prince
-#   1986);
+#   1986) и SOM (Kawaguchi 1997; Fanselow et al. 2008; Chen, Sugihara & Sur
+#   2015) — без этого SOM в покое молчат (вход E → SOM слабый и облегчающийся,
+#   при 1–2 Гц почти не действует), и VIP, которых тормозят в основном SOM,
+#   горят 20–47 Гц (VIP ⊣ SOM ⊣ VIP); величина как у VIP [сверить];
 # - серотонин: 5-HT1A гиперполяризуют пирамидные клетки ПФК (Araneda &
 #   Andrade 1991);
 # - орексин возбуждает LC и Мейнерт (Hagan et al. 1999; Eggermann et al. 2001);
@@ -511,6 +514,7 @@ def cortex_chain(cfg) -> list[PathwaySpec]:
 #   +35 / −15 из cfg.receptors (с ними VLPO во сне ~30 Гц против 5–10).
 RECEPTORS = (
     ("acetylcholine", ":VIP", 5.0),
+    ("acetylcholine", ":SOM", 5.0),
     ("acetylcholine", "", 2.0),
     ("serotonin", "prefrontal", -3.0),
     ("serotonin", "goal", -3.0),

@@ -1335,10 +1335,15 @@ class SpikingBrain:
                                       if (a, b) == (src_layer, dst_layer)), p)
 
                         # Тормозная доля — по типам (среднее по слою = Potjans).
-                        if "LAMP5" in (src_kind, dst_kind) and src_layer == dst_layer:
-                            # Внутри слоя — как измерено (Oláh мерил в L2/3).
-                            p = from_e[dst_kind] if src_ei == "E" else (
-                                to_e[src_kind] if dst_ei == "E" else among.get((src_kind, dst_kind), 0.0))
+                        if src_kind == "LAMP5" and src_layer == dst_layer:
+                            # Выход LAMP5 внутри слоя — как измерено: объёмное
+                            # действие на соседей (Oláh et al. 2009, L2/3). Вход
+                            # в LAMP5 — обычные синапсы: вероятность близких пар
+                            # (E → LAMP5 0.36, 4 из 11) нормируется к Potjans,
+                            # как у PV/SOM/VIP (ниже). Без нормировки у LAMP5
+                            # было в 2.4 раза больше входов E, чем у SOM, — 50–95 Гц
+                            # при цели 3.5.
+                            p = to_e[src_kind] if dst_ei == "E" else among.get((src_kind, dst_kind), 0.0)
                         elif src_kind == "LAMP5":
                             # Облако аксона нейроглиаформной клетки — плотное и
                             # местное, в своём слое (Oláh et al. 2009: соседи

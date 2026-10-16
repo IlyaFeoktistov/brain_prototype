@@ -5,7 +5,7 @@
 «стреляет больше нормы — меньше фона» (как веса фона по типам у Billeh et
 al. 2020). Цели — anatomy.RATES_HZ и column_target_hz.
 
-    PYTHONPATH=. .venv/bin/python data/tools/anatomy_fit.py [steps=20] [ms=500] [dt=0.5] [fresh=0] [write=1]
+    PYTHONPATH=. .venv/bin/python data/tools/anatomy_fit.py [steps=20] [ms=500] [dt=0.5] [fresh=0] [write=1] [kinds=PV,SOM,VIP,LAMP5]
 
 Стартует с чисел brain/anatomy.py (fresh=1 — фон колонок с нуля), в конце
 печатает найденное и записывает его туда же (NUCLEUS_BIAS_MV,
@@ -123,8 +123,9 @@ for step in range(int(opts["steps"])):
     # связаны, и подстройка каждой отдельно раскачивала E ↔ PV/VIP; E несут
     # сигнал по цепи, фон тормозных — из подбора колонки (column_fit).
     e_only = opts.get("e_only", "0") == "1"
+    lamp5 = "LAMP5" in opts.get("kinds", "PV,SOM").split(",")
     errors += [math.log((r + 0.5) / (targets[k[1:]] + 0.5)) ** 2 for k, r in columns.items()
-               if k[2] != "LAMP5" and (k[2] == "E" or not e_only)]
+               if (k[2] != "LAMP5" or lamp5) and (k[2] == "E" or not e_only)]
 
     if opts["trace"]:
         # Числа каждого шага — чтобы сломанный шаг можно было собрать заново
@@ -143,7 +144,7 @@ for step in range(int(opts["steps"])):
             # Лучшее — сразу в файл: прерванный подбор не теряет найденное.
             anatomy.write_fitted(tuple(bias.items()), tuple((*key, g) for key, g in pop.items()))
 
-    worst = sorted([kv for kv in columns.items() if kv[0][2] != "LAMP5"], key=lambda kv: -abs(math.log((kv[1] + 0.5) / (targets[kv[0][1:]] + 0.5))))[:8]
+    worst = sorted([kv for kv in columns.items() if kv[0][2] != "LAMP5" or lamp5], key=lambda kv: -abs(math.log((kv[1] + 0.5) / (targets[kv[0][1:]] + 0.5))))[:8]
     print("        L2/3 E: " + " ".join(f"{a}={r:.1f}" for (a, l, k), r in columns.items() if l == "L23" and k == "E"), flush=True)
     print("        хуже всех: " + " ".join(f"{a}.{l}{k}={r:.1f}/{targets[(l, k)]}" for (a, l, k), r in worst), flush=True)
 
@@ -159,10 +160,11 @@ for step in range(int(opts["steps"])):
         bias[name] = bias.get(name, 0.0) + max(-limit, min(limit, step_mv))
 
     if opts.get("fit_from_e", "1") == "1":
-        # Только PV и SOM: VIP гонит не местный E, а top-down пути между
-        # зонами (их PV/VIP — _cortical_path), LAMP5 — вне подбора (выше).
+        # Сила E → тип (Billeh et al. 2020 — веса под частоты типов). Были
+        # только PV и SOM; без VIP мозг застревал в «VIP 45 Гц ⊣ SOM 0»
+        # (VIP ничем не тормозятся, когда SOM молчат) — kinds=PV,SOM,VIP,LAMP5.
         for i, kind in enumerate(KINDS[1:]):
-            if kind not in ("PV", "SOM"):
+            if kind not in opts.get("kinds", "PV,SOM").split(","):
                 continue
             hz = [r for k, r in columns.items() if k[2] == kind]
             aim = [targets[k[1:]] for k in columns if k[2] == kind]
@@ -172,7 +174,7 @@ for step in range(int(opts["steps"])):
         print("        E → PV/SOM/VIP/LAMP5 ×" + " ".join(f"{g:.3f}" for g in from_e), flush=True)
 
     for key, r in columns.items():
-        if key[2] == "LAMP5" or (e_only and key[2] != "E"):
+        if (key[2] == "LAMP5" and not lamp5) or (e_only and key[2] != "E"):
             continue
         # Мягко (±15%, показатель 0.15): популяции колонки связаны в петлю
         # (E ↔ PV ↔ VIP), резкий шаг (±30%) раскачивал её от шага к шагу.
@@ -180,6 +182,7 @@ for step in range(int(opts["steps"])):
         pop[key] *= min(cap, max(1.0 / cap, ((targets[key[1:]] + 0.5) / (r + 0.5)) ** 0.15))
 
 print(f"лучший шаг — ошибка {best[0]:.3f}")
+print("column_gain_from_e (последний шаг) =", tuple(round(g, 3) for g in from_e))
 bias, pop = best[1], best[2]
 print("nucleus_bias_mv =", tuple((n, round(v, 2)) for n, v in bias.items()))
 print("column_gain_external_pop =", tuple((*key, round(g, 3)) for key, g in pop.items()))

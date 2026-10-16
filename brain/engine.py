@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import gc
 import math
 
@@ -44,6 +44,12 @@ class Population:
         return slice(self.start, self.stop)
 
 
+# Типы клеток колонки: главные и тормозные (у человека — PV, SST, VIP и
+# LAMP5/нейроглиаформные; Hodge et al. 2019). Номер — cell_type.
+KINDS = ("E", "PV", "SOM", "VIP", "LAMP5")
+INHIBITORY_KINDS = KINDS[1:]
+
+
 @dataclass
 class Area:
     """
@@ -58,9 +64,10 @@ class Area:
     I: Population
     SOM: Population | None = None
     VIP: Population | None = None
-    # Колонка по слоям (cfg.layers): слой -> {"E", "PV", "SOM", "VIP"}.
-    # E, I, SOM, VIP выше — популяции слоя 2/3.
+    # Колонка по слоям (cfg.layers): слой -> {"E", "PV", "SOM", "VIP", "LAMP5"}.
+    # E, I, SOM, VIP, LAMP5 — популяции слоя 2/3.
     layers: dict | None = None
+    LAMP5: Population | None = None
 
     @property
     def populations(self) -> list[tuple[str, Population]]:
@@ -383,10 +390,18 @@ class SpikingBrain:
             n_i = max(2, int(n * cfg.inhibitory_fraction))
             n_e = n - n_i
 
+            fraction = cfg.inhibitory_fraction if getattr(spec, "local_inhibitory", -1.0) < 0 else spec.local_inhibitory
+
+            if fraction != cfg.inhibitory_fraction:
+                # Своя доля местных тормозных (0 — только 2 немых места: у
+                # ядра их нет, но зона всегда с E и I).
+                n_i = max(2, int(n * fraction))
+                n_e = n - n_i
+
             if getattr(spec, "cells", 0) > 0:
                 # Ядро с заданным числом главных клеток (реле — по рецепторам).
                 n_e = spec.cells
-                n_i = max(2, round(n_e * cfg.inhibitory_fraction / (1.0 - cfg.inhibitory_fraction)))
+                n_i = max(2, round(n_e * fraction / (1.0 - fraction))) if fraction < 1 else 2
                 n = n_e + n_i
 
             if self._has_layers(spec.name):
@@ -442,10 +457,17 @@ class SpikingBrain:
     def _column_layers(self, name: str) -> list[tuple[str, int, int]]:
         """Слои колонки зоны (Potjans): у агранулярной — без L4."""
 
-        cells = list(self.cfg.column_cells)
+        cfg = self.cfg
+        cells = list(cfg.column_cells)
 
-        if name in self.cfg.agranular_areas:
+        if name in cfg.agranular_areas:
             cells = [c for c in cells if c[0] != "L4"]
+        elif name in getattr(cfg, "thin_l4_areas", ()):
+            # Тонкий L4 — доля клеток колонки thin_l4_share (Yamawaki 2014).
+            rest = sum(e + i for layer, e, i in cells if layer != "L4")
+            l4 = next(e + i for layer, e, i in cells if layer == "L4")
+            scale = cfg.thin_l4_share / (1.0 - cfg.thin_l4_share) * rest / l4
+            cells = [(layer, e * scale, i * scale) if layer == "L4" else (layer, e, i) for layer, e, i in cells]
 
         return cells
 
@@ -459,14 +481,14 @@ class SpikingBrain:
         cfg = self.cfg
         cells = self._column_layers(spec.name)
         total = sum(e + i for _, e, i in cells)
-        shares = {layer: (pv, som, vip) for layer, pv, som, vip in cfg.layer_interneurons}
+        shares = {layer: tuple(v) for layer, *v in cfg.layer_interneurons}
         layers = {}
 
         for layer, n_e, n_i in cells:
             group = {}
             sizes = [("E", max(4, round(n * n_e / total)))]
             inhibitory = n * n_i / total
-            sizes += [(kind, max(1, round(inhibitory * share))) for kind, share in zip(("PV", "SOM", "VIP"), shares[layer])]
+            sizes += [(kind, max(1, round(inhibitory * share))) for kind, share in zip(INHIBITORY_KINDS, shares[layer])]
 
             for kind, size in sizes:
                 group[kind] = Population(f"{spec.name}.{layer}.{kind}", start, size)
@@ -475,7 +497,7 @@ class SpikingBrain:
             layers[layer] = group
 
         top = layers["L23"]
-        area = Area(spec.name, spec.title, spec.kind, top["E"], top["PV"], top["SOM"], top["VIP"], layers)
+        area = Area(spec.name, spec.title, spec.kind, top["E"], top["PV"], top["SOM"], top["VIP"], layers, top.get("LAMP5"))
         return area, start
 
     def _fill(self, values: dict[str, float]) -> torch.Tensor:
@@ -514,28 +536,34 @@ class SpikingBrain:
                     self.tau_m[group["E"].slice] = cfg.column_e_tau_m
                     self.adapt_b[group["E"].slice] = cfg.e_adapt_b * cfg.column_e_adaptation_index / cfg.e_adaptation_index
 
-                for pop, tau, index in (
-                    (group["PV"], cfg.pv_tau_m, cfg.pv_adaptation_index),
-                    (group["SOM"], cfg.som_tau_m, cfg.som_adaptation_index),
-                    (group["VIP"], cfg.vip_tau_m, cfg.vip_adaptation_index),
+                for kind, tau, index in (
+                    ("PV", cfg.pv_tau_m, cfg.pv_adaptation_index),
+                    ("SOM", cfg.som_tau_m, cfg.som_adaptation_index),
+                    ("VIP", cfg.vip_tau_m, cfg.vip_adaptation_index),
+                    ("LAMP5", cfg.lamp5_tau_m, cfg.lamp5_adaptation_index),
                 ):
+                    if kind not in group:
+                        continue
+                    pop = group[kind]
                     self.tau_m[pop.slice] = tau
                     self.adapt_b[pop.slice] = cfg.e_adapt_b * index / cfg.e_adaptation_index
 
                 self.is_som[group["SOM"].slice] = True
 
-                for number, kind in enumerate(("E", "PV", "SOM", "VIP")):
-                    self.cell_type[group[kind].slice] = number
+                for number, kind in enumerate(KINDS):
+                    if kind in group:
+                        self.cell_type[group[kind].slice] = number
 
         self.has_som = bool(self.is_som.any())
         self.typed_pre = self.cell_type >= 0
         # Кратковременная пластичность по парам типов (cfg.column_stp): у
         # клетки-источника — U, восстановление и облегчение к каждому типу
-        # получателя (столбцы E, PV, SOM, VIP).
-        kinds = ("E", "PV", "SOM", "VIP")
-        self.stp_U4 = torch.ones(self.n_slots, 4, device=self.device)
-        self.stp_rec4 = torch.zeros(self.n_slots, 4, device=self.device)
-        self.stp_fac4 = torch.zeros(self.n_slots, 4, device=self.device)
+        # получателя (столбцы KINDS).
+        kinds = KINDS
+        n = len(KINDS)
+        self.stp_U4 = torch.ones(self.n_slots, n, device=self.device)
+        self.stp_rec4 = torch.zeros(self.n_slots, n, device=self.device)
+        self.stp_fac4 = torch.zeros(self.n_slots, n, device=self.device)
 
         for src, dst, U, rec, fac in getattr(cfg, "column_stp", ()):
             rows = self.cell_type == kinds.index(src)
@@ -629,6 +657,11 @@ class SpikingBrain:
         self.decay_m = dt / self.tau_m
         self.decay_syn = torch.exp(-dt / self.tau_syn)
         self.decay_slow = math.exp(-dt / cfg.memory_tau_syn)
+        # Медленное торможение LAMP5 (нейроглиаформные): свой ток со своим
+        # спадом; скачок τm/τ — тот же интеграл PSP, что у быстрого синапса.
+        lamp5_tau = getattr(cfg, "lamp5_tau_syn", 100.0)
+        self.decay_ngf = math.exp(-dt / lamp5_tau)
+        self.ngf_scale = self.tau_m / lamp5_tau
         self.decay_dend = math.exp(-dt / cfg.dendrite_tau_ms)
         # Своё затухание ветки у зоны (AreaSpec.dendrite_tau_ms): у рта —
         # быстрые события тонких веток (буква), а не NMDA-плато смысла.
@@ -768,7 +801,8 @@ class SpikingBrain:
 
             gain_external = self._column_gains(specs[area.name])[0]
             external = {layer: (e, i) for layer, e, i in cfg.external_inputs}
-            gaps = {"E": cfg.column_e_gap_mv, "PV": cfg.pv_gap_mv, "SOM": cfg.som_gap_mv, "VIP": cfg.vip_gap_mv}
+            gaps = {"E": cfg.column_e_gap_mv, "PV": cfg.pv_gap_mv, "SOM": cfg.som_gap_mv, "VIP": cfg.vip_gap_mv,
+                    "LAMP5": cfg.lamp5_gap_mv}
             charge = self._potjans_charge()
 
             for layer, group in area.layers.items():
@@ -778,7 +812,7 @@ class SpikingBrain:
                     # Заряд PSP (мВ·мс) = вес × τm клетки — как у Potjans
                     # относительно расстояния до порога.
                     tau = float(self.tau_m[pop.start])
-                    gain = dict(zip(("E", "PV", "SOM", "VIP"), gain_external))[kind]
+                    gain = dict(zip(KINDS, gain_external))[kind]
                     # Своё у зоны (зона, слой, тип, ×) — иначе общее (слой, тип, ×).
                     own = [e[-1] for e in cfg.column_gain_external_pop if len(e) == 4 and tuple(e[:3]) == (area.name, layer, kind)]
                     gain *= own[0] if own else next(
@@ -866,15 +900,16 @@ class SpikingBrain:
         # Вес 1 даёт заряд τm; вес, дающий пик ee_psp_mv, — ee_psp_mv / пик.
         return cfg.ee_psp_mv / peak * tau_m
 
-    def _psp_peak(self, pop: Population) -> float:
+    def _psp_peak(self, pop: Population, tau_syn: float | None = None) -> float:
         """
         Пик PSP (мВ) клетки популяции от веса 1 — тем же шагом, что в _step:
         ток прыгает на τm/τsyn и спадает за τsyn, мембрана копит его за τm.
-        Вес связи = измеренный PSP / пик.
+        Вес связи = измеренный PSP / пик. tau_syn — у медленного синапса
+        (LAMP5), иначе — синапс клетки.
         """
 
         tau_m = float(self.tau_m[pop.start])
-        tau_syn = float(self.tau_syn[pop.start])
+        tau_syn = float(self.tau_syn[pop.start]) if tau_syn is None else tau_syn
         dt = self.cfg.dt_ms
         current, v, peak = tau_m / tau_syn, 0.0, 0.0
 
@@ -890,7 +925,8 @@ class SpikingBrain:
 
         src, dst = self.areas.get(path.src), self.areas.get(path.dst)
         return (
-            bool(getattr(self.cfg, "anatomy", False)) and not path.plastic and src is not None and dst is not None
+            bool(getattr(self.cfg, "anatomy", False)) and (not path.plastic or getattr(path, "learned", False))
+            and src is not None and dst is not None
             and src.layers is not None and dst.layers is not None and src is not dst
             and getattr(path, "psp_mv", None) is None and path.k > 0
         )
@@ -932,8 +968,11 @@ class SpikingBrain:
 
     def _thalamic_path(self, path, pre: Population, post: Population, inhibitory: bool) -> tuple[int, float]:
         """
-        Таламус → колонка по данным: ~85 таламических синапсов на клетку L4,
-        ВПСП ~0.6 мВ (Bruno & Sakmann 2006, одна пара измерений); на тормозные
+        Таламус → колонка по данным: ~85 таламических клеток на клетку L4
+        (Bruno & Sakmann 2006), единичный ВПСП у взрослых in vivo 1.0 ± 0.2 мВ
+        (Schoonover et al. 2014, n 11; у молодых — ~0.6, Bruno & Sakmann).
+        Синапс депрессирует (PPR 0.67 при 10–20 Гц, там же) — пока без
+        кратковременной пластичности [долг: τ восстановления]; на тормозные
         L4 — ~56 входов (Potjans: 0.062 × 902), синапс на быстрые тормозные в
         2–3 раза сильнее (Cruikshank, Lewis & Connors 2007) — ×2. Агранулярная
         зона — в L2/3 (моторный таламус → L2/3 и L5, Hooks et al. 2013). Масштаб —
@@ -945,15 +984,103 @@ class SpikingBrain:
 
         cfg = self.cfg
         k_data = 56.0 if inhibitory else 85.0
+
+        if post.name.split(".")[0] in getattr(cfg, "thin_l4_areas", ()):
+            # Моторная кора: таламических синапсов меньше, на тормозные — нет
+            # (Bopp et al. 2017; config thin_l4_*).
+            if inhibitory:
+                return 0, 0.0
+
+            k_data *= cfg.thin_l4_thalamic_ratio
+
         self.modeled_inputs[post.name] = self.modeled_inputs.get(post.name, 0.0) + k_data
-        psp = 1.2 if inhibitory else 0.6
+        psp = 2.0 if inhibitory else 1.0
         k = max(1, min(round(k_data), pre.size))
         weight = psp / self._psp_peak(post)
         root = math.sqrt(max(1.0, k_data / k))
         rate = anatomy.RATES_HZ.get(path.src, 10.0) / 1000.0
         tau = float(self.tau_m[post.start])
-        self.dc_mv[post.slice] += k_data * rate * weight * tau * (1.0 - 1.0 / root)
+        self._missing(post, pre, k_data * rate * weight * tau * (1.0 - 1.0 / root), rate)
         return k, weight * root
+
+    def _missing(self, post: Population, pre: Population, mv: float, rate_khz: float, ach: bool = False,
+                 slow: bool = False) -> None:
+        """
+        Входы недостающих соседей (клеток в модели меньше, чем в мозге):
+        средний ток mv при частоте источника rate_khz. Он живой — следует
+        текущей частоте построенной популяции-источника (недостающие клетки
+        той же популяции стреляют так же, как построенные; среднее поле), а
+        не постоянный по частоте in vivo: постоянный (70–90% входа) рвал
+        обратные связи — колонки и CA3 застревали в «горящем» состоянии.
+        ach — путь, который ацетилхолин подавляет (PathwaySpec.ach_suppressed):
+        недостающие синапсы подавляются так же, как построенные (иначе у
+        CA3 → CA3 подавлялось бы 18% входа из 6 тыс. связей, а 82% шли бы
+        наяву в полную силу, как во сне).
+        slow — объёмное торможение LAMP5: ток идёт через медленный фильтр
+        (lamp5_tau_syn), как облако GABA вокруг аксона (Oláh et al. 2009).
+        """
+
+        if mv == 0.0:
+            return
+
+        if rate_khz <= 0:
+            # Источник по данным молчит — средний вход ноль.
+            return
+
+        self.mean_field.append((post, pre, mv / rate_khz, rate_khz, ach, slow))
+
+    def _build_mean_field(self) -> None:
+        """Матрицы среднего поля: популяция-получатель ← популяция-источник (мВ на кГц)."""
+
+        terms = getattr(self, "mean_field", [])
+        pres = sorted({(p.start, p.size) for _, p, *_ in terms})
+        posts = sorted({(p.start, p.size) for p, *_ in terms})
+        pre_index = {key: i for i, key in enumerate(pres)}
+        post_index = {key: i for i, key in enumerate(posts)}
+        P, Q = len(pres), len(posts)
+        dev = self.device
+        self.mf_pre_id = torch.full((self.n_slots,), P, dtype=torch.long, device=dev)
+        self.mf_post_id = torch.full((self.n_slots,), Q, dtype=torch.long, device=dev)
+        self.mf_size = torch.ones(P + 1, device=dev)
+        self.mf_rate = torch.zeros(P + 1, device=dev)
+        self.mf_counts = torch.zeros(P + 1, device=dev)
+        self.mf_exc = torch.zeros(Q + 1, P + 1, device=dev)
+        self.mf_inh = torch.zeros(Q + 1, P + 1, device=dev)
+        # Доля возбуждения, которую снимает ацетилхолин (пути ach_suppressed).
+        self.mf_ach = torch.zeros(Q + 1, P + 1, device=dev)
+        # Объёмное торможение LAMP5 — отдельно: через медленный фильтр.
+        self.mf_slow = torch.zeros(Q + 1, P + 1, device=dev)
+        # Тип клетки получателя (столбец кратковременной пластичности;
+        # len(KINDS) — клетка без типа: синапс без пластичности).
+        n = len(KINDS)
+        self.mf_post_type = torch.full((Q + 1,), n, dtype=torch.long, device=dev)
+
+        for (start, size), q in post_index.items():
+            kind = int(self.cell_type[start])
+            self.mf_post_type[q] = kind if kind >= 0 else n
+
+        self.mf_gain = torch.ones(P + 1, n + 1, device=dev)
+
+        for (start, size), i in pre_index.items():
+            self.mf_pre_id[start: start + size] = i
+            self.mf_size[i] = size
+
+        for (start, size), q in post_index.items():
+            self.mf_post_id[start: start + size] = q
+
+        for post, pre, coeff, rate, ach, slow in terms:
+            q, i = post_index[(post.start, post.size)], pre_index[(pre.start, pre.size)]
+            (self.mf_slow if slow else self.mf_exc if coeff > 0 else self.mf_inh)[q, i] += coeff
+
+            if ach and coeff > 0:
+                self.mf_ach[q, i] += coeff * self.cfg.ach_suppression
+            # Старт — частота по данным (как прежний постоянный ток).
+            self.mf_rate[i] = rate
+
+        self.mf_decay = math.exp(-self.cfg.dt_ms / 10.0)
+        self.mf_on = bool(terms)
+        self.mf_slow_on = bool(self.mf_slow.any())
+        self.ngf_mf = torch.zeros(self.n_slots, device=dev)
 
     def _cortical_path(self, path, pre: Population, post: Population) -> tuple[int, float]:
         """
@@ -976,7 +1103,7 @@ class SpikingBrain:
         layer = pre.name.split(".")[1] if pre.name.count(".") == 2 else "L23"
         rate = dict((l, e) for l, e, *_ in cfg.column_target_hz).get(layer, 1.0) / 1000.0
         tau = float(self.tau_m[post.start])
-        self.dc_mv[post.slice] += k_data * rate * weight * tau * (1.0 - 1.0 / root)
+        self._missing(post, pre, k_data * rate * weight * tau * (1.0 - 1.0 / root), rate)
         return k, weight * root
 
     def _laminar(self, path, src: Area, dst: Area) -> tuple[Population, Population, Population, bool]:
@@ -1083,8 +1210,8 @@ class SpikingBrain:
         cfg = self.cfg
         own = tuple(getattr(spec, "column_gains", ()) or ())
 
-        if len(own) == 11:
-            return own[0:4], own[4:7], own[7:10], own[10]
+        if len(own) == 14:
+            return own[0:5], own[5:9], own[9:13], own[13]
 
         return cfg.column_gain_external, cfg.column_gain_from_e, cfg.column_gain_to_e, cfg.column_gain_ii
 
@@ -1103,16 +1230,20 @@ class SpikingBrain:
         cfg = self.cfg
         self.local_e_inputs = getattr(self, "local_e_inputs", {})
         order = [layer for layer, _, _ in cfg.column_cells]
-        column = {layer: (e, i) for layer, e, i in cfg.column_cells}
-        shares = {layer: dict(zip(("PV", "SOM", "VIP"), v)) for layer, *v in cfg.layer_interneurons}
+        # Клеток в слоях колонки этой зоны (тонкий L4 — меньше источников).
+        column = {layer: (e, i) for layer, e, i in self._column_layers(spec.name)}
+        shares = {layer: dict(zip(INHIBITORY_KINDS, v)) for layer, *v in cfg.layer_interneurons}
         # Соседи стреляют, как в покое у бодрствующих (column_target_hz).
-        rates = {layer: dict(zip(("E", "PV", "SOM", "VIP"), v)) for layer, *v in cfg.column_target_hz}
+        rates = {layer: dict(zip(KINDS, v)) for layer, *v in cfg.column_target_hz}
         ee_layer = dict(cfg.layer_ee_psp_mv)
-        ei_psp = {layer: dict(zip(("PV", "SOM", "VIP"), v)) for layer, *v in cfg.layer_ei_psp_mv}
-        ii_psp = {src: dict(zip(("E", "PV", "SOM", "VIP"), v)) for src, *v in cfg.inhibitory_psp_mv}
-        to_e = {"PV": 0.35, "SOM": 0.23, "VIP": 0.06}
-        from_e = {"PV": 0.42, "SOM": 0.30, "VIP": 0.20}
+        ei_psp = {layer: dict(zip(INHIBITORY_KINDS, v)) for layer, *v in cfg.layer_ei_psp_mv}
+        ii_psp = {src: dict(zip(KINDS, v)) for src, *v in cfg.inhibitory_psp_mv}
+        # Вероятности по типам — Campagnola (local_links).
+        to_e = {src: p for src, dst, p, _ in cfg.local_links if dst == "E"}
+        from_e = {dst: p for src, dst, p, _ in cfg.local_links if src == "E"}
         among = {(src, dst): p for src, dst, p, _ in cfg.local_links if src != "E" and dst != "E"}
+        # Нормировка к Potjans — по синаптическим типам; LAMP5 действует
+        # объёмно (Oláh et al. 2009), его вероятность — по данным как есть.
         types = ("PV", "SOM", "VIP")
         _, gain_from_e, gain_to_e, gain_ii = self._column_gains(spec)
 
@@ -1142,16 +1273,21 @@ class SpikingBrain:
                                       if (a, b) == (src_layer, dst_layer)), p)
 
                         # Тормозная доля — по типам (среднее по слою = Potjans).
-                        if src_ei == "E" and dst_ei == "I":
+                        if "LAMP5" in (src_kind, dst_kind) and src_layer == dst_layer:
+                            # Внутри слоя — как измерено (Oláh мерил в L2/3).
+                            p = from_e[dst_kind] if src_ei == "E" else (
+                                to_e[src_kind] if dst_ei == "E" else among.get((src_kind, dst_kind), 0.0))
+                        elif src_ei == "E" and dst_ei == "I":
                             p *= from_e[dst_kind] / mean(from_e, dst_layer)
                         elif src_ei == "I" and dst_ei == "E":
                             p *= to_e[src_kind] / mean(to_e, src_layer)
                         elif src_ei == "I":
                             pair = among.get((src_kind, dst_kind), 0.0)
+                            # Между слоями LAMP5 — то же отношение к среднему.
                             norm = sum(
                                 shares[src_layer][a] * shares[dst_layer][b] * among.get((a, b), 0.0)
                                 for a in types for b in types
-                            ) / (sum(shares[src_layer].values()) * sum(shares[dst_layer].values()))
+                            ) / (sum(shares[src_layer][t] for t in types) * sum(shares[dst_layer][t] for t in types))
                             p *= pair / norm if norm > 0 else 0.0
 
                         if p <= 0:
@@ -1159,9 +1295,9 @@ class SpikingBrain:
 
                         # Согласование с частотами in vivo (column_gain_*).
                         if src_ei == "E" and dst_ei == "I":
-                            gain = gain_from_e[types.index(dst_kind)]
+                            gain = gain_from_e[INHIBITORY_KINDS.index(dst_kind)]
                         elif src_ei == "I" and dst_ei == "E":
-                            gain = gain_to_e[types.index(src_kind)]
+                            gain = gain_to_e[INHIBITORY_KINDS.index(src_kind)]
                         elif src_ei == "I":
                             gain = gain_ii
                         else:
@@ -1188,21 +1324,26 @@ class SpikingBrain:
                             # входов из других зон (_cortical_path).
                             self.local_e_inputs[post.name] = self.local_e_inputs.get(post.name, 0.0) + k_data
                         k = min(round(p * pre.size), pre.size)
-                        weight = gain * psp / self._psp_peak(post)
+                        # Синапс LAMP5 медленный (lamp5_tau_syn): тот же пик
+                        # PSP — меньший вес, но заряд больше.
+                        slow = cfg.lamp5_tau_syn if src_kind == "LAMP5" else None
+                        weight = gain * psp / self._psp_peak(post, slow)
                         rate = rates[src_layer][src_kind] / 1000.0
                         tau = float(self.tau_m[post.start])
 
-                        dc = self.dc_inh_mv if weight < 0 else self.dc_mv
-                        # Синапсы соседей на частоте покоя уже ослабли / усилились.
-                        weight_dc = weight * self._stp_steady(src_kind, dst_kind, rate * 1000.0)
+                        # Сила синапсов соседей — живая (кратковременная
+                        # пластичность их популяции, _step), не устоявшаяся
+                        # при частоте покоя.
+                        weight_dc = weight
 
-                        if k < 1:
-                            # Связь целиком — средним током.
-                            dc[post.slice] += k_data * rate * weight_dc * tau
+                        if k < 1 or src_kind == "LAMP5":
+                            # Связь целиком — средним током (у LAMP5 — всегда:
+                            # объёмное действие облака GABA, не синапсы).
+                            self._missing(post, pre, k_data * rate * weight_dc * tau, rate, slow=src_kind == "LAMP5")
                             continue
 
                         root = math.sqrt(max(1.0, k_data / k))
-                        dc[post.slice] += k_data * rate * weight_dc * tau * (1.0 - 1.0 / root)
+                        self._missing(post, pre, k_data * rate * weight_dc * tau * (1.0 - 1.0 / root), rate)
                         name = f"{spec.name}: {label(src_layer, src_kind)}->{label(dst_layer, dst_kind)}"
 
                         pre_index = None
@@ -1217,14 +1358,24 @@ class SpikingBrain:
                             k = pre_index.shape[1]
 
                         if (src_layer, src_kind, dst_layer, dst_kind) == ("L23", "E", "L23", "E"):
-                            # Обучаемая связь зоны: веса и правила — AreaSpec.
+                            # Обучаемая связь зоны: правила — AreaSpec; веса в
+                            # анатомическом мозге — по данным (средний PSP пары,
+                            # потолок learned_cap_psp средних), иначе — AreaSpec.
+                            ee_weight, ee_cap = spec.ee_weight, spec.ee_cap
+
+                            if getattr(cfg, "anatomy", False) and getattr(cfg, "learned_ee_data", True):
+                                w = weight * math.sqrt(max(1.0, k_data / k))
+                                ee_weight = (0.0, 2.0 * w) if spec.ee_plastic else (w, w)
+                                ee_cap = cfg.learned_cap_psp * w
+
                             proj = self._connect(
-                                name, pre, post, k, spec.ee_weight, plastic=spec.ee_plastic,
-                                cap=spec.ee_cap, modulator=spec.ee_modulator,
+                                name, pre, post, k, ee_weight, plastic=spec.ee_plastic,
+                                cap=ee_cap, modulator=spec.ee_modulator,
                                 ach_suppressed=spec.ee_ach_suppressed, pre_index=pre_index,
                             )
                             if proj is not None:
                                 proj.scaled = getattr(spec, "ee_scaled", True)
+                                proj.data_weight = bool(getattr(cfg, "anatomy", False)) and getattr(cfg, "learned_ee_data", True)
 
                             if spec.columns > 1:
                                 self._wire_columns(spec, area)
@@ -1404,6 +1555,8 @@ class SpikingBrain:
     def _init_projections(self) -> None:
         cfg = self.cfg
         self.projections: list[Projection] = []
+        # Входы недостающих соседей — живое среднее поле (_missing).
+        self.mean_field: list = []
 
         # Места в поле зрения (столбец, px) у клеток зрительных зон: V1 — из
         # карты сетчатки, следующие ступени — при проводке (_retinotopic_pre).
@@ -1444,6 +1597,36 @@ class SpikingBrain:
 
             if area.SOM is not None:
                 self._wire_microcircuit(spec, area)
+                continue
+
+            if getattr(spec, "local_inhibitory", -1.0) == 0:
+                # Местных тормозных нет — нет и местного контура.
+                continue
+
+            if getattr(spec, "local_psp", ()):
+                # Местный контур по данным (anatomy.NUCLEI): входов (по данным)
+                # и PSP; клеток в модели меньше — недостающие связи средним
+                # током по частоте источника in vivo (как у путей, k_data):
+                # главные — anatomy.RATES_HZ, тормозные — частота из таблицы.
+                from brain import anatomy
+
+                k_ei, ei, k_ie, ie, k_ii, ii, i_hz = spec.local_psp
+                e_hz = anatomy.RATES_HZ.get(spec.name, 1.0)
+
+                for name, pre, post, k, psp, hz in (("E->I", area.E, area.I, k_ei, ei, e_hz),
+                                                     ("I->E", area.I, area.E, k_ie, ie, i_hz),
+                                                     ("I->I", area.I, area.I, k_ii, ii, i_hz)):
+                    if k <= 0:
+                        continue
+
+                    w = psp / self._psp_peak(post)
+                    built = max(1, min(k, pre.size))
+                    root = math.sqrt(k / built)
+                    tau = float(self.tau_m[post.start])
+                    dc = self.dc_inh_mv if w < 0 else self.dc_mv
+                    self._missing(post, pre, k * hz / 1000.0 * w * tau * (1.0 - 1.0 / root), hz / 1000.0)
+                    self._connect(f"{spec.name}: {name}", pre, post, built, (w * root, w * root))
+
                 continue
 
             self._connect(
@@ -1495,15 +1678,57 @@ class SpikingBrain:
             k_inhibitory, inhibitory_weight = path.k_inhibitory, path.inhibitory_weight
 
             if getattr(path, "psp_mv", None) is not None:
-                # Вес из измеренного PSP (анатомический мозг).
+                # Вес из измеренного PSP (анатомический мозг); обучаемый — от 0
+                # до 2 средних, потолок learned_cap_psp средних.
                 w = path.psp_mv / self._psp_peak(post)
                 weight = (w, w)
+
+                if getattr(path, "k_data", 0.0) > 0:
+                    # Входов по данным больше, чем строим (PathwaySpec.k_data).
+                    from brain import anatomy
+
+                    k = max(1, min(path.k, pre.size))
+                    root = math.sqrt(max(1.0, path.k_data / k))
+                    rate = anatomy.RATES_HZ.get(path.src, 1.0) / 1000.0
+                    tau = float(self.tau_m[post.start])
+                    dc = self.dc_inh_mv if w < 0 else self.dc_mv
+                    self._missing(post, pre, path.k_data * rate * w * tau * (1.0 - 1.0 / root), rate,
+                                  ach=getattr(path, "ach_suppressed", False))
+                    w = w * root
+                    weight = (w, w)
+
+                if path.plastic:
+                    weight = (0.0, 2.0 * w)
+                    path = replace(path, cap=cfg.learned_cap_psp * abs(w))
+
+                if getattr(path, "k_data_inhibitory", 0.0) > 0 and inhibitory is not None:
+                    # Прямое торможение: путь бьёт и по местным тормозным
+                    # клеткам получателя (входов и PSP — по данным).
+                    from brain import anatomy
+
+                    wi = path.psp_inhibitory_mv / self._psp_peak(inhibitory)
+                    k_inhibitory = max(1, min(round(path.k_data_inhibitory), pre.size))
+                    root = math.sqrt(max(1.0, path.k_data_inhibitory / k_inhibitory))
+                    rate = anatomy.RATES_HZ.get(path.src, 1.0) / 1000.0
+                    tau = float(self.tau_m[inhibitory.start])
+                    self._missing(inhibitory, pre, path.k_data_inhibitory * rate * wi * tau * (1.0 - 1.0 / root), rate,
+                                  ach=getattr(path, "ach_suppressed", False))
+                    inhibitory_weight = wi * root
+                else:
+                    k_inhibitory = 0
 
             if self._data_path(path):
                 # Врождённый путь между колонками — по данным (_cortical_path).
                 k, w = self._cortical_path(path, pre, post)
                 weight = (w, w)
                 k_inhibitory, inhibitory_weight = self._cortical_path(path, pre, inhibitory)
+
+                if path.plastic:
+                    # Обучаемый: врождённо — от 0 до 2 средних PSP (среднее —
+                    # по данным), потолок — сильнейшие связи коры ~10 средних
+                    # (логнормальный хвост, Song et al. 2005).
+                    weight = (0.0, 2.0 * w)
+                    path = replace(path, cap=cfg.learned_cap_psp * w)
             elif self._thalamic(path, dst):
                 # Таламус → колонка — по данным (_thalamic_path).
                 k, w = self._thalamic_path(path, pre, post, inhibitory=False)
@@ -1526,9 +1751,15 @@ class SpikingBrain:
                 proj.vogels = getattr(path, "vogels", False)
                 proj.scale_up = getattr(path, "scale_up", False)
                 proj.cap = path.cap
+                # Вес по данным (средний PSP пути — cap / learned_cap_psp):
+                # шаг STDP — в долях этой средней связи (chemical_plasticity).
+                proj.data_weight = path.plastic and (self._data_path(path) or getattr(path, "psp_mv", None) is not None)
             self._connect(
                 f"{path.src} -> {path.dst}.I", pre, inhibitory, k_inhibitory,
                 (inhibitory_weight, inhibitory_weight),
+                # Ацетилхолин подавляет выброс на окончаниях пути (Hasselmo
+                # 1995) — и на тормозных клетках тоже.
+                ach_suppressed=path.ach_suppressed,
             )
 
         # ---- органы-датчики: рецепторы -> своя зона ----
@@ -1566,6 +1797,17 @@ class SpikingBrain:
             for pop, gain in ((excitatory, 1.0), (inhibitory, sensor.inhibitory_gain)):
                 if sensor.wiring == "oriented" and pop is excitatory:
                     pre, weight = self._wire_oriented(sensor, pop.size)
+                elif sensor.wiring == "map":
+                    # По положению: клетка — своё место поля, k рецепторов
+                    # (ON и OFF, все строки) из соседних столбцов.
+                    k = min(sensor.k, sensor.size)
+                    centre = (torch.arange(pop.size, device=self.device).float() + 0.5) * sensor.cols / pop.size
+                    col = centre[:, None] + torch.rand((pop.size, k), device=self.device, generator=self.generator) * 3 - 1.5
+                    col = col.long().clamp(0, sensor.cols - 1)
+                    row = torch.randint(0, sensor.rows, (pop.size, k), device=self.device, generator=self.generator)
+                    layer = torch.randint(0, 2, (pop.size, k), device=self.device, generator=self.generator)
+                    pre = layer * sensor.rows * sensor.cols + row * sensor.cols + col
+                    weight = torch.full((pop.size, k), sensor.weight / self._psp_peak(pop), device=self.device)
                 else:
                     # Случайные рецепторы своего органа (торможение сетчатки
                     # в V1 — тоже широкое, без формы поля).
@@ -1574,6 +1816,9 @@ class SpikingBrain:
                         0, sensor.size, (pop.size, k), device=self.device, generator=self.generator,
                     )
                     weight = torch.full((pop.size, k), sensor.weight, device=self.device)
+
+                    if getattr(sensor, "psp_mv", None) is not None:
+                        weight = torch.full((pop.size, k), sensor.psp_mv / self._psp_peak(pop), device=self.device)
 
                 if relay is not None:
                     # Реле → L4 (таламокортикальный путь).
@@ -1594,6 +1839,7 @@ class SpikingBrain:
                 )
 
         self._external_minus_modeled()
+        self._build_mean_field()
         self._pack()
 
     def _oriented_layout(self, sensor, cells: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -1955,6 +2201,18 @@ class SpikingBrain:
         # клетки, выставляется set_clock (copy_ — для CUDA Graph).
         self.clock_mv = torch.zeros(self.n_slots, device=self.device)
         self.sleep_chemistry(False)
+        # Анатомический мозг: спит он или нет, решает переключатель (выброс
+        # VLPO — галанин — больше норадреналина LC, Saper 2001), а не код —
+        # по нему в каждом шаге выбираются вымывание аденозина и прочее.
+        self.state_sleep = bool(getattr(self.cfg, "anatomy", False)) and {"galanin", "noradrenaline"} <= set(names)
+
+        if self.state_sleep:
+            f64 = lambda xs: torch.tensor(xs, device=self.device, dtype=torch.float64)
+            rates = [self._chemistry_rates(s) for s in (False, True)]
+            self.chemistry_by_state = [
+                (torch.exp(-self.cfg.dt_ms / f64(tau)), f64(release), f64(basal)) for tau, release, basal in rates
+            ]
+            self.galanin_i, self.noradrenaline_i = names.index("galanin"), names.index("noradrenaline")
 
     def _chemistry_rates(self, asleep: bool) -> tuple[list[float], list[float], list[float]]:
         """τ (мс), выброс на долю выстреливших, постоянный выброс за шаг — по веществам."""
@@ -2093,6 +2351,8 @@ class SpikingBrain:
         self.i_syn = z()
         # Тормозной ток (проводимость; cfg.layers): отдельно от возбуждающего.
         self.i_inh = z()
+        # Медленное торможение от LAMP5 (см. decay_ngf).
+        self.i_ngf = z()
         self.i_slow = z()
         # Дендритный ток (контекст из рабочей памяти, см. dendritic_context).
         self.i_dend = torch.zeros(self.n_slots * max(1, cfg.dendrite_branches), device=self.device)
@@ -2133,16 +2393,18 @@ class SpikingBrain:
                 gap = cfg.v_threshold - cfg.v_rest
 
                 for _, group in self._typed_groups(area):
-                    for kind, data_gap in (("PV", cfg.pv_gap_mv), ("SOM", cfg.som_gap_mv), ("VIP", cfg.vip_gap_mv)):
-                        self.bias[group[kind].slice] = gap - data_gap
+                    for kind, data_gap in (("PV", cfg.pv_gap_mv), ("SOM", cfg.som_gap_mv), ("VIP", cfg.vip_gap_mv),
+                                           ("LAMP5", cfg.lamp5_gap_mv)):
+                        if kind in group:
+                            self.bias[group[kind].slice] = gap - data_gap
 
                     if area.layers is not None:
                         self.bias[group["E"].slice] = gap - cfg.column_e_gap_mv
 
                     # Разброс между клетками (Allen; config column_gap_sd_mv),
                     # расстояние до порога не меньше 3 мВ.
-                    for kind, sd in zip(("E", "PV", "SOM", "VIP"), cfg.column_gap_sd_mv):
-                        if kind == "E" and area.layers is None:
+                    for kind, sd in zip(KINDS, cfg.column_gap_sd_mv):
+                        if (kind == "E" and area.layers is None) or kind not in group:
                             continue
                         pop = group[kind]
                         spread = torch.randn(pop.size, device=self.device, generator=self.generator) * sd
@@ -2204,8 +2466,13 @@ class SpikingBrain:
         self.stp_x = torch.ones(self.n_slots, device=self.device)
         # Кратковременная пластичность клеток с типами: u (до первого спайка
         # 0) и ресурс x к каждому типу получателя.
-        self.stp_u4 = torch.zeros(self.n_slots, 4, device=self.device)
-        self.stp_x4 = torch.ones(self.n_slots, 4, device=self.device)
+        self.stp_u4 = torch.zeros(self.n_slots, len(KINDS), device=self.device)
+        self.stp_x4 = torch.ones(self.n_slots, len(KINDS), device=self.device)
+        # Десенситизация рецепторов ГАМК-А от LAMP5 (нейроглиаформных):
+        # второе, медленное состояние их синапсов (Karayannis et al. 2010).
+        self.ngf_d = torch.ones(self.n_slots, device=self.device)
+        self.is_lamp5 = self.cell_type == KINDS.index("LAMP5")
+        self.ngf_rec = cfg.dt_ms / (cfg.lamp5_desens_tau_s * 1000.0)
         self.inh_gain = torch.ones(self.n_slots, device=self.device)
         # У маленьких мозгов зоны малы, и случайные пики занимают
         # большую долю нейронов — им нужен запас не по доле, а в штуках.
@@ -2299,10 +2566,13 @@ class SpikingBrain:
             # типу получателя (cfg.column_stp). Сила спайка = u·x до выброса /
             # U: состояние уже после спайка — x_до = x / (1 − u).
             typed = self.typed_pre.index_select(0, pre_of)
-            slot = pre_of.long() * 4 + self.cell_type.index_select(0, post).clamp(min=0)
+            slot = pre_of.long() * len(KINDS) + self.cell_type.index_select(0, post).clamp(min=0)
             u = self.stp_u4.view(-1).index_select(0, slot)
             x = self.stp_x4.view(-1).index_select(0, slot)
             gain = u * x / (1.0 - u).clamp(min=1e-3) / self.stp_U4.view(-1).index_select(0, slot)
+            # У LAMP5 — ещё десенситизация рецепторов (ngf_d, до спайка).
+            d = self.ngf_d.index_select(0, pre_of) / (1.0 - cfg.lamp5_desens_u)
+            gain = torch.where(self.is_lamp5.index_select(0, pre_of), gain * d, gain)
             weight = torch.where(typed, weight * gain, weight)
 
         if cfg.base_circuit:
@@ -2321,7 +2591,11 @@ class SpikingBrain:
             # Торможение — проводимость (cfg.layers): копится отдельно, к соме
             # приходит × движущая сила (см. ниже). Задержка у тормозных путей
             # между зонами не учитывается — местные идут через шаг.
-            inhibition = torch.zeros_like(drive).index_add_(0, post, weight.clamp(max=0.0))
+            inh = weight.clamp(max=0.0)
+            # От LAMP5 — в медленный ток (lamp5_tau_syn), остальное — в быстрый.
+            slow = self.cell_type.index_select(0, pre_of) == KINDS.index("LAMP5")
+            inhibition = torch.zeros_like(drive).index_add_(0, post, torch.where(slow, 0.0, inh))
+            ngf = torch.zeros_like(drive).index_add_(0, post, torch.where(slow, inh, 0.0))
             weight = weight.clamp(min=0.0)
 
         if self.delay_slots > 1:
@@ -2372,6 +2646,7 @@ class SpikingBrain:
 
         if self.conductance:
             self.i_inh.mul_(self.decay_syn).add_(inhibition * self.syn_scale)
+            self.i_ngf.mul_(self.decay_ngf).add_(ngf * self.ngf_scale)
         self.i_slow.mul_(self.decay_slow).add_(drive.clamp(min=0.0) * self.slow_scale)
         self.i_slow.clamp_(max=self.slow_max)
 
@@ -2399,7 +2674,46 @@ class SpikingBrain:
             # (Destexhe & Paré 1999; Destexhe, Rudolph & Paré 2003).
             excite = ((cfg.ampa_reversal_mv - self.v) / (cfg.ampa_reversal_mv - cfg.epsp_holding_mv)).clamp(min=0.0)
             excite = torch.where(self.conductance_cells, excite, 1.0)
-            synaptic = (synaptic + self.dc_mv) * excite + (self.i_inh + self.dc_inh_mv) * force
+            dc_e, dc_i = self.dc_mv, self.dc_inh_mv
+
+            if getattr(self, "mf_on", False):
+                # Недостающие соседи стреляют, как их построенная популяция
+                # (частота сглажена ~10 мс): ток — матрица популяций × частоты.
+                self.mf_counts.zero_().index_add_(0, self.mf_pre_id, self.spikes)
+                inst = self.mf_counts / self.mf_size / cfg.dt_ms
+                self.mf_rate.mul_(self.mf_decay).add_(inst * (1.0 - self.mf_decay))
+                exc = self.mf_exc - self.acetylcholine * self.mf_ach
+                inh = self.mf_inh
+
+                if self.has_som:
+                    # Кратковременная пластичность и у недостающих соседей:
+                    # их синапсы устают так же, как у построенных клеток той
+                    # же популяции (средняя сила к типу получателя). Без
+                    # этого L2/3 на 330 Гц кормила себя без депрессии и
+                    # держалась «горящей» при PV на 400 Гц.
+                    # Сила следующего спайка: u⁺ = u + U(1 − u), выброс u⁺·x,
+                    # к силе покоя U.
+                    nxt = self.stp_u4 + self.stp_U4 * (1.0 - self.stp_u4)
+                    gain = nxt * self.stp_x4 / self.stp_U4
+                    gain = torch.where(self.is_lamp5[:, None], gain * self.ngf_d[:, None], gain)
+                    gain = torch.where(self.typed_pre[:, None], gain, 1.0)
+                    n = len(KINDS)
+                    self.mf_gain[:, :n].zero_().index_add_(0, self.mf_pre_id, gain)
+                    self.mf_gain[:, :n].div_(self.mf_size[:, None])
+                    g = self.mf_gain.index_select(1, self.mf_post_type).t()
+                    exc, inh = exc * g, inh * g
+
+                dc_e = dc_e + (exc @ self.mf_rate).index_select(0, self.mf_post_id)
+                dc_i = dc_i + (inh @ self.mf_rate).index_select(0, self.mf_post_id)
+
+                if self.mf_slow_on:
+                    # Облако GABA от LAMP5: средний ток через фильтр τ
+                    # медленного синапса (тот же заряд, медленный ход).
+                    slow = ((self.mf_slow * g) @ self.mf_rate).index_select(0, self.mf_post_id)
+                    self.ngf_mf.mul_(self.decay_ngf).add_(slow * (1.0 - self.decay_ngf))
+                    dc_i = dc_i + self.ngf_mf
+
+            synaptic = (synaptic + dc_e) * excite + (self.i_inh + self.i_ngf + dc_i) * force
 
         if cfg.dendritic_context:
             # Плато на дендрите усиливает возбуждающий вход сомы:
@@ -2443,7 +2757,13 @@ class SpikingBrain:
         self.spikes.copy_(fired)
         # Выброс веществ ядрами: доля выстреливших клеток каждого ядра.
         released = (self.chemistry_source @ self.spikes).to(torch.float64)
-        self.chemistry.mul_(self.chemistry_decay).add_(released * self.chemistry_release + self.chemistry_basal)
+
+        if self.state_sleep:
+            (dw, rw, bw), (ds, rs, bs) = self.chemistry_by_state
+            asleep = self.chemistry[self.galanin_i] > self.chemistry[self.noradrenaline_i]
+            self.chemistry.mul_(torch.where(asleep, ds, dw)).add_(released * torch.where(asleep, rs, rw) + torch.where(asleep, bs, bw))
+        else:
+            self.chemistry.mul_(self.chemistry_decay).add_(released * self.chemistry_release + self.chemistry_basal)
 
         if self.ach_chemistry >= 0:
             self.acetylcholine.copy_(occupancy[self.ach_chemistry : self.ach_chemistry + 1])
@@ -2476,6 +2796,11 @@ class SpikingBrain:
             self.stp_x4.add_((1.0 - self.stp_x4) * self.stp_rec4)
             self.stp_u4.add_(self.stp_U4 * (1.0 - self.stp_u4) * spiked)
             self.stp_x4.sub_(self.stp_u4 * self.stp_x4 * spiked)
+            # Десенситизация от LAMP5: спайк снимает долю U_d, восстановление
+            # — за минуты (lamp5_desens_*).
+            ngf_spiked = self.spikes * self.is_lamp5
+            self.ngf_d.add_((1.0 - self.ngf_d) * self.ngf_rec)
+            self.ngf_d.sub_(cfg.lamp5_desens_u * self.ngf_d * ngf_spiked)
 
         if cfg.pool_inhibition_mv > 0:
             self.pool.mul_(self.decay_pool).add_((self.spikes * self.pool_mask).sum())
@@ -2646,6 +2971,13 @@ class SpikingBrain:
         self.eligibility.mul_(self.eligibility_scale)
         self.eligibility_scale.fill_(1.0)
 
+        if getattr(self.cfg, "anatomy", False):
+            self._plastic_ms = getattr(self, "_plastic_ms", 0.0) + chunks * self.CHUNK * self.cfg.dt_ms
+
+            if self._plastic_ms >= self.cfg.plasticity_period_ms:
+                self.chemical_plasticity(self._plastic_ms)
+                self._plastic_ms = 0.0
+
     def observe(
         self,
         duration_ms: float,
@@ -2718,6 +3050,104 @@ class SpikingBrain:
             tag = eligibility.abs().float()
             tag = tag / tag.max().clamp(min=1e-12)
             self.early.mul_(1.0 - capture * tag)
+
+    def chemical_plasticity(self, elapsed_ms: float) -> None:
+        """
+        Анатомический мозг: веса меняются сами, без вызовов кода. Третий
+        фактор — концентрация вещества у синапса (её дают нейроны ядер):
+        - кора (modulator "hebbian"): след STDP сразу в вес (Markram et al.
+          1997; Bi & Poo 1998);
+        - гиппокамп ("acetylcholine"): след × занятость рецепторов
+          ацетилхолина — наяву пишет с одного раза, во сне нет (Hasselmo 2006);
+        - стриатум ("dopamine", "dopamine_d2"): dw/dt = след × (дофамин −
+          тонический) / τ следа (Izhikevich 2007): залп выше фона VTA
+          усиливает D1 и ослабляет D2, провал — наоборот (Reynolds & Wickens
+          2002; Shen et al. 2008).
+        Шаг — в долях среднего PSP пути (A+ = 0.01 — ~1% связи на пару
+        спайков, Bi & Poo 1998), у путей не по данным — как раньше.
+        """
+
+        if not self.plasticity or not self.plastic:
+            return
+
+        from brain import anatomy
+
+        cfg = self.cfg
+        names = self.chemistry_names
+        ach = self.occupancy("acetylcholine") if "acetylcholine" in names else 0.0
+        # Тонический дофамин: VTA наяву × время выведения, в единицах уровня.
+        tonic = anatomy.RATES_HZ["vta"] * cfg.dopamine_tau_ms / 1000.0
+        tonic = tonic / (tonic + cfg.dopamine_half)
+        phasic = (self.occupancy("dopamine") - tonic) / (1.0 - tonic)
+        integrate = elapsed_ms / cfg.eligibility_tau
+
+        # Спайки за период (для лазающего волокна): разница счётчиков.
+        # observe() обнуляет счётчики — тогда разница отрицательна, берём сами счётчики.
+        counts = self.counts[: self.n].clone()
+        spikes = None
+
+        if hasattr(self, "_plastic_counts"):
+            spikes = counts - self._plastic_counts
+            spikes = torch.where(spikes < 0, counts, spikes)
+
+        self._plastic_counts = counts
+
+        for proj in self.plastic:
+            if proj.modulator == "climbing":
+                if spikes is not None:
+                    self._climbing(proj, spikes)
+
+                continue
+
+            factor, spend = {
+                "hebbian": (1.0, True),
+                "acetylcholine": (ach, True),
+                "dopamine": (phasic * integrate, False),
+                "dopamine_d2": (-phasic * integrate, False),
+            }.get(proj.modulator, (0.0, False))
+
+            if factor == 0.0:
+                continue
+
+            unit = proj.cap / cfg.learned_cap_psp if getattr(proj, "data_weight", False) else 1.0
+            before = proj.weight.clone()
+            proj.weight.add_(proj.eligibility.float() * (unit * factor))
+            ceiling = getattr(proj, "ceiling", None)
+
+            if ceiling is None:
+                proj.weight.clamp_(0.0, proj.cap)
+            else:
+                proj.weight.clamp_(min=0.0)
+                torch.minimum(proj.weight, ceiling, out=proj.weight)
+
+            proj.early.add_((proj.weight - before).to(proj.early.dtype))
+
+            if spend:
+                proj.eligibility.zero_()
+
+    def _climbing(self, proj, spikes: torch.Tensor) -> None:
+        """
+        Параллельные волокна → Пуркинье (Ito 1989; Coesmans et al. 2004):
+        спайк волокна вместе с лазающим волокном своей клетки Пуркинье за
+        тот же период (окно ~50–200 мс, Wang, Denk & Häusser 2000) — LTD,
+        без него — слабая LTP. Равновесие при фоновых частотах: лазающее
+        волокно ~1 Гц (олива), то есть в окне период/1000 с — LTP в столько
+        раз слабее LTD [порядок, сверить]. Шаг — A+ средней связи пути.
+        """
+
+        climbing = next((p for p in self.projections if p.post is proj.post and p.name.startswith("io ->")), None)
+
+        if climbing is None:
+            return
+
+        cf = spikes.index_select(0, climbing.pre[:, 0].long())[:, None]
+        pf = spikes.index_select(0, proj.pre.flatten().long()).view(proj.pre.shape)
+        unit = proj.cap / self.cfg.learned_cap_psp
+        chance = self.cfg.plasticity_period_ms / 1000.0
+        delta = self.cfg.stdp_a_plus * unit * pf * (chance - (cf > 0).float())
+        before = proj.weight.clone()
+        proj.weight.add_(delta).clamp_(0.0, proj.cap)
+        proj.early.add_((proj.weight - before).to(proj.early.dtype))
 
     def encode(self, gain: float) -> None:
         """
@@ -3289,10 +3719,10 @@ class SpikingBrain:
     # читает и пишет по фиксированным адресам. Поэтому их
     # всегда восстанавливают через copy_, а не присваиванием.
     _DYNAMIC = (
-        "v", "i_syn", "i_inh", "i_slow", "i_dend", "pool", "area_pool", "adapt", "adapt_slow", "refractory", "spikes",
+        "v", "i_syn", "i_inh", "i_ngf", "ngf_mf", "i_slow", "i_dend", "pool", "area_pool", "adapt", "adapt_slow", "refractory", "spikes",
         "trace_pre", "trace_pre_rise", "ltp_kernel", "trace_post", "counts", "eligibility",
         "eligibility_scale", "dropped", "bias", "interoception", "kick_current", "kick_left", "stp_x", "stp_u4", "stp_x4", "inh_gain",
-        "chemistry", "pending", "pending_dend", "tick",
+        "chemistry", "pending", "pending_dend", "tick", "mf_rate",
     )
 
     def _snapshot(self) -> dict:
@@ -3366,6 +3796,8 @@ class SpikingBrain:
 
         cells = self.areas[area].cells
         self.i_syn[cells] = 0.0
+        self.i_inh[cells] = 0.0
+        self.i_ngf[cells] = 0.0
         self.i_slow[cells] = 0.0
         self.adapt[cells] = 0.0
         self.adapt_slow[cells] = 0.0

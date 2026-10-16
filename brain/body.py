@@ -74,6 +74,24 @@ class Eye:
         return raster
 
 
+class Periphery(Eye):
+    """
+    Боковое зрение: та же сетчатка, но клетки реже и поля крупнее —
+    картинка поля огрублена в scale раз (среднее по квадрату), дальше
+    центр минус окружение, как у ямки (Curcio & Allen 1990).
+    """
+
+    def __init__(self, cfg, offset: int, size: int, device):
+        super().__init__(cfg, offset, size, device)
+        self.pool = cfg.periphery_scale
+        self.rows = cfg.retina_rows // self.pool
+        self.cols = cfg.retina_cols * cfg.periphery_fields // self.pool
+
+    def rates(self, picture: torch.Tensor) -> torch.Tensor:
+        coarse = F.avg_pool2d(picture[None, None].cpu(), self.pool)[0, 0]
+        return super().rates(coarse)
+
+
 class Hand:
     """
     Рука (орган-исполнитель): у каждой клавиши своё врождённое движение —

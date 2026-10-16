@@ -12,6 +12,7 @@ import sys
 
 from brain import anatomy
 from brain.config import BrainConfig
+from brain.engine import KINDS
 from brain.mind import Mind
 
 opts = {"size": "small", "ms": "1000"}
@@ -37,7 +38,7 @@ print(f"{brain.n:,} нейронов, {brain.synapse_count():,} синапсов
 brain.plasticity = False
 brain.run(300.0)
 rates = brain.observe(float(opts["ms"]))
-targets = {layer: dict(zip(("E", "PV", "SOM", "VIP"), v)) for layer, *v in cfg.column_target_hz}
+targets = {layer: dict(zip(KINDS, v)) for layer, *v in cfg.column_target_hz}
 
 
 def mark(r: float, t: float) -> str:

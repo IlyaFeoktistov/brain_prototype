@@ -21,13 +21,13 @@ from brain.config import BrainConfig, default_areas
 from brain.engine import SpikingBrain
 
 opts = {"neurons": "10000", "evals": "300", "ms": "1000", "area": "auditory", "mode": "gains", "steps": "60", "dt": "2.0",
-        "batch": "24", "generations": "30", "warmup": "300"}
+        "batch": "24", "generations": "30", "warmup": "300", "anatomy": "0", "kick": "0", "start": ""}
 
 for kv in sys.argv[1:]:
     k, v = kv.split("=", 1)
     opts[k] = v
 
-TYPES = ("E", "PV", "SOM", "VIP")
+from brain.engine import KINDS as TYPES
 
 
 def build(gains: list[float], pop: dict | None = None) -> SpikingBrain:
@@ -35,14 +35,17 @@ def build(gains: list[float], pop: dict | None = None) -> SpikingBrain:
     cfg.layers = True
     cfg.eye = False
     cfg.compile_step = False
+    # anatomy=1 — колонка как в анатомическом мозге: торможение
+    # проводимостью у всех, E → E слоя 2/3 с весами по данным.
+    cfg.anatomy = opts["anatomy"] == "1"
     cfg.size = opts["neurons"]
     cfg.dt_ms = float(opts["dt"])
     cfg.areas = [a for a in default_areas() if a.name == opts["area"]]
     cfg.pathways = []
-    cfg.column_gain_external = tuple(gains[0:4])
-    cfg.column_gain_from_e = tuple(gains[4:7])
-    cfg.column_gain_to_e = tuple(gains[7:10])
-    cfg.column_gain_ii = gains[10]
+    cfg.column_gain_external = tuple(gains[0:5])
+    cfg.column_gain_from_e = tuple(gains[5:9])
+    cfg.column_gain_to_e = tuple(gains[9:13])
+    cfg.column_gain_ii = gains[13]
     cfg.column_gain_external_pop = tuple((l, t, g) for (l, t), g in (pop or {}).items())
     return SpikingBrain(cfg)
 
@@ -60,8 +63,9 @@ def measure(gains: list[float], pop: dict | None = None) -> dict:
 def loss(rates: dict, targets: dict) -> float:
     # E — главные клетки коры: их частота весит вчетверо (иначе поиск
     # находит «дешёвое» решение — молчащие E при верных тормозных).
-    weights = {key: 4.0 if key[1] == "E" else 1.0 for key in rates}
-    errors = [weights[key] * math.log((r + 0.5) / (targets[key] + 0.5)) ** 2 for key, r in rates.items()]
+    # Ключ («после», слой, тип) — замер после толчка, цель та же.
+    weights = {key: 4.0 if key[-1] == "E" else 1.0 for key in rates}
+    errors = [weights[key] * math.log((r + 0.5) / (targets[key[-2:]] + 0.5)) ** 2 for key, r in rates.items()]
     return sum(errors) / sum(weights.values())
 
 
@@ -127,6 +131,9 @@ def measure_batch(population: list[list[float]]) -> list[dict]:
     cfg.layers = True
     cfg.eye = False
     cfg.compile_step = False
+    # anatomy=1 — колонка как в анатомическом мозге: торможение
+    # проводимостью у всех, E → E слоя 2/3 с весами по данным.
+    cfg.anatomy = opts["anatomy"] == "1"
     cfg.dt_ms = float(opts["dt"])
     spec = next(a for a in default_areas() if a.name == opts["area"])
     copies = [replace(spec, name=spec.name if i == 0 else f"{spec.name}_{i}", column_gains=tuple(g))
@@ -139,12 +146,38 @@ def measure_batch(population: list[list[float]]) -> list[dict]:
     brain = SpikingBrain(cfg)
     brain.plasticity = False
     brain.run(float(opts["warmup"]))
-    rates = brain.observe(float(opts["ms"]))
+    rest = brain.observe(float(opts["ms"]))
+    after = None
+
+    if opts["kick"] != "0":
+        # Устойчивость: толчок L2/3 E всех копий (kick мВ, 50 мс) — кора
+        # после стимула возвращается в покой (ответ проходит), горящая
+        # копия проигрывает.
+        mv = float(opts["kick"])
+        tops = [brain.areas[c.name].layers["L23"]["E"].slice for c in copies]
+
+        for s in tops:
+            brain.bias[s] += mv
+
+        brain.run(50.0)
+
+        for s in tops:
+            brain.bias[s] -= mv
+
+        brain.run(200.0)
+        after = brain.observe(float(opts["ms"]))
+
     out = []
 
     for copy in copies:
         area = brain.areas[copy.name]
-        out.append({(layer, kind): float(rates[pop.slice].mean()) for layer, group in area.layers.items() for kind, pop in group.items()})
+        pops = [(layer, kind, pop) for layer, group in area.layers.items() for kind, pop in group.items()]
+        item = {(layer, kind): float(rest[pop.slice].mean()) for layer, kind, pop in pops}
+
+        if after is not None:
+            item.update({("после", layer, kind): float(after[pop.slice].mean()) for layer, kind, pop in pops})
+
+        out.append(item)
 
     return out
 
@@ -160,6 +193,10 @@ if opts["mode"] == "batch":
     base = BrainConfig()
     mean = [math.log(g) for g in list(base.column_gain_external) + list(base.column_gain_from_e)
             + list(base.column_gain_to_e) + [base.column_gain_ii]]
+
+    if opts["start"]:
+        # Старт: 11 множителей через запятую.
+        mean = [math.log(float(g)) for g in opts["start"].split(",")]
     sigma = 0.6
     size = int(opts["batch"])
     elite = max(2, size // 4)
@@ -205,10 +242,12 @@ elif opts["mode"] == "gains":
 
 value, gains, rates = best
 print(f"\nлучшее: ошибка {value:.3f}")
-print("column_gain_external =", tuple(round(g, 3) for g in gains[0:4]))
-print("column_gain_from_e =", tuple(round(g, 3) for g in gains[4:7]))
-print("column_gain_to_e =", tuple(round(g, 3) for g in gains[7:10]))
-print("column_gain_ii =", round(gains[10], 3))
+print("column_gain_external =", tuple(round(g, 3) for g in gains[0:5]))
+print("column_gain_from_e =", tuple(round(g, 3) for g in gains[5:9]))
+print("column_gain_to_e =", tuple(round(g, 3) for g in gains[9:13]))
+print("column_gain_ii =", round(gains[13], 3))
 
 for layer, *_ in cfg.column_target_hz:
     print(f"  {layer}: " + ", ".join(f"{kind} {rates[(layer, kind)]:.1f} (цель {targets[(layer, kind)]})" for kind in TYPES))
+    if ("после", layer, "E") in rates:
+        print(f"    после толчка: " + ", ".join(f"{kind} {rates[('после', layer, kind)]:.1f}" for kind in TYPES))

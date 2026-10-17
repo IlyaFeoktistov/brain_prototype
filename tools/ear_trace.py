@@ -7,8 +7,10 @@ small, звук на 65 дБ (улитка приводит к уровню ре
 
 У тона — ещё реле своей полосы (± 2 полосы от 1 кГц) и прочих отдельно.
 local=1 — местное торможение реле (cfg.relay_local_inhibition).
-cn_inh=0 — диагностика: торможение T-звёздчатых в CN выключено (синапсы
-тормозные → E и их среднее поле), остальное как есть.
+inh_off=cn,ic — диагностика: местное торможение главных клеток этих ядер
+выключено (синапсы тормозные → E и их среднее поле), остальное как есть.
+У тона, своя полоса — ещё задержка первого спайка после начала (медиана
+по клеткам, ответившим за 50 мс).
 
     PYTHONPATH=. .venv/bin/python tools/ear_trace.py [local=0] [text=Кот живёт в доме.] [seed=0]
 """
@@ -23,7 +25,7 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 from brain.world import Voice
 
-opts = {"cn_inh": "1", "local": "0", "text": "Кот живёт в доме.", "seed": "0"}
+opts = {"inh_off": "", "local": "0", "text": "Кот живёт в доме.", "seed": "0"}
 opts.update(dict(kv.split("=", 1) for kv in sys.argv[1:]))
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
@@ -40,12 +42,12 @@ i = [s.name for s in b.sensors].index("ear")
 ear = Cochlea(cfg, b.sensor_offsets[i], b.sensors[i].size, b.device)
 A = b.areas["auditory"].layers
 
-if opts["cn_inh"] == "0":
-    cn = b.areas["cn"]
+for name in filter(None, opts["inh_off"].split(",")):
+    nucleus = b.areas[name]
     for p in b.projections:
-        if p.name == "cn: I->E":
+        if p.name == f"{name}: I->E":
             p.weight.zero_()
-    b.mf_inh[int(b.mf_post_id[cn.E.start]), int(b.mf_pre_id[cn.I.start])] = 0.0
+    b.mf_inh[int(b.mf_post_id[nucleus.E.start]), int(b.mf_pre_id[nucleus.I.start])] = 0.0
 stages = [(f"{n.upper()} {k}", getattr(b.areas[n], k)) for n in ("cn", "ic") if n in b.areas for k in ("E", "I")] + [("MGN E", b.areas["mgn"].E), ("MGN I", b.areas["mgn"].I), ("TRN", b.areas["trn_mgn"].E),
           ("слух L4 E", A["L4"]["E"]), ("слух L4 PV", A["L4"]["PV"]), ("слух L2/3 E", A["L23"]["E"]), ("слух L2/3 PV", A["L23"]["PV"])]
 WIN = 10.0
@@ -62,10 +64,17 @@ for name, wave, sr in sounds:
     windows, ex, inh = [], [], []
     relay = b.areas["mgn"].E.slice
 
+    first = None
+
     for start in range(0, raster.shape[0] - steps + 1, steps):
         chunk = torch.zeros(steps, b.n_receptors, device=b.device)
         chunk[:, : raster.shape[1]] = raster[start: start + steps]
         windows.append(b.observe(WIN, chunk))
+
+        if first is None:
+            first = torch.full((b.n,), float("inf"), device=b.device)
+        hit = (windows[-1][: b.n] > 0) & torch.isinf(first)
+        first[hit] = start * cfg.dt_ms + WIN
         ex.append(float(b.i_syn[relay].float().mean()))
         inh.append(float(b.i_inh[relay].float().mean()))
 
@@ -83,7 +92,10 @@ for name, wave, sr in sounds:
             idx = torch.arange(E.start, E.stop, device=b.device)
             for tag, m in ((f"{nucleus.upper()} E своей полосы", own), (f"{nucleus.upper()} E прочих", ~own)):
                 c = idx[m]
-                print(f"  {tag:19s} тишина {float(quiet[c].mean()):6.1f} → начало {float(onset[c].mean()):6.1f} → дальше {float(steady[c].mean()):6.1f} Гц")
+                lat = first[c]
+                lat = lat[lat <= 50]
+                when = f", первый спайк ~{float(lat.median()):.0f} мс у {len(lat)}/{len(c)}" if m is own and len(lat) else ""
+                print(f"  {tag:19s} тишина {float(quiet[c].mean()):6.1f} → начало {float(onset[c].mean()):6.1f} → дальше {float(steady[c].mean()):6.1f} Гц{when}")
 
     for label, pop in stages:
         print(f"  {label:13s} тишина {float(quiet[pop.slice].mean()):6.1f} → начало {float(onset[pop.slice].mean()):6.1f} → дальше {float(steady[pop.slice].mean()):6.1f} Гц")

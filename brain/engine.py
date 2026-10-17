@@ -586,7 +586,11 @@ class SpikingBrain:
                     if kind in group:
                         self.cell_type[group[kind].slice] = number
 
-        self.has_som = bool(self.is_som.any())
+        # Кратковременная пластичность по типам (column_stp) и ядра шага —
+        # у всех клеток с типом (E, PV, SOM, VIP, LAMP5), не только при SOM:
+        # с колонкой E + PV (column_kinds) прежнее условие «есть SOM»
+        # выключало пластичность синапсов колонок и быстрые ядра.
+        self.has_som = bool((self.cell_type >= 0).any())
         self.typed_pre = self.cell_type >= 0
         # Кратковременная пластичность по парам типов (cfg.column_stp): у
         # клетки-источника — U, восстановление и облегчение к каждому типу

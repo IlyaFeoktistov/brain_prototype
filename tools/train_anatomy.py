@@ -11,9 +11,13 @@ chemical_plasticity).
              (step=letter|syllable|word);
   babble   — лепет: пустой экран, что рука нажала — видно, указка у символа;
   copy     — учитель пишет букву, мозг печатает: совпало — сладкое, нет — горькое;
-  talk     — вопрос из teach-data.txt, ответ рукой, учитель оценивает.
+  talk     — вопрос из teach-data.txt, ответ рукой, учитель оценивает;
+  course   — курс data/course по номерам файлов (азбука → … → вопросы):
+             шаг показа — из заголовка файла; first= / last= — номера
+             файлов, n — сколько раз пройти курс.
 
     PYTHONPATH=. .venv/bin/python tools/train_anatomy.py stage=letters [n=200] [alphabet=отл] [load=МОЗГ] [save=МОЗГ]
+    PYTHONPATH=. .venv/bin/python tools/train_anatomy.py stage=course [n=1] [first=1] [last=7] [save=МОЗГ]
 """
 
 import random
@@ -26,7 +30,7 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 from brain.session import Session
 
-opts = {"stage": "letters", "n": "200", "load": "", "save": "", "step": "letter", "dwell": "300", "seed": "0", "save_every": "0", "alphabet": ""}
+opts = {"stage": "letters", "n": "200", "first": "1", "last": "99", "load": "", "save": "", "step": "letter", "dwell": "300", "seed": "0", "save_every": "0", "alphabet": ""}
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
 cfg.autosave = False
@@ -87,6 +91,42 @@ def point(text: str, step: str) -> None:
     session.pointer = None
 
 
+def clean(line: str) -> str:
+    """Строка для экрана: строчные буквы и знаки, которые видит глаз."""
+
+    line = re.sub(r"[^а-яё ,.?!-]", " ", line.lower())
+    return re.sub(r"\s+", " ", line).strip()
+
+
+def course() -> list[tuple[str, str, list[str]]]:
+    """Файлы курса data/course по номерам: (имя, шаг показа, куски)."""
+
+    out = []
+
+    for path in sorted(Path("data/course").glob("[0-9]*.txt")):
+        number = int(path.name.split("-")[0])
+
+        if not int(opts["first"]) <= number <= int(opts["last"]):
+            continue
+
+        lines = path.read_text(encoding="utf-8").splitlines()
+        step = lines[0].split(":", 1)[1].strip()
+        body = [line for line in lines if line.strip() and not line.startswith("#")]
+
+        if step == "qa":
+            items = body
+        elif step == "letter":
+            items = [clean(line) for line in body]
+        else:
+            # «буква: слово, слово» (03) и «слог слог» (02) — по одному куску.
+            items = [clean(x) for line in body for x in re.split(r"[,\s]+", line.split(":", 1)[-1]) if clean(x)] \
+                if step == "syllable" else [clean(line) for line in body]
+
+        out.append((path.name, step, items))
+
+    return out
+
+
 def corpus() -> list[str]:
     text = Path("train-data.md").read_text(encoding="utf-8").lower()
     lines = [re.sub(r"[^а-яё ,.?!-]", " ", line) for line in text.splitlines() if line.strip() and not line.startswith("#")]
@@ -143,6 +183,24 @@ elif stage == "copy":
 
         if i % 20 == 19:
             print(f"{i + 1}: верно {right}/{i + 1}, последний «{target}» → {answer!r}", flush=True)
+elif stage == "course":
+    for lap in range(n):
+        for name, step, items in course():
+            right = 0
+
+            for item in items:
+                if step == "qa":
+                    question, answer = item.split("|")[:2]
+                    reply = session.reply(clean(question), max_ms=10000.0)
+                    good = answer.strip().split()[-1][:4] in reply
+                    right += good
+                    session.praise(good)
+                else:
+                    point(item, step)
+                    session.live(200.0)
+
+            tail = f", верно {right}/{len(items)}" if step == "qa" else ""
+            print(f"курс {lap + 1}/{n}: {name} ({step}, {len(items)}){tail}, {time.time() - start:.0f} с", flush=True)
 elif stage == "talk":
     rows = [line.split("|") for line in Path("teach-data.txt").read_text(encoding="utf-8").splitlines()
             if "|" in line and not line.startswith("#")]

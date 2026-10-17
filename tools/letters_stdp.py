@@ -19,7 +19,13 @@ train_anatomy stage=letters: указка под буквой dwell мс, зат
 - после эпохи, без пластичности: матрица «клетка × буква» — сколько клеток
   предпочитают каждую букву, индекс избирательности, различение ответа.
 
-    PYTHONPATH=. .venv/bin/python tools/letters_stdp.py [epochs=3] [shows=30] [dwell=300] [letters=отл] [half=8] [seed=0]
+pointer=0 — учёба без указки (буква на экране так же долго). Конкуренция
+клеток букв: разреженность ответа на букву (Treves & Rolls; 1 — отвечают
+все одинаково, к 0 — немногие) и устойчивость предпочтений — доля клеток,
+что предпочитают ту же букву, что до обучения (у 3 букв случайно ~1/3):
+высокая при неизменном различении — закреплён случайный начальный перевес.
+
+    PYTHONPATH=. .venv/bin/python tools/letters_stdp.py [epochs=3] [shows=30] [dwell=300] [letters=отл] [half=8] [seed=0] [pointer=1]
 """
 
 import random
@@ -31,7 +37,7 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 from brain.session import Session
 
-opts = {"epochs": "3", "shows": "30", "dwell": "300", "letters": "отл", "half": "8", "seed": "0"}
+opts = {"pointer": "1", "epochs": "3", "shows": "30", "dwell": "300", "letters": "отл", "half": "8", "seed": "0"}
 opts.update(dict(kv.split("=", 1) for kv in sys.argv[1:]))
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
@@ -116,10 +122,17 @@ def alignment(dw: torch.Tensor, T: torch.Tensor) -> tuple[float, float]:
     return best(T), best(T[:, torch.randperm(T.shape[1], device=T.device)])
 
 
+first_pref = None
+
+
 def report(tag: str) -> None:
+    global first_pref
     per, shows = probe()
     resp = per[:, cells]
     pref = resp.argmax(0)
+    first_pref = pref if first_pref is None else first_pref
+    r = resp.clamp(min=0)
+    sparse = (r.mean(1) ** 2 / (r ** 2).mean(1).clamp(min=1e-9)).mean()
     counts = " ".join(f"{c}:{int((pref == j).sum())}" for j, c in enumerate(letters))
     top = resp.max(0).values
     rest = (resp.sum(0) - top) / (len(letters) - 1)
@@ -127,7 +140,8 @@ def report(tag: str) -> None:
     strong = top > 2.0
     print(f"  {tag}: предпочитают {counts}; избирательность {float(index.mean()):+.2f} "
           f"(с прибавкой > 2 Гц — {int(strong.sum())} клеток, у них {float(index[strong].mean()) if strong.any() else 0:+.2f}); "
-          f"различение ответа {similarity(shows[:, cells], [c for _ in range(3) for c in letters]):+.3f}", flush=True)
+          f"различение ответа {similarity(shows[:, cells], [c for _ in range(3) for c in letters]):+.3f}; "
+          f"разреженность {float(sparse):.2f}; предпочтение как до обучения {float((pref == first_pref).float().mean()):.2f}", flush=True)
 
 
 b.plasticity = False
@@ -153,7 +167,7 @@ for epoch in range(int(opts["epochs"])):
         s.line, s.gaze = rng.choice(letters), 0.0
 
         for phase, ms in (("указка", dwell), ("после", 200.0)):
-            s.pointer = s.screen.width(s.line) / 2 if phase == "указка" else None
+            s.pointer = s.screen.width(s.line) / 2 if phase == "указка" and opts["pointer"] == "1" else None
             w0 = proj.weight[rows].float().clone()
             prev_pre, prev_post = 0.0, 0.0
 

@@ -8,6 +8,9 @@ body.Cochlea), каждое reps раз в перемешанном порядк
 похожая пара pair=), задержка (первое 10-мс окно после начала слова, где
 частота звена выше тишины на 3 σ окон тишины).
 
+pv_off=association.L4 — диагностика: торможение PV → E этого слоя зоны
+выключено (синапсы и среднее поле). chain=1 — звенья до выхода (смысл L5,
+ПФК L4/L2/3/L5, премотор, стриатум, рука).
 inh_off=cn,mgn — ещё и местное торможение главных клеток этих ядер выключено
 (диагностика: на широкополосной речи гаснут CN и MGN, DESIGN).
 
@@ -24,7 +27,7 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 from brain.world import Voice
 
-opts = {"inh_off": "", "words": "кот,кит,дом,мама", "pair": "кот,кит", "reps": "4", "after": "100", "ic": "0", "seed": "0"}
+opts = {"pv_off": "", "chain": "0", "inh_off": "", "words": "кот,кит,дом,мама", "pair": "кот,кит", "reps": "4", "after": "100", "ic": "0", "seed": "0"}
 opts.update(dict(kv.split("=", 1) for kv in sys.argv[1:]))
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
@@ -45,6 +48,14 @@ for name in filter(None, opts["inh_off"].split(",")):
             p.weight.zero_()
     b.mf_inh[int(b.mf_post_id[nucleus.E.start]), int(b.mf_pre_id[nucleus.I.start])] = 0.0
 
+for spec in filter(None, opts["pv_off"].split(",")):
+    area, layer = spec.split(".")
+    g = b.areas[area].layers[layer]
+    for p in b.projections:
+        if p.name == f"{area}: {layer}.PV->{layer}.E" or (layer == "L23" and p.name == f"{area}: I->E"):
+            p.weight.zero_()
+    b.mf_inh[int(b.mf_post_id[g["E"].start]), int(b.mf_pre_id[g["PV"].start])] = 0.0
+
 i = [s.name for s in b.sensors].index("ear")
 ear = Cochlea(cfg, b.sensor_offsets[i], b.sensors[i].size, b.device)
 voice = Voice()
@@ -54,6 +65,16 @@ stages = {
     "смысл L4": L["association"]["L4"]["E"], "смысл L2/3": L["association"]["L23"]["E"],
     "ПФК L2/3": L["prefrontal"]["L23"]["E"],
 }
+
+if opts["chain"] == "1":
+    stages = {
+        "A1 L4": L["auditory"]["L4"]["E"], "A1 L2/3": L["auditory"]["L23"]["E"],
+        "смысл L4": L["association"]["L4"]["E"], "смысл L2/3": L["association"]["L23"]["E"],
+        "смысл L5": L["association"]["L5"]["E"],
+        "ПФК L4": L["prefrontal"]["L4"]["E"], "ПФК L2/3": L["prefrontal"]["L23"]["E"], "ПФК L5": L["prefrontal"]["L5"]["E"],
+        "премотор L2/3": b.areas["premotor"].layers["L23"]["E"], "стриатум D1": b.areas["striatum_d1"].E,
+        "рука L2/3": b.areas["hand"].layers["L23"]["E"],
+    }
 words = opts["words"].split(",")
 order = [w for w in words for _ in range(int(opts["reps"]))]
 random.Random(cfg.seed).shuffle(order)
@@ -97,7 +118,7 @@ def similarity(rows: list[torch.Tensor], a: str, c: str) -> float:
 
 a, c = opts["pair"].split(",")
 print(f"слова {words} × {opts['reps']}, IC местное торможение {'вкл' if cfg.ic_local_inhibition else 'выкл (обход)'}, ещё выкл: {opts['inh_off'] or '—'}")
-print(f"{'звено':12s} {'прибавка':>9s} {'повтор':>7s} {'разные':>7s} {'различ.':>8s} {a + '/' + c:>9s}  задержка")
+print(f"{'звено':14s} {'прибавка':>9s} {'повтор':>7s} {'разные':>7s} {'различ.':>8s} {a + '/' + c:>9s}  задержка")
 
 for k in stages:
     R = gains[k]
@@ -107,4 +128,4 @@ for k in stages:
     lat = torch.tensor(latency[k])
     lat = lat[~lat.isnan()]
     when = f"{float(lat.median()):.0f} мс ({len(lat)}/{len(order)})" if len(lat) else "—"
-    print(f"{k:12s} {float(torch.stack(R).mean()):+9.2f} {same:7.3f} {diff:7.3f} {same - diff:+8.3f} {pair:9.3f}  {when}", flush=True)
+    print(f"{k:14s} {float(torch.stack(R).mean()):+9.2f} {same:7.3f} {diff:7.3f} {same - diff:+8.3f} {pair:9.3f}  {when}", flush=True)

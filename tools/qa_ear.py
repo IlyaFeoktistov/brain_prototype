@@ -20,7 +20,10 @@
 Случайный уровень — 1 / число ответов (верхнее место), средний ранг —
 половина списка.
 
-    PYTHONPATH=. .venv/bin/python tools/qa_ear.py [check=0] [passes=5] [reps=3] [recall=300] [pause=500] [areas=association,prefrontal] [seed=0] [save=имя.pt]
+Диагностический режим (DESIGN «Временный обход»): ic=0 (IC без местного
+торможения), inh_off=cn,mgn, pv_off=association.L4.
+
+    PYTHONPATH=. .venv/bin/python tools/qa_ear.py [ic=1] [inh_off=] [pv_off=] [check=0] [passes=5] [reps=3] [recall=300] [pause=500] [areas=association,prefrontal] [seed=0] [save=имя.pt]
 """
 
 import re
@@ -34,7 +37,7 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 from brain.world import Voice
 
-opts = {"check": "0", "passes": "5", "reps": "3", "recall": "300", "pause": "500", "areas": "association,prefrontal", "seed": "0", "save": ""}
+opts = {"ic": "1", "inh_off": "", "pv_off": "", "check": "0", "passes": "5", "reps": "3", "recall": "300", "pause": "500", "areas": "association,prefrontal", "seed": "0", "save": ""}
 opts.update(dict(kv.split("=", 1) for kv in sys.argv[1:]))
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
@@ -43,9 +46,25 @@ cfg.anatomy = True
 cfg.hand = True
 cfg.dt_ms = 0.5
 cfg.seed = int(opts["seed"])
+cfg.ic_local_inhibition = opts["ic"] == "1"
 torch.manual_seed(cfg.seed)
 mind = Mind(cfg)
 b = mind.brain
+
+for name in filter(None, opts["inh_off"].split(",")):
+    nucleus = b.areas[name]
+    for p in b.projections:
+        if p.name == f"{name}: I->E":
+            p.weight.zero_()
+    b.mf_inh[int(b.mf_post_id[nucleus.E.start]), int(b.mf_pre_id[nucleus.I.start])] = 0.0
+
+for spec in filter(None, opts["pv_off"].split(",")):
+    area, layer = spec.split(".")
+    g = b.areas[area].layers[layer]
+    for p in b.projections:
+        if p.name == f"{area}: {layer}.PV->{layer}.E":
+            p.weight.zero_()
+    b.mf_inh[int(b.mf_post_id[g["E"].start]), int(b.mf_pre_id[g["PV"].start])] = 0.0
 i = [s.name for s in b.sensors].index("ear")
 ear = Cochlea(cfg, b.sensor_offsets[i], b.sensors[i].size, b.device)
 voice = Voice()

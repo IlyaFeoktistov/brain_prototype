@@ -14,7 +14,10 @@
    связи сдвинута к сходству пары (w · exp(k · сходство), сумма входа
    клетки прежняя), k — чтобы корреляция силы со сходством стала target.
 
-    PYTHONPATH=. .venv/bin/python tools/eipv_trace.py [words=кот,дом,кит,мама] [probe=4] [test=8] [target=0.4] [seed=0]
+geometry=1 — колонки без карты как лист коры (cfg.column_geometry): взаимность
+по расстоянию между клетками пары, частоты в покое.
+
+    PYTHONPATH=. .venv/bin/python tools/eipv_trace.py [geometry=0] [words=кот,дом,кит,мама] [probe=4] [test=8] [target=0.4] [seed=0]
 """
 
 import random
@@ -27,7 +30,7 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 from brain.world import Voice
 
-opts = {"words": "кот,дом,кит,мама", "probe": "4", "test": "8", "target": "0.4", "inh_off": "cn,mgn", "seed": "0"}
+opts = {"geometry": "0", "words": "кот,дом,кит,мама", "probe": "4", "test": "8", "target": "0.4", "inh_off": "cn,mgn", "seed": "0"}
 opts.update(dict(kv.split("=", 1) for kv in sys.argv[1:]))
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
@@ -36,6 +39,7 @@ cfg.anatomy = True
 cfg.hand = True
 cfg.dt_ms = 0.5
 cfg.ic_local_inhibition = False
+cfg.column_geometry = opts["geometry"] == "1"
 cfg.seed = int(opts["seed"])
 torch.manual_seed(cfg.seed)
 b = Mind(cfg).brain
@@ -128,6 +132,23 @@ pre_pv = pv2e.pre.long().cpu() - PV.start  # PV-входы каждой E
 pre_e = e2pv.pre.long().cpu() - E.start  # E-входы каждой PV
 inbound = set(zip(torch.arange(PV.size)[:, None].expand_as(pre_e).flatten().tolist(), pre_e.flatten().tolist()))
 recip = sum((int(p), e) in inbound for e, row in enumerate(pre_pv.tolist()) for p in row) / pre_pv.numel()
+pairs_e, pairs_p = [], []
+for e, row in enumerate(pre_pv.tolist()):
+    for p in row:
+        pairs_e.append(e); pairs_p.append(int(p))
+pe, pp = torch.tensor(pairs_e), torch.tensor(pairs_p)
+mutual = torch.tensor([(int(p), int(e)) in inbound for e, p in zip(pe.tolist(), pp.tolist())])
+if cfg.column_geometry:
+    pos_e = b._sheet_place(next(s for s in cfg.areas if s.name == "association"), b.areas["association"], E).cpu()
+    pos_p = b._sheet_place(next(s for s in cfg.areas if s.name == "association"), b.areas["association"], PV).cpu()
+    d = (pos_e[pe] - pos_p[pp]).norm(dim=1) * 1000
+    bins = [0, 50, 100, 200, 400, 10000]
+    print("взаимность PV → E по расстоянию пары: " + ", ".join(
+        f"{bins[j]}–{bins[j + 1]} мкм {float(mutual[(d >= bins[j]) & (d < bins[j + 1])].float().mean()) * 100:.0f}% ({int(((d >= bins[j]) & (d < bins[j + 1])).sum())})"
+        for j in range(len(bins) - 1) if bool(((d >= bins[j]) & (d < bins[j + 1])).any())) + f"; медиана расстояния {float(d.median()):.0f} мкм")
+rest = b.observe(1000.0)
+print("покой: " + ", ".join(f"{a} {l} E {float(rest[b.areas[a].layers[l]['E'].slice].mean()):.1f} / PV {float(rest[b.areas[a].layers[l]['PV'].slice].mean()):.1f}"
+                        for a in ("association", "prefrontal") for l in ("L23", "L4")))
 print(f"проба: L4 E избирательных (разброс по словам > 0) — {float((tune_e.std(0) > 0).float().mean()) * 100:.0f}%")
 print(f"связи как есть: E → PV ↔ сходство {corr(w_e2pv.cpu(), sim_e2pv):+.3f}, PV → E ↔ сходство {corr(w_pv2e.cpu().abs(), sim_pv2e):+.3f}; "
       f"взаимных среди связей PV → E — {recip * 100:.0f}% (V1: 64% пар)")

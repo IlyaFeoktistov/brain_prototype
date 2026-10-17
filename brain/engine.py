@@ -1251,6 +1251,39 @@ class SpikingBrain:
                 self.field_cols.setdefault(pop.name, cols)
                 self.map_pos[pop.name] = torch.stack([rows, cols], 1)
 
+    def _sheet_place(self, spec, area, pop: Population) -> torch.Tensor:
+        """
+        Место клетки колонки без карты на листе коры, мм: равномерно на
+        квадрате площади (клеток зоны) / (клеток колонки 1 мм², Potjans) —
+        все слои на одном квадрате.
+        """
+
+        cache = self.__dict__.setdefault("sheet_pos", {})
+
+        if pop.name not in cache:
+            per_mm2 = sum(e + i for _, e, i in self._column_layers(spec.name))
+            cells = sum(p.size for _, p in area.populations)
+            side = math.sqrt(cells / per_mm2)
+            g = torch.Generator(device=self.device).manual_seed(self.cfg.seed * 7919 + pop.start)
+            cache[pop.name] = torch.rand(pop.size, 2, device=self.device, generator=g) * side
+
+        return cache[pop.name]
+
+    def _sheet_pre(self, spec, area, post: Population, k: int, pre_pop: Population, sigma_mm: float) -> torch.Tensor:
+        """k источников без повторов, вероятность ∝ exp(−d² / 2σ²) по листу."""
+
+        a, b = self._sheet_place(spec, area, post), self._sheet_place(spec, area, pre_pop)
+        out = []
+
+        for chunk in torch.split(torch.arange(post.size, device=self.device), 512):
+            w = torch.exp(-torch.cdist(a[chunk], b).pow(2) / (2 * sigma_mm ** 2)) + 1e-12
+
+            if post is pre_pop:
+                w[torch.arange(len(chunk), device=self.device), chunk] = 0.0
+            out.append(torch.multinomial(w, k, replacement=False, generator=self.generator))
+
+        return pre_pop.start + torch.cat(out)
+
     def _nearest_pre(self, post: Population, k: int, pre_pop: Population) -> torch.Tensor:
         """k ближайших по карте клеток источника (ничья — случайно)."""
 
@@ -1472,6 +1505,14 @@ class SpikingBrain:
                                 pre_index = self._complex_pre(post, k, pre, 5.0)
                             else:
                                 pre_index = self._nearest_pre(post, min(k, pre.size - (pre is post)), pre)
+                            k = pre_index.shape[1]
+                        elif getattr(cfg, "column_geometry", False) and not (src_kind == "E" and dst_kind == "E"):
+                            # Колонка без карты — лист коры: партнёр выбирается с
+                            # вероятностью по расстоянию (Гаусс, σ — Campagnola
+                            # Fig. 2A: E → I 99, I → E 96, I → I 131 мкм); число
+                            # входов прежнее. E → E — пока случайно (σ нет).
+                            sigma = cfg.sigma_ei_um if src_kind == "E" else cfg.sigma_ie_um if dst_kind == "E" else cfg.sigma_ii_um
+                            pre_index = self._sheet_pre(spec, area, post, min(k, pre.size - (pre is post)), pre, sigma / 1000.0)
                             k = pre_index.shape[1]
 
                         if (src_layer, src_kind, dst_layer, dst_kind) == ("L23", "E", "L23", "E"):

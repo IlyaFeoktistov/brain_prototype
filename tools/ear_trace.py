@@ -97,6 +97,15 @@ for name, wave, sr in sounds:
                 when = f", первый спайк ~{float(lat.median()):.0f} мс у {len(lat)}/{len(c)}" if m is own and len(lat) else ""
                 print(f"  {tag:19s} тишина {float(quiet[c].mean()):6.1f} → начало {float(onset[c].mean()):6.1f} → дальше {float(steady[c].mean()):6.1f} Гц{when}")
 
+        # Слуховая L4 — тонотопия: клетка i — полоса (i + 0.5) · полос / клеток.
+        L4 = A["L4"]["E"]
+        band = ((torch.arange(L4.size, device=b.device).float() + 0.5) * cfg.cochlea_bands / L4.size).long()
+        own = (band - int((ear.centres - 1000.0).abs().argmin())).abs() <= 2
+        idx = torch.arange(L4.start, L4.stop, device=b.device)
+        for tag, m in (("A1 L4 E своей полосы", own), ("A1 L4 E прочих", ~own)):
+            c = idx[m]
+            print(f"  {tag:19s} тишина {float(quiet[c].mean()):6.1f} → начало {float(onset[c].mean()):6.1f} → дальше {float(steady[c].mean()):6.1f} Гц")
+
     for label, pop in stages:
         print(f"  {label:13s} тишина {float(quiet[pop.slice].mean()):6.1f} → начало {float(onset[pop.slice].mean()):6.1f} → дальше {float(steady[pop.slice].mean()):6.1f} Гц")
 

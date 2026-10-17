@@ -2926,6 +2926,10 @@ class BrainConfig:
     # (у LGN уже так, _lgn_local). Выкл. — вход тормозных со всего органа:
     # тон в одной полосе гасил реле во всех (tools/ear_trace.py).
     relay_local_inhibition: bool = False
+    # Тонотопия A1: клетка L4 слуховой коры — своё место на оси частот (по
+    # порядку), таламические входы — от клеток MGN своей полосы ± столько
+    # полос (64 полосы на ~6.3 октавы: 5 ≈ ±0.5 октавы) [ширину сверить].
+    a1_thalamic_bands: int = 5
     # Слуховой ствол (engine._brainstem): (от, к, входов на клетку, ±полос,
     # ВПСП мВ). Нерв → T-звёздчатые: несколько волокон своей полосы, мелкие
     # ВПСП (Ferragamo, Golding & Oertel 1998: ≥ 5 волокон [сверить]); нерв →
@@ -2969,6 +2973,8 @@ class BrainConfig:
             # Нерв идёт не в таламус, а в ствол: кохлеарное ядро → нижнее
             # двухолмие → MGN (Winer & Schreiner 2005).
             brainstem=("cn", "ic") if relay else (),
+            # Вход таламуса в слуховую L4 — по частоте (тонотопия A1).
+            wiring="tonotopic" if relay else "random",
             # Волокна слухового нерва в тишине: своя у каждого класса
             # (Liberman 1978; body.FIBERS).
             spontaneous_hz=Cochlea.spontaneous(self.sensory_size, self.cochlea_bands) if relay else 0.0,

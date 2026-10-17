@@ -1962,6 +1962,18 @@ class SpikingBrain:
             for pop, gain in ((excitatory, 1.0), (inhibitory, sensor.inhibitory_gain)):
                 if sensor.wiring == "oriented" and pop is excitatory:
                     pre, weight = self._wire_oriented(sensor, pop.size)
+                elif sensor.wiring == "tonotopic":
+                    # Слух: клетка L4 — своё место на оси частот (по порядку);
+                    # входы — волокна (клетки реле) своей полосы ± a1_thalamic_bands.
+                    k = min(sensor.k, sensor.size)
+                    bands = cfg.cochlea_bands
+                    per = sensor.size // bands
+                    g = self.generator
+                    own = ((torch.arange(pop.size, device=self.device).float() + 0.5) * bands / pop.size).long()
+                    band = (own[:, None] + torch.randint(-cfg.a1_thalamic_bands, cfg.a1_thalamic_bands + 1, (pop.size, k),
+                                                         device=self.device, generator=g)).clamp(0, bands - 1)
+                    pre = band * per + torch.randint(0, per, (pop.size, k), device=self.device, generator=g)
+                    weight = torch.full((pop.size, k), sensor.weight / self._psp_peak(pop), device=self.device)
                 elif sensor.wiring == "map":
                     # По положению: клетка — своё место поля, k рецепторов
                     # (ON и OFF, все строки) из соседних столбцов.
@@ -2021,8 +2033,8 @@ class SpikingBrain:
                     built = pre.shape[1]
                     w = psp / self._psp_peak(pop)
 
-                    if sensor.wiring == "oriented":
-                        # Все таламические входы клетки — из её места поля
+                    if sensor.wiring in ("oriented", "tonotopic"):
+                        # Все таламические входы клетки — из её места поля (у слуха — её полосы)
                         # (ретинотопия): недостающие видят то же, что её
                         # построенные, — их несут сами построенные (вес ×
                         # k_data / k). Среднее поле от всего LGN гасило слово:

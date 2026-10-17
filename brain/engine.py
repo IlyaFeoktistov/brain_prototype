@@ -1738,7 +1738,9 @@ class SpikingBrain:
                     tau = float(self.tau_m[post.start])
                     dc = self.dc_inh_mv if w < 0 else self.dc_mv
                     self._missing(post, pre, k * hz / 1000.0 * w * tau * (1.0 - 1.0 / root), hz / 1000.0)
-                    index = self._lgn_local(area, pre, post, built) if spec.name == "lgn" and getattr(cfg, "eye", False) else None
+                    local = (spec.name == "lgn" and getattr(cfg, "eye", False)) or (
+                        spec.name == "mgn" and getattr(cfg, "relay_local_inhibition", False))
+                    index = self._lgn_local(area, pre, post, built) if local else None
                     self._connect(f"{spec.name}: {name}", pre, post, built, (w * root, w * root), pre_index=index)
 
                 continue
@@ -1919,9 +1921,29 @@ class SpikingBrain:
                 # входа, триады; ~25% клеток таламуса приматов — Arcelli et al.
                 # 1997).
                 k = 2
+
+                if getattr(cfg, "relay_local_inhibition", False):
+                    # Вход тормозной клетки — рецепторы своего места на
+                    # карте (рядом с её клетками реле), а не со всего органа:
+                    # у MGN — своя полоса улитки ±1, у LGN — то же место
+                    # сетчатки ±2 столбца (слой ON или OFF — случайно).
+                    own = self._relay_place(relay, relay.I)
+                    g = self.generator
+
+                    if relay.name == "mgn":
+                        per = sensor.size // cfg.cochlea_bands
+                        band = (own[:, 0:1] + torch.randint(-1, 2, (relay.I.size, k), device=self.device, generator=g)).clamp(0, cfg.cochlea_bands - 1)
+                        pre = band.long() * per + torch.randint(0, per, (relay.I.size, k), device=self.device, generator=g)
+                    else:
+                        R, C = cfg.retina_rows, cfg.retina_cols
+                        col = (own[:, 1:2] + torch.randint(-2, 3, (relay.I.size, k), device=self.device, generator=g)).clamp(0, C - 1)
+                        layer = torch.randint(0, 2, (relay.I.size, k), device=self.device, generator=g)
+                        pre = layer * R * C + own[:, 0:1].long() * C + col.long()
+                else:
+                    pre = torch.randint(0, sensor.size, (relay.I.size, k), device=self.device, generator=self.generator)
+
                 self.projections.append(Projection(
-                    f"{sensor.name} -> {relay.I.name}", "sensory",
-                    torch.randint(0, sensor.size, (relay.I.size, k), device=self.device, generator=self.generator) + offset,
+                    f"{sensor.name} -> {relay.I.name}", "sensory", pre + offset,
                     relay.I, torch.full((relay.I.size, k), driver, device=self.device),
                 ))
             # Вход органа (через таламус) — в L4 колонки (Potjans: таламус → L4).
@@ -2038,6 +2060,29 @@ class SpikingBrain:
         self._pack()
         self._init_nmda()
 
+    def _relay_place(self, area, pop: Population) -> torch.Tensor:
+        """
+        Место клетки реле на карте органа: клетка реле j — место рецептора j,
+        тормозная — место «своей» клетки реле (ровно по ядру). LGN — строка и
+        столбец сетчатки; MGN — полоса улитки (тонотопия), одна ось.
+        """
+
+        cfg = self.cfg
+
+        if pop is area.E:
+            j = torch.arange(pop.size, device=self.device)
+        else:
+            j = ((torch.arange(pop.size, device=self.device).float() + 0.5) * area.E.size / pop.size).long()
+
+        if area.name == "mgn":
+            j = j % cfg.sensory_size
+            band = (j // (cfg.sensory_size // cfg.cochlea_bands)).float()
+            return torch.stack([band, torch.zeros_like(band)], 1)
+
+        R, C = cfg.retina_rows, cfg.retina_cols
+        j = j % (R * C)
+        return torch.stack([(j // C).float(), (j % C).float()], 1)
+
     def _lgn_local(self, area, pre: Population, post: Population, k: int) -> torch.Tensor:
         """
         Местный контур LGN — по месту в поле зрения: тормозные клетки реле
@@ -2048,18 +2093,7 @@ class SpikingBrain:
         связи гасили на слово клетки, его не видящие (15 → 8 Гц).
         """
 
-        cfg = self.cfg
-        R, C = cfg.retina_rows, cfg.retina_cols
-
-        def place(pop):
-            if pop is area.E:
-                j = torch.arange(pop.size, device=self.device)
-            else:
-                j = ((torch.arange(pop.size, device=self.device).float() + 0.5) * area.E.size / pop.size).long()
-            j = j % (R * C)
-            return torch.stack([(j // C).float(), (j % C).float()], 1)
-
-        a, b = place(post), place(pre)
+        a, b = self._relay_place(area, post), self._relay_place(area, pre)
         g = self.generator
         out = []
 

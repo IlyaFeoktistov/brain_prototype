@@ -1872,6 +1872,15 @@ class SpikingBrain:
                 # Вес по данным (средний PSP пути — cap / learned_cap_psp):
                 # шаг STDP — в долях этой средней связи (chemical_plasticity).
                 proj.data_weight = path.plastic and (self._data_path(path) or getattr(path, "psp_mv", None) is not None)
+                sigma = getattr(cfg, "interareal_weight_sigma", 0.0)
+
+                if proj.data_weight and sigma > 0:
+                    # Врождённые веса обучаемого межзонного пути — логнормально
+                    # (cfg.interareal_weight_sigma), среднее то же.
+                    mean = 0.5 * (weight[0] + weight[1])
+                    mu = math.log(mean) - 0.5 * sigma ** 2
+                    z = torch.randn(proj.weight.shape, device=self.device, generator=self.generator)
+                    proj.weight.copy_(exact16(torch.exp(mu + sigma * z).clamp(max=path.cap)))
 
             if inhibitory is None:
                 continue

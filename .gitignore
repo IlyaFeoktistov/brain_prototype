@@ -36,9 +36,7 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
-# Сохранённый мозг и данные; стенды (data/tools) — в git
-data/*
-!data/tools/
+# Мозги — в ~/.brain/brains (brain/config.py BRAINS), не в репозитории
 *.pt
 *.pt.tmp
 

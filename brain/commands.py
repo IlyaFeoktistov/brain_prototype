@@ -13,7 +13,7 @@ import threading
 import time
 from typing import Callable
 
-from brain.config import FEATURES, PRESETS, BrainConfig
+from brain.config import BRAINS, FEATURES, PRESETS, BrainConfig
 from brain.language import ReadReport, Reply
 from brain.mind import Mind
 
@@ -318,9 +318,9 @@ class Session:
     # ==============================================================
 
     def brain_files(self) -> list[Path]:
-        """Сохранённые мозги: *.pt рядом с текущим и в data/."""
+        """Сохранённые мозги: *.pt рядом с текущим и в ~/.brain/brains."""
 
-        folders = {Path(self.mind.cfg.save_path).expanduser().resolve().parent, Path("data").resolve()}
+        folders = {Path(self.mind.cfg.save_path).expanduser().resolve().parent, BRAINS.resolve()}
         files = {p.resolve() for folder in folders if folder.exists() for p in folder.glob("*.pt")}
 
         return sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)

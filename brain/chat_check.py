@@ -12,7 +12,7 @@ chat-scenario.txt обычным чатом (`Session.say` — мозг учит
 - лишние слова после верного (уплывание).
 
 Без load= мозг создаётся и читает train-data.md дважды и спит (как
-brain.teach). Расшифровка — data/measure/имя-chat.txt, мозг после
+brain.teach). Расшифровка — ~/.brain/brains/имя-chat.txt, мозг после
 разговора — имя-chatted.pt.
 """
 
@@ -26,7 +26,7 @@ from pathlib import Path
 import torch
 
 from brain.commands import Session, deliberation_line
-from brain.config import BrainConfig
+from brain.config import BrainConfig, log_path
 from brain.mind import Mind
 from brain.teach import FIRST_WORDS, same_word
 
@@ -178,7 +178,7 @@ def main() -> None:
                 reader.read_text(path.stem, path.read_text(encoding="utf-8"))
 
         mind.language.sleep_until_rested()
-        mind.save(f"data/measure/{name}-read.pt")
+        mind.save(f"{name}-read.pt")
 
     if mind.brain.device.type == "cuda":
         torch.cuda.synchronize()
@@ -212,7 +212,7 @@ def main() -> None:
             human.previous = line.answers[0]
 
     # Мозг после разговора — разбирать, что он вспоминал.
-    mind.save(f"data/measure/{name}-chatted.pt")
+    mind.save(f"{name}-chatted.pt")
     total = sum(sum(v) for v in score.values())
     count = sum(len(v) for v in score.values())
     lines = [f"{group:10s} {sum(v)}/{len(v)}" for group, v in score.items()] + [
@@ -220,7 +220,7 @@ def main() -> None:
         f"подмешал прошлую реплику  {mixed} раз",
         f"слов после верного        {sum(drifts) / max(1, len(drifts)):.1f} в среднем",
     ]
-    out = Path(f"data/measure/{name}-chat.txt")
+    out = log_path(f"{name}-chat.txt")
     out.write_text("\n".join(transcript + [""] + lines) + "\n", encoding="utf-8")
     print("\n".join(transcript + [""] + lines), flush=True)
     print(f"расшифровка: {out}")

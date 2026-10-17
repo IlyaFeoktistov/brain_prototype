@@ -1,5 +1,29 @@
 from dataclasses import dataclass, field, asdict, replace
 import os
+from pathlib import Path
+
+# Домашняя папка мозга (BRAIN_HOME, по умолчанию ~/.brain): brains/ —
+# сохранённые мозги, logs/ — логи и расшифровки замеров. Мозги весят
+# гигабайты и в репозиторий не идут.
+BRAIN_HOME = Path(os.environ.get("BRAIN_HOME", "~/.brain")).expanduser()
+BRAINS = BRAIN_HOME / "brains"
+LOGS = BRAIN_HOME / "logs"
+
+
+def brain_path(name: str | Path) -> Path:
+    """Путь мозга: голое имя («ep-300.pt») — в BRAINS, путь с папкой — как есть."""
+
+    path = Path(name).expanduser()
+    return path if path.is_absolute() or path.parent != Path(".") else BRAINS / path
+
+
+def log_path(name: str | Path) -> Path:
+    """Путь лога замера: голое имя — в LOGS (папка создаётся), путь с папкой — как есть."""
+
+    path = Path(name).expanduser()
+    path = path if path.is_absolute() or path.parent != Path(".") else LOGS / path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 # ======================================================================
@@ -310,7 +334,7 @@ def default_areas() -> list[AreaSpec]:
         # Моторная зона без гомеостаза: стреляет, только когда таламус
         # (ворота базальных ганглиев) добавляет ток к входу от смысла —
         # подумать о слове ещё не значит сказать. [не подбиралось] —
-        # стенд data/tools/bg_gate.py.
+        # стенд tools/bg_gate.py.
         AreaSpec(
             "motor", "моторная речевая зона / зона Брока (рот)",
             0.05, k_ee=30, ee_plastic=False, target_activity=0.0,
@@ -423,7 +447,7 @@ def default_areas() -> list[AreaSpec]:
         # тормозные клетки будят только чужие тормозные пути (D1 → GPi…).
         # [замер] со слабым ударом тормозных клеток (inhibition 0.2) D1 на
         # 17 Гц снижал GPi с ~20 до 13–16 Гц — таламус молчал.
-        # [не подбиралось] — стенд data/tools/bg_gate.py.
+        # [не подбиралось] — стенд tools/bg_gate.py.
         AreaSpec(
             "gpe", "бледный шар, наружный (GPe)",
             0.003, k_ee=10, ee_plastic=False, target_activity=0.0, background=1.3, inhibition=1.5, feedback=0.0, tonic=True,
@@ -1070,7 +1094,7 @@ def default_pathways() -> list[PathwaySpec]:
         # пустой.
         # Переключатель сна: VLPO и голубое пятно тормозят друг друга (через
         # тормозные клетки получателя), часы днём будят голубое пятно.
-        # [не подбиралось] — стенд data/tools/sleep_switch.py.
+        # [не подбиралось] — стенд tools/sleep_switch.py.
         PathwaySpec("vlpo", "lc", k=0, weight=(0.0, 0.0), k_inhibitory=20, inhibitory_weight=3.0),
         PathwaySpec("lc", "vlpo", k=0, weight=(0.0, 0.0), k_inhibitory=20, inhibitory_weight=3.0),
         PathwaySpec("scn", "lc", k=20, weight=(3.0, 3.0), k_inhibitory=0),
@@ -1080,7 +1104,7 @@ def default_pathways() -> list[PathwaySpec]:
         # прямые с отрицательным весом. [замер] через тормозные клетки
         # получателя не работало: GPe фоном 34 Гц держал тормозные клетки
         # GPi на пределе, и D1 ничего не добавлял (GPi 8–20 Гц, таламус 0).
-        # [не подбиралось] — стенд data/tools/bg_gate.py.
+        # [не подбиралось] — стенд tools/bg_gate.py.
         PathwaySpec("offset", "striatum_d1", k=20, weight=(1.5, 1.5), k_inhibitory=0),
         # Окончание реплики приходит в обе половины стриатума (в мозге оба
         # пути получают одинаковый вход из коры); «иди» побеждает фоном
@@ -1620,7 +1644,7 @@ class BrainConfig:
     # Местных партнёров E → E у клетки L2/3 человека — не измерено: число
     # синапсов Potjans (грызуны) ÷ кратность × этот множитель. С человеческой
     # амплитудой (0.37 мВ) и числом грызунов колонка насыщена (тормозные 400
-    # Гц, g_I/g_E 0.4); подбор — data/tools/column_check.py (устойчивость,
+    # Гц, g_I/g_E 0.4); подбор — tools/column_check.py (устойчивость,
     # g_I/g_E, частоты покоя). Синапсов на нейрон у человека не меньше, чем у
     # мыши (DeFelipe et al. 2002), — меньше, вероятно, местная доля (у
     # человека больше дальних входов) [сверить]. 1 — без поправки.
@@ -1662,7 +1686,7 @@ class BrainConfig:
     # — g и внешний вход, Billeh et al. 2020 — веса под частоты типов):
     # общие на тип множители, одинаковые во всех слоях. Цель — частоты в
     # покое у бодрствующих животных (column_target_hz), подбор —
-    # data/tools/column_fit.py. 1.0 — без согласования.
+    # tools/column_fit.py. 1.0 — без согласования.
     # [согласовано с частотами in vivo] 2026-10-15, column_fit mode=batch (24
     # копии колонки слуха × 25 поколений, шаг 0.5 мс, частота E весит ×4):
     # ошибка 0.54; L2/3 E 1.7 (цель 2.6), L5 E 2.3 (2.5), PV 4–23 (6.4), VIP
@@ -1678,7 +1702,7 @@ class BrainConfig:
     # стреляют, как построенные, engine._missing) нужна полная сила
     # торможения: тормозные → E ×8 (одинаково для типов) — колонка устойчива
     # при толчке 10–30 мВ, L4 E 1.9, L5 2.9, L6 1.0, PV 1–5 Гц (стенд
-    # data/tools/column_kick.py; ×4 — PV L4 47, L5 E 10). Фон E ×3; по слою и типу —
+    # tools/column_kick.py; ×4 — PV L4 47, L5 E 10). Фон E ×3; по слою и типу —
     # anatomy_fit.
     # 2026-10-16: множители связей сняты (1.0 — числа из данных). Они
     # прикрывали недостающее устройство: LAMP5 (медленное объёмное
@@ -1719,12 +1743,12 @@ class BrainConfig:
     column_gain_ii: float = 1.0  # тормозные → тормозные
     # Внешний вход по популяциям (слой, тип, множитель) — подстройка фона
     # под частоты in vivo, как у Billeh et al. 2020 (веса фона по типам):
-    # data/tools/column_fit.py mode=pop. () — без неё.
+    # tools/column_fit.py mode=pop. () — без неё.
     column_gain_external_pop: tuple[tuple[str, str, float], ...] = ()
     # Фон ядер анатомического мозга (ядро, мВ к току покоя главных клеток) —
     # согласование с частотами in vivo (anatomy.RATES_HZ), как фон колонок:
     # заменяет недостающие входы ствола и коры (клетки реле таламуса наяву
-    # держит у −60 мВ ацетилхолин ствола — Steriade). data/tools/anatomy_fit.py.
+    # держит у −60 мВ ацетилхолин ствола — Steriade). tools/anatomy_fit.py.
     nucleus_bias_mv: tuple[tuple[str, float], ...] = ()
     # Частоты в покое, бодрствование, Гц. Человек (решётка Юта ~1–1.5 мм —
     # L2/3, у людей с эпилепсией; Le Van Quyen et al. 2016, табл. S3,
@@ -2271,7 +2295,7 @@ class BrainConfig:
     # Сколько синапсов прорастает к месту слова от его звучания за раз.
     # Узнавать по одному синапсу нельзя: слово будит ~5% слуха, и у клетки
     # места с k = 20 случайными входами от своего звучания ~1 вход.
-    # [замер] 4 зерна, 20 тыс. (data/tools/recognition.py): средний ранг
+    # [замер] 4 зерна, 20 тыс. (tools/recognition.py): средний ранг
     # своего места по звуку из 276 — до исправления роста 14.1, 8 — 6.3,
     # 32 — 13.3; экзамен первым словом 25.0 / 22.5 / 26.0 (разброс зёрен ±7).
     form_grow_synapses: int = 8
@@ -2365,7 +2389,7 @@ class BrainConfig:
     # Рецепторы: (вещество, зона, ток E-клеток при полной занятости, мВ).
     # Аденозин возбуждает VLPO (A2A) и тормозит ядра бодрствования (A1)
     # (Porkka-Heiskanen 1997; Scammell 2001). [не подбиралось] —
-    # стенд data/tools/sleep_switch.py.
+    # стенд tools/sleep_switch.py.
     receptors: tuple[tuple[str, str, float], ...] = (
         ("adenosine", "vlpo", 35.0),
         ("adenosine", "lc", -15.0),
@@ -2858,7 +2882,7 @@ class BrainConfig:
     valence_boldness: float = 0.5
 
     # Сохранение мозга между запусками.
-    save_path: str = os.environ.get("BRAIN_SAVE", "data/brain.pt")
+    save_path: str = os.environ.get("BRAIN_SAVE", str(BRAINS / "brain.pt"))
     autosave: bool = True
     # При чтении папок — не чаще раза в N минут: мозг на 300k
     # нейронов весит больше 1 ГБ, а файлов бывает сотня.

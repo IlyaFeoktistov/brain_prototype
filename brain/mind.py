@@ -8,7 +8,7 @@ import time
 import torch
 
 from brain.config import (
-    FEATURES, BrainConfig, eye_areas, eye_pathways, hand_areas, hand_pathways, hippocampus_areas, hippocampus_pathways, learned_mouth, letter_mouth, sequence_areas,
+    FEATURES, BrainConfig, brain_path, eye_areas, eye_pathways, hand_areas, hand_pathways, hippocampus_areas, hippocampus_pathways, learned_mouth, letter_mouth, sequence_areas,
     sequence_pathways,
 )
 from brain.engine import SpikingBrain
@@ -176,7 +176,7 @@ class Mind:
     # ==============================================================
 
     def save(self, path: str | None = None) -> Path:
-        target = Path(path or self.cfg.save_path).expanduser()
+        target = brain_path(path or self.cfg.save_path)
         target.parent.mkdir(parents=True, exist_ok=True)
 
         tmp = target.with_suffix(target.suffix + ".tmp")
@@ -199,8 +199,9 @@ class Mind:
 
     @classmethod
     def load(cls, path: str, device: str | None = None) -> "Mind":
+        path = brain_path(path)
         state = torch.load(
-            Path(path).expanduser(),
+            path,
             map_location="cpu",
             weights_only=False,
         )
@@ -226,7 +227,7 @@ class Mind:
     def open(cls, cfg: BrainConfig) -> tuple["Mind", bool]:
         """Загрузить сохранённый мозг, если он есть, иначе создать новый."""
 
-        if Path(cfg.save_path).expanduser().exists():
+        if brain_path(cfg.save_path).exists():
             return cls.load(cfg.save_path, device=cfg.device), True
 
         mind = cls(cfg)

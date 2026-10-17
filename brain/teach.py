@@ -11,9 +11,9 @@ teach-data.txt обычными репликами (`converse` — мозг уч
 словами, те же вопросы дословно.
 
 Без load= мозг создаётся и читает train-data.md дважды (как brain.measure)
-и сохраняется в data/measure/имя-read.pt — с него можно повторить.
-Расшифровка — в data/measure/имя-teach.txt, мозг после урока и сна —
-в data/measure/имя-taught.pt, после всей проверки — имя-tested.pt.
+и сохраняется в ~/.brain/brains/имя-read.pt — с него можно повторить.
+Расшифровка — в ~/.brain/brains/имя-teach.txt, мозг после урока и сна —
+в ~/.brain/brains/имя-taught.pt, после всей проверки — имя-tested.pt.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from pathlib import Path
 import torch
 
 from brain.commands import Session
-from brain.config import BrainConfig
+from brain.config import BrainConfig, log_path
 from brain.language import SILENT
 from brain.mind import Mind
 
@@ -189,7 +189,7 @@ def main() -> None:
         for _ in range(2):
             reader.read_text("train-data", text)
 
-        mind.save(f"data/measure/{name}-read.pt")
+        mind.save(f"{name}-read.pt")
 
     torch.cuda.synchronize()
     print(f"{size}: {mind.brain.n:,} нейронов, готов за {time.time() - t0:.0f} с", flush=True)
@@ -229,7 +229,7 @@ def main() -> None:
     mind.language.sleep_until_rested()
     transcript.append(f"… сон {time.time() - t:.0f} с …")
     # Мозг после урока и сна — для /trace и проб.
-    mind.save(f"data/measure/{name}-taught.pt")
+    mind.save(f"{name}-taught.pt")
 
     # Проверка без поправок: сначала то, что меньше всего подсказано уроком.
     def test(items: list[tuple[str, Fact]], tag: str) -> tuple[int, list[int]]:
@@ -255,7 +255,7 @@ def main() -> None:
     probes.append(("проба после 50 проверочных вопросов", hits, answers))
     slept_hits, slept_drift = test([(f.question, f) for f in taught], "после сна")
     # Мозг после всей проверки — разбирать, что сделали с ним 70 вопросов.
-    mind.save(f"data/measure/{name}-tested.pt")
+    mind.save(f"{name}-tested.pt")
 
     drifts = held_drift + para_drift + slept_drift
     lines = [f"{name:38s} {hits}/{len(taught)}" for name, hits, _ in probes] + [
@@ -266,7 +266,7 @@ def main() -> None:
         f"отложенные           {held_hits}/{len(held)}",
         f"слов после верного   {sum(drifts) / max(1, len(drifts)):.1f} в среднем (0 — замолк)",
     ]
-    out = Path(f"data/measure/{name}-teach.txt")
+    out = log_path(f"{name}-teach.txt")
     detail = [f"\n{name}:\n  " + "\n  ".join(answers) for name, _, answers in probes]
     out.write_text("\n".join(transcript + detail + [""] + lines) + "\n", encoding="utf-8")
     print("\n".join(transcript[:12] + ["…"] + lines), flush=True)

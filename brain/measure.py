@@ -4,13 +4,13 @@
     python -m brain.measure размер имя [key=value ...] [then=папка:слов] [load=путь]
 
 Печатает память, пик видеопамяти, скорость чтения без сна и факты;
-обученный мозг сохраняет в data/measure/имя.pt (там же — для экзамена
+обученный мозг сохраняет в ~/.brain/brains/имя.pt (там же — для экзамена
 с другими настройками ответа).
 
 then=папка:слов — потом прочитать первые слова корпуса (один проход,
 обычно больше слов, чем мест) и пересдать экзамен: сколько выученного
 переживает переполнение ёмкости (без дремоты при чтении). Мозг до этой
-фазы сохраняется в data/measure/имя-before.pt; load=путь — начать с него
+фазы сохраняется в ~/.brain/brains/имя-before.pt; load=путь — начать с него
 (без создания и учёбы), key=value применяются к загруженному.
 """
 import sys, time
@@ -108,7 +108,7 @@ exam()
 
 if then is not None:
     if not load:
-        mind.save(f"data/measure/{name}-before.pt")
+        mind.save(f"{name}-before.pt")
     folder, limit = then
     text = "\n".join(p.read_text(encoding="utf-8") for p in sorted(folder.glob("*.txt")))
     words = text.split()
@@ -120,4 +120,4 @@ if then is not None:
     print(f"потом {folder.name}: {report.tokens} токенов за {time.time() - t0:.0f} с "
           f"(сон {slept[0]:.0f} с)", flush=True)
     exam()
-mind.save(f"data/measure/{name}.pt")
+mind.save(f"{name}.pt")

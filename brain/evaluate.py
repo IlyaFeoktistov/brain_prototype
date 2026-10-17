@@ -1,7 +1,7 @@
 """
 Экзамен: сколько вопросов мозг отвечает и как часто говорит «не знаю».
 
-    python -m brain.evaluate data/brain.pt [--qa-every 10] [--show 5]
+    python -m brain.evaluate ~/.brain/brains/brain.pt [--qa-every 10] [--show 5]
 
 Вопросы двух видов (только чтение, мозг не меняется):
 

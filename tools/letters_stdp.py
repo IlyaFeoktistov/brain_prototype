@@ -31,7 +31,12 @@ ne= / ach= — диагностика третьего фактора (Seol et a
 в стенде из обучаемых меняется только путь коры (стриатуму без всплеска
 дофамина след в вес не идёт).
 
-    PYTHONPATH=. .venv/bin/python tools/letters_stdp.py [ne=1] [ach=1] [epochs=3] [shows=30] [dwell=300] [letters=отл] [half=8] [seed=0] [pointer=1]
+gain= — внимание при учёбе как прибавка контраста (Reynolds et al. 2000:
+в V4 ×1.51 эквивалентного контраста; Buffalo et al. 2010: ответ V1 +5%,
+V4 +23%): вход LGN → V1 L4 (E и PV) × gain на время показа, на проверках
+— 1.
+
+    PYTHONPATH=. .venv/bin/python tools/letters_stdp.py [gain=1] [ne=1] [ach=1] [epochs=3] [shows=30] [dwell=300] [letters=отл] [half=8] [seed=0] [pointer=1]
 """
 
 import random
@@ -43,7 +48,7 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 from brain.session import Session
 
-opts = {"ne": "1", "ach": "1", "pointer": "1", "epochs": "3", "shows": "30", "dwell": "300", "letters": "отл", "half": "8", "seed": "0"}
+opts = {"gain": "1", "ne": "1", "ach": "1", "pointer": "1", "epochs": "3", "shows": "30", "dwell": "300", "letters": "отл", "half": "8", "seed": "0"}
 opts.update(dict(kv.split("=", 1) for kv in sys.argv[1:]))
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
@@ -73,6 +78,7 @@ cells = torch.arange(L4.start, L4.stop, device=b.device)[(cols - mid).abs() <= h
 rows = cells - L4.start
 proj = next(p for p in b.projections if p.name == "visual -> letters")
 pre = proj.pre[rows].long()
+thalamic = [p for p in b.projections if p.name.startswith("lgn -> visual")]
 
 
 def live(ms: float) -> list[torch.Tensor]:
@@ -93,6 +99,7 @@ def probe(reps: int = 3) -> tuple[torch.Tensor, torch.Tensor]:
     b.plasticity = False
     s.pointer = None
     gains = {c: [] for c in letters}
+    hz = [0.0, 0.0]
 
     for _ in range(reps):
         for c in letters:
@@ -102,11 +109,14 @@ def probe(reps: int = 3) -> tuple[torch.Tensor, torch.Tensor]:
             s.line, s.gaze = c, 0.0
             seen = torch.stack(live(300)).mean(0)
             gains[c].append(seen - rest)
+            hz[0] += float(rest[cells].mean()) / (reps * len(letters))
+            hz[1] += float(seen[cells].mean()) / (reps * len(letters))
 
     s.line = ""
     b.plasticity = was
     per = torch.stack([torch.stack(gains[c]).mean(0) for c in letters])
     shows = torch.stack([g for r in range(reps) for g in (gains[c][r] for c in letters)])
+    probe.hz = hz
     return per, shows
 
 
@@ -151,7 +161,7 @@ def report(tag: str) -> None:
     print(f"  {tag}: предпочитают {counts}; избирательность {float(index.mean()):+.2f} "
           f"(с прибавкой > 2 Гц — {int(strong.sum())} клеток, у них {float(index[strong].mean()) if strong.any() else 0:+.2f}); "
           f"различение ответа {similarity(shows[:, cells], [c for _ in range(3) for c in letters]):+.3f}; "
-          f"разреженность {float(sparse):.2f}; предпочтение как до обучения {float((pref == first_pref).float().mean()):.2f}", flush=True)
+          f"L4 букв покой {probe.hz[0]:.2f} → буква {probe.hz[1]:.2f} Гц; разреженность {float(sparse):.2f}; предпочтение как до обучения {float((pref == first_pref).float().mean()):.2f}", flush=True)
 
 
 b.plasticity = False
@@ -168,10 +178,13 @@ report("до обучения")
 b.plasticity = True
 s.line = ""
 
+gain = float(opts["gain"])
+
 for epoch in range(int(opts["epochs"])):
     dw = {"указка": torch.zeros_like(own_t), "после": torch.zeros_like(own_t)}
     pairs = {(ph, kind, which): 0.0 for ph in dw for kind in ("LTP", "LTD") for which in ("шаблон", "прочие")}
     time_ms = {ph: 0.0 for ph in dw}
+    rate_hz = {}
 
     for _ in range(int(opts["shows"])):
         s.line, s.gaze = rng.choice(letters), 0.0
@@ -179,6 +192,10 @@ for epoch in range(int(opts["epochs"])):
         for phase, ms in (("указка", dwell), ("после", 200.0)):
             s.pointer = s.screen.width(s.line) / 2 if phase == "указка" and opts["pointer"] == "1" else None
             w0 = proj.weight[rows].float().clone()
+            # Внимание на время показа: вход таламуса в V1 × gain.
+            for p in thalamic:
+                p.weight.mul_(gain)
+            spikes_hz = 0.0
             prev_pre, prev_post = 0.0, 0.0
 
             for _ in range(int(ms // WIN)):
@@ -193,6 +210,11 @@ for epoch in range(int(opts["epochs"])):
                         pairs[(phase, kind, which)] += float((n * m).sum() / m.sum())
 
                 prev_pre, prev_post = a, c
+                spikes_hz += float(c.mean()) * 1000.0 / WIN / int(ms // WIN)
+
+            for p in thalamic:
+                p.weight.div_(gain)
+            rate_hz[phase] = rate_hz.get(phase, 0.0) + spikes_hz / int(opts["shows"])
             dw[phase] += proj.weight[rows].float() - w0
             time_ms[phase] += ms
 
@@ -203,6 +225,7 @@ for epoch in range(int(opts["epochs"])):
         print(f"  Δw за «{phase}»: |Δw| {float(d.abs().mean()):.4f}, среднее {float(d.mean()):+.4f}; у входов шаблона {float(d[key].mean()):+.4f}, у прочих {float(d[~key].mean()):+.4f}; "
               f"выравнивание с шаблоном {got:+.3f} (контроль {null:+.3f})")
         sec = time_ms[phase] / 1000.0
+        print(f"     L4 букв при учёбе {rate_hz[phase]:.2f} Гц")
         print("     совпадений на синапс в с: " + ", ".join(
             f"{kind} шаблон {pairs[(phase, kind, 'шаблон')] / sec:.4f} / прочие {pairs[(phase, kind, 'прочие')] / sec:.4f}" for kind in ("LTP", "LTD")))
 

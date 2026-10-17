@@ -1,10 +1,11 @@
 """
-Различают ли буквы клетки, чьё место — под буквой (поле до hi px от левого
-края, буква стоит у края): letters_probe по всей зоне смешивает местные
+Различают ли буквы клетки, чьё место — под буквой: буква стоит там, куда
+её ставит мир при обучении (начало строки — в ямке, cfg.fovea_col), клетки
+— с местом в пределах ±half px от середины буквы: letters_probe по всей зоне смешивает местные
 клетки с далёкими, которые букву не видят, и разница тонет в их шуме.
 Ответ — z по Пуассону, сходство ответов на одну букву против разных.
 
-    PYTHONPATH=. .venv/bin/python data/tools/letters_local.py МОЗГ [hi=12] [letters=аомсткл]
+    PYTHONPATH=. .venv/bin/python data/tools/letters_local.py МОЗГ [half=8] [letters=аомсткл]
 """
 
 import sys, torch
@@ -16,7 +17,9 @@ i = [s.name for s in b.sensors].index("eye")
 eye = Eye(cfg, b.sensor_offsets[i], b.sensors[i].size, b.device)
 scr = Screen(cfg.retina_rows, cfg.retina_cols); blank = scr.picture("")
 opts = dict(kv.split("=", 1) for kv in sys.argv[2:])
-hi = float(opts.get("hi", "12"))
+half = float(opts.get("half", "8"))
+x0 = int(round(cfg.fovea_col))  # начало строки — в ямке (session._picture)
+mid = x0 + 4.0
 show = opts.get("letters", "аомсткл")
 stages = [("visual","L4"),("visual","L23"),("letters","L4"),("letters","L23")]
 cells = {}
@@ -24,14 +27,14 @@ for z, l in stages:
     pop = b.areas[z].layers[l]["E"]
     cols = b.field_cols.get(pop.name)
     idx = torch.arange(pop.start, pop.stop, device=b.device)
-    cells[f"{z}.{l}"] = idx[cols < hi] if cols is not None else idx
+    cells[f"{z}.{l}"] = idx[(cols - mid).abs() <= half] if cols is not None else idx
     print(z, l, "местных клеток", len(cells[f"{z}.{l}"]), "из", pop.size, "поле", b.field_width if cols is not None else None)
 b.observe(2500, eye.look(blank, 2500))
 shown, Z = [], {k: [] for k in cells}
 for rep in range(3):
     for letter in show:
         b.observe(300, eye.look(blank, 300)); rest = b.observe(300, eye.look(blank, 300))
-        seen = b.observe(300, eye.look(scr.picture(letter), 300)); shown.append(letter)
+        seen = b.observe(300, eye.look(scr.picture(letter, x0), 300)); shown.append(letter)
         for k, c in cells.items():
             r, s = rest[c], seen[c]
             Z[k].append((s - r) * 0.3 / ((r + 0.5) * 0.3).sqrt())

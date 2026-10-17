@@ -498,14 +498,14 @@ class SpikingBrain:
         cfg = self.cfg
         cells = self._column_layers(spec.name)
         total = sum(e + i for _, e, i in cells)
-        shares = {layer: tuple(v) for layer, *v in cfg.layer_interneurons}
+        shares = self._layer_shares()
         layers = {}
 
         for layer, n_e, n_i in cells:
             group = {}
             sizes = [("E", max(4, round(n * n_e / total)))]
             inhibitory = n * n_i / total
-            sizes += [(kind, max(1, round(inhibitory * share))) for kind, share in zip(INHIBITORY_KINDS, shares[layer])]
+            sizes += [(kind, max(1, round(inhibitory * share))) for kind, share in shares[layer].items()]
 
             for kind, size in sizes:
                 group[kind] = Population(f"{spec.name}.{layer}.{kind}", start, size)
@@ -514,8 +514,22 @@ class SpikingBrain:
             layers[layer] = group
 
         top = layers["L23"]
-        area = Area(spec.name, spec.title, spec.kind, top["E"], top["PV"], top["SOM"], top["VIP"], layers, top.get("LAMP5"))
+        area = Area(spec.name, spec.title, spec.kind, top["E"], top["PV"], top.get("SOM"), top.get("VIP"), layers, top.get("LAMP5"))
         return area, start
+
+    def _layer_shares(self) -> dict[str, dict[str, float]]:
+        """Доли тормозных типов слоя среди построенных (cfg.column_kinds), в сумме 1."""
+
+        kinds = getattr(self.cfg, "column_kinds", KINDS)
+        out = {}
+
+        for layer, *v in self.cfg.layer_interneurons:
+            share = {kind: s for kind, s in zip(INHIBITORY_KINDS, v) if kind in kinds}
+            # Полная колонка — доли как в данных (сумма ≈ 1 с округлением).
+            total = sum(share.values()) if len(share) < len(INHIBITORY_KINDS) else 1.0
+            out[layer] = {kind: s / total for kind, s in share.items()}
+
+        return out
 
     def _fill(self, values: dict[str, float]) -> torch.Tensor:
         """Параметр нейрона по типу популяции: cortex_E, memory_E, I (и SOM, VIP)."""
@@ -544,7 +558,7 @@ class SpikingBrain:
         self.cell_type = torch.full((self.n_slots,), -1, dtype=torch.long, device=self.device)
 
         for area in self.areas.values():
-            if area.SOM is None:
+            if area.SOM is None and area.layers is None:
                 continue
 
             for _, group in self._typed_groups(area):
@@ -565,7 +579,8 @@ class SpikingBrain:
                     self.tau_m[pop.slice] = tau
                     self.adapt_b[pop.slice] = cfg.e_adapt_b * index / cfg.e_adaptation_index
 
-                self.is_som[group["SOM"].slice] = True
+                if "SOM" in group:
+                    self.is_som[group["SOM"].slice] = True
 
                 for number, kind in enumerate(KINDS):
                     if kind in group:
@@ -1196,6 +1211,8 @@ class SpikingBrain:
             if direction in ("ff", "thalamic") and "L4" in dst.layers:
                 post, inhibitory = dst.layers["L4"]["E"], dst.layers["L4"]["PV"]
             elif direction == "fb":
+                # Обратный путь — на ветки E и на VIP; без VIP в колонке
+                # (cfg.column_kinds) тормозной ветки нет.
                 inhibitory, top_down = dst.VIP, True
 
         return pre, post, inhibitory, top_down
@@ -1753,6 +1770,8 @@ class SpikingBrain:
                 _, post, inhibitory, _ = self._laminar(path, self.areas[path.src], self.areas[path.dst])
 
                 for pop in (post, inhibitory):
+                    if pop is None:
+                        continue
                     self.cortical_inputs[pop.name] = self.cortical_inputs.get(pop.name, 0) + 1
 
         for path in cfg.pathways:
@@ -1818,7 +1837,8 @@ class SpikingBrain:
                 # Врождённый путь между колонками — по данным (_cortical_path).
                 k, w = self._cortical_path(path, pre, post)
                 weight = (w, w)
-                k_inhibitory, inhibitory_weight = self._cortical_path(path, pre, inhibitory)
+                if inhibitory is not None:
+                    k_inhibitory, inhibitory_weight = self._cortical_path(path, pre, inhibitory)
 
                 if path.plastic:
                     # Обучаемый: врождённо — от 0 до 2 средних PSP (среднее —
@@ -1830,7 +1850,8 @@ class SpikingBrain:
                 # Таламус → колонка — по данным (_thalamic_path).
                 k, w = self._thalamic_path(path, pre, post, inhibitory=False)
                 weight = (w, w)
-                k_inhibitory, inhibitory_weight = self._thalamic_path(path, pre, inhibitory, inhibitory=True)
+                if inhibitory is not None:
+                    k_inhibitory, inhibitory_weight = self._thalamic_path(path, pre, inhibitory, inhibitory=True)
 
             proj = self._connect(
                 getattr(path, "name", "") or f"{path.src} -> {path.dst}", pre, post, k,
@@ -1851,6 +1872,10 @@ class SpikingBrain:
                 # Вес по данным (средний PSP пути — cap / learned_cap_psp):
                 # шаг STDP — в долях этой средней связи (chemical_plasticity).
                 proj.data_weight = path.plastic and (self._data_path(path) or getattr(path, "psp_mv", None) is not None)
+
+            if inhibitory is None:
+                continue
+
             self._connect(
                 f"{path.src} -> {path.dst}.I", pre, inhibitory, k_inhibitory,
                 (inhibitory_weight, inhibitory_weight),
@@ -2614,7 +2639,7 @@ class SpikingBrain:
         for area in self.areas.values():
             self.bias[area.I.slice] = cfg.i_excitability
 
-            if area.SOM is not None:
+            if area.SOM is not None or area.layers is not None:
                 # До порога — как у клетки этого типа (реобаза × сопротивление).
                 gap = cfg.v_threshold - cfg.v_rest
 

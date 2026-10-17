@@ -2884,13 +2884,16 @@ class SpikingBrain:
         if self._fused():
             # Доставка одним ядром (brain/csrc/events.cu) — тот же счёт, что
             # ниже, только по настоящим событиям шага.
-            synapses, pre_of, total = self.out_all.compact_head(fired_before, self.dropped)
+            # По строкам таблицы выстреливших — без буфера событий (ничего не
+            # теряется); список выстреливших — без предела.
+            fired_all = self._fired_all()
+            t = self.out_all
             self.i_dend.mul_(self.decay_dend)
             inhibition = torch.zeros_like(drive)
             ngf = torch.zeros_like(drive)
             glutamate = torch.zeros_like(drive) if self.nmda_on else None
             _kernels.deliver(
-                synapses, pre_of, total, self.path_post, self.path_fanin, self.net_weight,
+                fired_all, self.n, t.start, t.count, t.perm, self.path_post, self.path_fanin, self.net_weight,
                 self.path_start, self.path_flags, self.ach_paths, self.cfg.ach_suppression, self.acetylcholine,
                 self.dendrite_pre, self.dendrite_post,
                 self.net_branch, max(1, cfg.dendrite_branches),
@@ -3003,8 +3006,8 @@ class SpikingBrain:
             # LTD: пре пришёл после поста. Нейроны рабочей памяти
             # (ковариационное правило) этой ветки не имеют.
             if self._fused():
-                synapses, pre_of, total = self.out_plastic.compact_head(fired_before, self.dropped)
-                _kernels.ltd(synapses, pre_of, total, self.path_start, self.path_post, self.path_fanin, self.trace_post, self.ltd_mask,
+                t = self.out_plastic
+                _kernels.ltd(fired_all, self.n, t.start, t.count, t.perm, self.path_start, self.path_post, self.path_fanin, self.trace_post, self.ltd_mask,
                              self.symmetric_area, cfg.stdp_a_plus, cfg.stdp_a_minus,
                              self.net_weight, self.path_ltd_ref, self.eligibility_scale, self.eligibility)
             else:
@@ -3213,15 +3216,17 @@ class SpikingBrain:
         if self.track_primacy:
             self.primacy_counts.add_(self.spikes * self.primacy_gain)
             self.primacy_gain.mul_(self.primacy_decay)
-        self.dropped.add_((self.spikes.sum() - self.max_spikes).clamp(min=0.0))
+        if not self._fused():
+            # Путь PyTorch: выстреливших в списке шага не больше max_spikes.
+            self.dropped.add_((self.spikes.sum() - self.max_spikes).clamp(min=0.0))
 
         # ---- STDP -> eligibility ----
         if plastic:
             # LTP: пост выстрелил после пре.
             fired_now = self._fired()
             if self._fused():
-                synapses, _, total = self.in_plastic.compact_head(fired_now, self.dropped)
-                _kernels.ltp(synapses, total, self.net_pre, self.ltp_kernel, cfg.stdp_a_plus,
+                t = self.in_plastic
+                _kernels.ltp(self._fired_all(), self.n, t.start, t.count, t.perm, self.net_pre, self.ltp_kernel, cfg.stdp_a_plus,
                              self.eligibility_scale, self.eligibility)
             else:
                 synapses, _ = self._events(self.in_plastic, fired_now)
@@ -3290,6 +3295,11 @@ class SpikingBrain:
             return table.compact(neurons, self.dropped)
 
         return table.events(neurons)
+
+    def _fired_all(self) -> torch.Tensor:
+        """Индексы всех выстреливших нейронов шага, дополненные n (без предела)."""
+
+        return torch.nonzero_static(self.spikes, size=self.n, fill_value=self.n).squeeze(1)
 
     def _fired(self) -> torch.Tensor:
         """Индексы выстреливших нейронов, дополненные фиктивными до max_spikes."""

@@ -25,7 +25,13 @@ pointer=0 — учёба без указки (буква на экране та�
 что предпочитают ту же букву, что до обучения (у 3 букв случайно ~1/3):
 высокая при неизменном различении — закреплён случайный начальный перевес.
 
-    PYTHONPATH=. .venv/bin/python tools/letters_stdp.py [epochs=3] [shows=30] [dwell=300] [letters=отл] [half=8] [seed=0] [pointer=1]
+ne= / ach= — диагностика третьего фактора (Seol et al. 2007: без
+модуляторов STDP коры нет, β-адреналовые — LTP, M1-мускариновые — LTD,
+оба — обычное окно): LTP × ne, LTD × ach. Амплитуды общие для всех путей —
+в стенде из обучаемых меняется только путь коры (стриатуму без всплеска
+дофамина след в вес не идёт).
+
+    PYTHONPATH=. .venv/bin/python tools/letters_stdp.py [ne=1] [ach=1] [epochs=3] [shows=30] [dwell=300] [letters=отл] [half=8] [seed=0] [pointer=1]
 """
 
 import random
@@ -37,7 +43,7 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 from brain.session import Session
 
-opts = {"pointer": "1", "epochs": "3", "shows": "30", "dwell": "300", "letters": "отл", "half": "8", "seed": "0"}
+opts = {"ne": "1", "ach": "1", "pointer": "1", "epochs": "3", "shows": "30", "dwell": "300", "letters": "отл", "half": "8", "seed": "0"}
 opts.update(dict(kv.split("=", 1) for kv in sys.argv[1:]))
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
@@ -49,6 +55,10 @@ cfg.seed = int(opts["seed"])
 torch.manual_seed(cfg.seed)
 mind = Mind(cfg)
 b = mind.brain
+# После сборки: anatomy.apply выводит LTD из LTP (Froemke & Dan), шаг
+# пластичности ещё не записан в граф.
+cfg.stdp_a_plus *= float(opts["ne"])
+cfg.stdp_a_minus *= float(opts["ach"])
 s = Session(mind)
 rng = random.Random(cfg.seed)
 letters = opts["letters"]

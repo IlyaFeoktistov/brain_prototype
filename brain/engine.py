@@ -3517,8 +3517,11 @@ class SpikingBrain:
         Chistiakova et al. 2014): усиление части входов клетки ослабляет
         остальные её входы, ослабление — усиливает, общий вес почти не
         меняется. У каждой строки пути коры (modulator "hebbian") сумма
-        возвращается к врождённой (входов × средний врождённый вес): фон
-        не растит путь целиком, выученное — перераспределение веса.
+        возвращается к врождённой сумме этой клетки: фон не растит путь
+        целиком, выученное — перераспределение веса. (Прежде цель была общей
+        для пути — входов × средний врождённый вес; суммы случайных строк от
+        неё отличались на ~2.5%, и первый вызов перекраивал все строки —
+        скачок весов, похожий на учёбу, при выключенном STDP.)
         """
 
         paths = [p for p in self.plastic if p.modulator == "hebbian" and p.weight.numel()]
@@ -3534,7 +3537,7 @@ class SpikingBrain:
                     rows, fanin = p.weight.shape
                     start.append(p.offset + torch.arange(rows, dtype=torch.long) * fanin)
                     length.append(torch.full((rows,), fanin, dtype=torch.int32))
-                    target.append(torch.full((rows,), fanin * p.innate_mean, dtype=torch.float32))
+                    target.append(p.birth.float().sum(1).cpu())
                     cap.append(torch.full((rows,), float(p.cap), dtype=torch.float32))
 
                 self._conserve_rows = tuple(torch.cat(t).to(self.device) for t in (start, length, target, cap))
@@ -3545,7 +3548,7 @@ class SpikingBrain:
         for p in paths:
             before = p.weight.clone()
             total = p.weight.sum(1, keepdim=True).clamp(min=1e-9)
-            p.weight.mul_(p.weight.shape[1] * p.innate_mean / total).clamp_(max=p.cap)
+            p.weight.mul_(p.birth.float().sum(1, keepdim=True) / total).clamp_(max=p.cap)
             p.early.add_((p.weight - before).to(p.early.dtype))
 
     def _climbing(self, proj, spikes: torch.Tensor) -> None:

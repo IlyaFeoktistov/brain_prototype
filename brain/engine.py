@@ -1176,7 +1176,7 @@ class SpikingBrain:
         layer_post = parts[1] if len(parts) == 3 else "L23"
         external = dict((l, (e, i)) for l, e, i in cfg.external_inputs).get(layer_post, (0, 0))
         outside = external[0] if parts[-1] == "E" else external[1]
-        k_data = 0.21 * (local + outside) / max(1, self.cortical_inputs.get(post.name, 1))
+        k_data = cfg.interareal_share * (local + outside) / max(1, self.cortical_inputs.get(post.name, 1))
         self.modeled_inputs[post.name] = self.modeled_inputs.get(post.name, 0.0) + k_data
         k = max(1, min(round(k_data), pre.size))
         weight = cfg.ee_psp_mv / self._psp_peak(post)

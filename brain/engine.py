@@ -1736,6 +1736,11 @@ class SpikingBrain:
                     if k <= 0:
                         continue
 
+                    if spec.name == "ic" and name == "I->E" and not getattr(cfg, "ic_local_inhibition", True):
+                        # Временный обход для стендов середины цепи
+                        # (cfg.ic_local_inhibition) — не биологическая норма.
+                        continue
+
                     w = psp / self._psp_peak(post)
                     built = max(1, min(k, pre.size))
                     root = math.sqrt(k / built)

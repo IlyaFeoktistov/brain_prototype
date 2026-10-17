@@ -2907,18 +2907,40 @@ class BrainConfig:
     vogels_areas: tuple[str, ...] = ()
     vogels_cap: float = 4.0
 
+    # Ухо — улитка (brain/body.py Cochlea): полосы гамматон-фильтров по ERB
+    # от 100 Гц до 8 кГц (речь), 64 полосы × 32 волокна = sensory_size.
+    # У человека ~3500 внутренних волосковых клеток и ~30 тыс. волокон
+    # (Spoendlin & Schrott 1989) — у нас грубее во столько же раз, что и
+    # остальной мозг.
+    cochlea_bands: int = 64
+    cochlea_low_hz: float = 100.0
+    cochlea_high_hz: float = 8000.0
+    # Запись приводится к уровню обычной речи, дБ УЗД (Pearsons et al. 1977).
+    cochlea_speech_db: float = 65.0
+    # Сглаживание мощности полосы, мс: временное разрешение слуха ~2–3 мс
+    # (порог паузы в шуме, Plomp 1964; Moore 2012).
+    cochlea_smooth_ms: float = 2.5
+    # Наибольшая частота волокна слухового нерва, Гц (Sachs & Abbas 1974:
+    # насыщение 200–300).
+    cochlea_max_hz: float = 250.0
+    # Кратковременная адаптация (Westerman & Smith 1984): спад ~40 мс,
+    # ответ на начало в ~2.5 раза выше установившегося.
+    cochlea_adapt_ms: float = 40.0
+    cochlea_onset: float = 1.5
+
     def sensors(self) -> list[SensorSpec]:
         """Органы-датчики тела: ухо всегда, глаз — если включён."""
+
+        from brain.body import Cochlea
 
         # Анатомический мозг: рецепторы входят в кору через реле таламуса.
         relay = self.anatomy
         out = [SensorSpec(
             "ear", "auditory", self.sensory_size, self.k_sensory, self.sensory_weight,
             self.sensory_inhibitory_gain, relay="mgn" if relay else "",
-            # Волокна слухового нерва в тишине: у большинства высокая
-            # спонтанная частота, до ~100 Гц (Liberman 1978, кошка) —
-            # середина 30 Гц [сверить по распределению].
-            spontaneous_hz=30.0 if relay else 0.0,
+            # Волокна слухового нерва в тишине: своя у каждого класса
+            # (Liberman 1978; body.FIBERS).
+            spontaneous_hz=Cochlea.spontaneous(self.sensory_size, self.cochlea_bands) if relay else 0.0,
         )]
 
         if self.eye:

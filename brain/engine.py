@@ -2757,7 +2757,9 @@ class SpikingBrain:
         spontaneous = torch.zeros(self.n_receptors, device=self.device)
 
         for sensor, offset in zip(self.sensors, self.sensor_offsets):
-            spontaneous[offset: offset + sensor.size] = getattr(sensor, "spontaneous_hz", 0.0) * cfg.dt_ms / 1000.0
+            # Частота — одна на орган или своя у каждого рецептора (ухо).
+            hz = torch.as_tensor(getattr(sensor, "spontaneous_hz", 0.0), dtype=torch.float32, device=self.device)
+            spontaneous[offset: offset + sensor.size] = hz * cfg.dt_ms / 1000.0
 
         self.spontaneous = spontaneous if bool((spontaneous > 0).any()) else None
 

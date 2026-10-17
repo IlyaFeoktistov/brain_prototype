@@ -202,6 +202,9 @@ class SensorSpec:
     # Реле таламуса (анатомический мозг): рецепторы → его клетки один к
     # одному, оттуда — в L4 зоны той же проводкой. "" — прямо в зону.
     relay: str = ""
+    # Ядра между органом и реле таламуса по порядку (слух: кохлеарное ядро,
+    # нижнее двухолмие) — engine._brainstem; () — орган прямо в реле.
+    brainstem: tuple[str, ...] = ()
     # Рецепторы стреляют и в тишине, Гц (анатомический мозг). 0 — нет.
     spontaneous_hz: float = 0.0
     # ВПСП рецептора на клетке зоны, мВ (анатомический мозг); None — weight
@@ -2919,6 +2922,21 @@ class BrainConfig:
     # (у LGN уже так, _lgn_local). Выкл. — вход тормозных со всего органа:
     # тон в одной полосе гасил реле во всех (tools/ear_trace.py).
     relay_local_inhibition: bool = False
+    # Слуховой ствол (engine._brainstem): (от, к, входов на клетку, ±полос,
+    # ВПСП мВ). Нерв → T-звёздчатые: несколько волокон своей полосы, мелкие
+    # ВПСП (Ferragamo, Golding & Oertel 1998: ≥ 5 волокон [сверить]); нерв →
+    # тормозные CN (D-звёздчатые) — широкая полоса, ~октава (Oertel et al.
+    # 1990). CN → IC — сходятся из своей полосы [числа сверить]. IC → MGN —
+    # крупные окончания-«водители», 1–3 на клетку реле, как сетчатка в LGN;
+    # звуковой ВПСП в MGN 8.3 ± 3.2 мВ (морская свинка, внутриклеточно).
+    # IC → тормозные MGN — 8–10 входов (как сетчатка → интернейроны dLGN
+    # мыши) помельче [сверить]. Торможение IC → MGN (~25% путей ГАМК, Peruzzi
+    # et al. 1997) — долг.
+    brainstem_links: tuple[tuple[str, str, int, int, float], ...] = (
+        ("nerve", "cn.E", 6, 0, 2.0), ("nerve", "cn.I", 6, 10, 2.0),
+        ("cn", "ic.E", 20, 1, 1.0), ("cn", "ic.I", 20, 1, 1.0),
+        ("ic", "mgn.E", 2, 0, 8.0), ("ic", "mgn.I", 8, 1, 2.0),
+    )
     cochlea_low_hz: float = 100.0
     cochlea_high_hz: float = 8000.0
     # Запись приводится к уровню обычной речи, дБ УЗД (Pearsons et al. 1977).
@@ -2944,6 +2962,9 @@ class BrainConfig:
         out = [SensorSpec(
             "ear", "auditory", self.sensory_size, self.k_sensory, self.sensory_weight,
             self.sensory_inhibitory_gain, relay="mgn" if relay else "",
+            # Нерв идёт не в таламус, а в ствол: кохлеарное ядро → нижнее
+            # двухолмие → MGN (Winer & Schreiner 2005).
+            brainstem=("cn", "ic") if relay else (),
             # Волокна слухового нерва в тишине: своя у каждого класса
             # (Liberman 1978; body.FIBERS).
             spontaneous_hz=Cochlea.spontaneous(self.sensory_size, self.cochlea_bands) if relay else 0.0,

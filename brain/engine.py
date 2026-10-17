@@ -1739,7 +1739,8 @@ class SpikingBrain:
                     dc = self.dc_inh_mv if w < 0 else self.dc_mv
                     self._missing(post, pre, k * hz / 1000.0 * w * tau * (1.0 - 1.0 / root), hz / 1000.0)
                     local = (spec.name == "lgn" and getattr(cfg, "eye", False)) or (
-                        spec.name == "mgn" and getattr(cfg, "relay_local_inhibition", False))
+                        spec.name == "mgn" and getattr(cfg, "relay_local_inhibition", False)) or (
+                        spec.name in ("cn", "ic"))
                     index = self._lgn_local(area, pre, post, built) if local else None
                     self._connect(f"{spec.name}: {name}", pre, post, built, (w * root, w * root), pre_index=index)
 
@@ -1906,7 +1907,10 @@ class SpikingBrain:
             area = self.areas[sensor.area]
             relay = self.areas.get(getattr(sensor, "relay", "") or "")
 
-            if relay is not None:
+            if relay is not None and getattr(sensor, "brainstem", ()):
+                # Слух: нерв → ствол → реле (_brainstem), не прямо в таламус.
+                self._brainstem(sensor, offset, relay)
+            elif relay is not None:
                 # Реле таламуса (LGN, MGN): рецептор → своя клетка реле (у
                 # клетки LGN 1–3 сильных входа сетчатки, Usrey, Reppas & Reid
                 # 1999), тормозные реле — случайные рецепторы. Дальше реле
@@ -2074,7 +2078,7 @@ class SpikingBrain:
         else:
             j = ((torch.arange(pop.size, device=self.device).float() + 0.5) * area.E.size / pop.size).long()
 
-        if area.name == "mgn":
+        if area.name in ("mgn", "cn", "ic"):
             j = j % cfg.sensory_size
             band = (j // (cfg.sensory_size // cfg.cochlea_bands)).float()
             return torch.stack([band, torch.zeros_like(band)], 1)
@@ -2082,6 +2086,49 @@ class SpikingBrain:
         R, C = cfg.retina_rows, cfg.retina_cols
         j = j % (R * C)
         return torch.stack([(j // C).float(), (j % C).float()], 1)
+
+    def _brainstem(self, sensor, offset: int, relay) -> None:
+        """
+        Слуховой ствол по тонотопии (cfg.brainstem_links): волокно нерва →
+        кохлеарное ядро → нижнее двухолмие → реле MGN. Место клетки каждого
+        ядра — полоса улитки (_relay_place); входы — случайные клетки
+        источника из своей полосы ± spread.
+        """
+
+        cfg = self.cfg
+        per = sensor.size // cfg.cochlea_bands
+        g = self.generator
+
+        def bands(area, pop):
+            return self._relay_place(area, pop)[:, 0].long()
+
+        def source(name):
+            if name == "nerve":
+                band = torch.arange(sensor.size, device=self.device) // per
+                return band, torch.arange(sensor.size, device=self.device) + offset, "sensory", None
+            area = self.areas[name]
+            return bands(area, area.E), torch.arange(area.E.start, area.E.stop, device=self.device), "net", area
+
+        for src, dst, k, spread, psp in cfg.brainstem_links:
+            name, kind = dst.split(".")
+            area = self.areas[name]
+            post = area.E if kind == "E" else area.I
+            src_band, src_index, table, src_area = source(src)
+            order = torch.argsort(src_band)
+            counts = torch.bincount(src_band, minlength=cfg.cochlea_bands)
+            starts = torch.cumsum(counts, 0) - counts
+            want = bands(area, post)[:, None] + torch.randint(-spread, spread + 1, (post.size, k), device=self.device, generator=g)
+            want = want.clamp(0, cfg.cochlea_bands - 1)
+            pick = starts[want] + (torch.rand((post.size, k), device=self.device, generator=g) * counts[want]).long()
+            pre = src_index[order[pick]]
+            weight = torch.full((post.size, k), psp / self._psp_peak(post), device=self.device)
+            proj = Projection(f"{src} -> {post.name}", table, pre if table == "sensory" else pre.to(torch.int32), post, weight)
+
+            if src_area is not None:
+                proj.pre_pop = src_area.E
+                proj.source_kind = src_area.kind
+
+            self.projections.append(proj)
 
     def _lgn_local(self, area, pre: Population, post: Population, k: int) -> torch.Tensor:
         """

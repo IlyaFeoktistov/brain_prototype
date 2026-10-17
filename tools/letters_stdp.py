@@ -36,7 +36,12 @@ gain= — внимание при учёбе как прибавка контр�
 V4 +23%): вход LGN → V1 L4 (E и PV) × gain на время показа, на проверках
 — 1.
 
-    PYTHONPATH=. .venv/bin/python tools/letters_stdp.py [gain=1] [ne=1] [ach=1] [epochs=3] [shows=30] [dwell=300] [letters=отл] [half=8] [seed=0] [pointer=1]
+ffi= — отношение суммарного возбуждающего тока пути V1 → буквы на клетку
+PV к клетке E (сейчас ~1.84; D'Souza et al. 2013/2016, L2/3 мыши,
+суммарный EPSC: V1 → LM 3.7×, V1 → PM 12.85×): ветка пути на PV × ffi /
+нынешнее, на всё время.
+
+    PYTHONPATH=. .venv/bin/python tools/letters_stdp.py [ffi=—] [gain=1] [ne=1] [ach=1] [epochs=3] [shows=30] [dwell=300] [letters=отл] [half=8] [seed=0] [pointer=1]
 """
 
 import random
@@ -79,6 +84,14 @@ rows = cells - L4.start
 proj = next(p for p in b.projections if p.name == "visual -> letters")
 pre = proj.pre[rows].long()
 thalamic = [p for p in b.projections if p.name.startswith("lgn -> visual")]
+to_pv = next(p for p in b.projections if p.name == "visual -> letters.I")
+ratio = float(to_pv.weight.float().sum(1).mean() / proj.weight.float().sum(1).mean())
+
+if "ffi" in opts:
+    to_pv.weight.mul_(float(opts["ffi"]) / ratio)
+    print(f"ток пути на PV / на E: {ratio:.2f} → {float(opts['ffi']):.2f}")
+PV4 = b.areas["letters"].layers["L4"]["PV"]
+pv_cells = torch.arange(PV4.start, PV4.stop, device=b.device)[(b.field_cols[PV4.name] - mid).abs() <= half]
 
 
 def live(ms: float) -> list[torch.Tensor]:
@@ -99,7 +112,7 @@ def probe(reps: int = 3) -> tuple[torch.Tensor, torch.Tensor]:
     b.plasticity = False
     s.pointer = None
     gains = {c: [] for c in letters}
-    hz = [0.0, 0.0]
+    hz = [0.0, 0.0, 0.0, 0.0]
 
     for _ in range(reps):
         for c in letters:
@@ -111,6 +124,8 @@ def probe(reps: int = 3) -> tuple[torch.Tensor, torch.Tensor]:
             gains[c].append(seen - rest)
             hz[0] += float(rest[cells].mean()) / (reps * len(letters))
             hz[1] += float(seen[cells].mean()) / (reps * len(letters))
+            hz[2] += float(rest[pv_cells].mean()) / (reps * len(letters))
+            hz[3] += float(seen[pv_cells].mean()) / (reps * len(letters))
 
     s.line = ""
     b.plasticity = was
@@ -161,7 +176,7 @@ def report(tag: str) -> None:
     print(f"  {tag}: предпочитают {counts}; избирательность {float(index.mean()):+.2f} "
           f"(с прибавкой > 2 Гц — {int(strong.sum())} клеток, у них {float(index[strong].mean()) if strong.any() else 0:+.2f}); "
           f"различение ответа {similarity(shows[:, cells], [c for _ in range(3) for c in letters]):+.3f}; "
-          f"L4 букв покой {probe.hz[0]:.2f} → буква {probe.hz[1]:.2f} Гц; разреженность {float(sparse):.2f}; предпочтение как до обучения {float((pref == first_pref).float().mean()):.2f}", flush=True)
+          f"L4 букв E покой {probe.hz[0]:.2f} → буква {probe.hz[1]:.2f}, PV {probe.hz[2]:.1f} → {probe.hz[3]:.1f} Гц; разреженность {float(sparse):.2f}; предпочтение как до обучения {float((pref == first_pref).float().mean()):.2f}", flush=True)
 
 
 b.plasticity = False

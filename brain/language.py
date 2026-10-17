@@ -46,6 +46,13 @@ def _cosine(a: torch.Tensor, b: torch.Tensor) -> float:
 # ==================================================================
 
 
+# Звуки уха по порядку: место звука на улитке — свой участок каналов
+# (sensory_channels_per_token подряд), без хеша: «а» — каналы 0–31, «б» —
+# 32–63 … Русские буквы, цифры, знаки и «крупно» (заглавная); других
+# символов ухо не слышит, как звуков, которых нет в речи.
+SOUNDS = tuple("абвгдеёжзийклмнопрстуфхцчшщъыьэюя") + tuple("0123456789") + tuple(" .,!?-:;") + ("крупно",)
+
+
 class Ear:
     """
     Токен -> растр sensory-спайков [steps, sensory_size].
@@ -96,14 +103,7 @@ class Ear:
         steps = int(round(self.duration(token) / cfg.dt_ms))
         p = cfg.sensory_rate_hz * cfg.dt_ms / 1000.0
 
-        if cfg.ear_letters:
-            channels, pattern = self._letters(token, steps, p)
-        else:
-            rng = torch.Generator().manual_seed(self._seed(token))
-            channels = torch.randperm(cfg.sensory_size, generator=rng)[
-                : cfg.sensory_channels_per_token
-            ]
-            pattern = (torch.rand(steps, len(channels), generator=rng) < p).float()
+        channels, pattern = self._letters(token, steps, p)
 
         code = (channels.to(self.device), pattern.to(self.device))
 
@@ -137,6 +137,7 @@ class Ear:
 
         cfg = self.cfg
         per_char = cfg.sensory_channels_per_token
+        assert len(SOUNDS) * per_char <= cfg.sensory_size, "звуков больше, чем мест на улитке"
         chars = list(token) or [" "]
         bounds = [round(i * steps / len(chars)) for i in range(len(chars) + 1)]
         channels: list[torch.Tensor] = []
@@ -147,9 +148,17 @@ class Ear:
             parts = [small] + (["крупно"] if small != char else [])
 
             for part in parts:
-                rng = torch.Generator().manual_seed(self._seed("символ:" + part))
-                channels.append(torch.randperm(cfg.sensory_size, generator=rng)[:per_char])
+                if part not in SOUNDS:
+                    continue
+
+                place = SOUNDS.index(part)
+                # Узор спайков звука один и тот же при каждом звучании.
+                rng = torch.Generator().manual_seed(place)
+                channels.append(torch.arange(place * per_char, (place + 1) * per_char))
                 groups.append((i, (torch.rand(steps, per_char, generator=rng) < p).float()))
+
+        if not groups:
+            return torch.zeros(0, dtype=torch.long), torch.zeros(steps, 0)
 
         pattern = torch.zeros(steps, per_char * len(groups))
 

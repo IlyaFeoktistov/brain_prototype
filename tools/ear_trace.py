@@ -7,6 +7,8 @@ small, звук на 65 дБ (улитка приводит к уровню ре
 
 У тона — ещё реле своей полосы (± 2 полосы от 1 кГц) и прочих отдельно.
 local=1 — местное торможение реле (cfg.relay_local_inhibition).
+cn_inh=0 — диагностика: торможение T-звёздчатых в CN выключено (синапсы
+тормозные → E и их среднее поле), остальное как есть.
 
     PYTHONPATH=. .venv/bin/python tools/ear_trace.py [local=0] [text=Кот живёт в доме.] [seed=0]
 """
@@ -21,7 +23,7 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 from brain.world import Voice
 
-opts = {"local": "0", "text": "Кот живёт в доме.", "seed": "0"}
+opts = {"cn_inh": "1", "local": "0", "text": "Кот живёт в доме.", "seed": "0"}
 opts.update(dict(kv.split("=", 1) for kv in sys.argv[1:]))
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
@@ -37,6 +39,13 @@ b.plasticity = False
 i = [s.name for s in b.sensors].index("ear")
 ear = Cochlea(cfg, b.sensor_offsets[i], b.sensors[i].size, b.device)
 A = b.areas["auditory"].layers
+
+if opts["cn_inh"] == "0":
+    cn = b.areas["cn"]
+    for p in b.projections:
+        if p.name == "cn: I->E":
+            p.weight.zero_()
+    b.mf_inh[int(b.mf_post_id[cn.E.start]), int(b.mf_pre_id[cn.I.start])] = 0.0
 stages = [(f"{n.upper()} {k}", getattr(b.areas[n], k)) for n in ("cn", "ic") if n in b.areas for k in ("E", "I")] + [("MGN E", b.areas["mgn"].E), ("MGN I", b.areas["mgn"].I), ("TRN", b.areas["trn_mgn"].E),
           ("слух L4 E", A["L4"]["E"]), ("слух L4 PV", A["L4"]["PV"]), ("слух L2/3 E", A["L23"]["E"]), ("слух L2/3 PV", A["L23"]["PV"])]
 WIN = 10.0
@@ -65,15 +74,16 @@ for name, wave, sr in sounds:
     print(f"{name} ({raster.shape[0] * cfg.dt_ms:.0f} мс): слуховой нерв {float(nerve):.0f} Гц на волокно (со спонтанными)")
 
     if name.startswith("тон"):
-        # Реле своей полосы (тонотопия: клетка j — волокно j) и прочие.
-        E = b.areas["mgn"].E
-        fiber = torch.arange(E.size, device=b.device) % ear.size
-        band = fiber // (ear.size // cfg.cochlea_bands)
-        own = (band - int((ear.centres - 1000.0).abs().argmin())).abs() <= 2
-        idx = torch.arange(E.start, E.stop, device=b.device)
-        for tag, m in (("MGN E своей полосы", own), ("MGN E прочих", ~own)):
-            c = idx[m]
-            print(f"  {tag:19s} тишина {float(quiet[c].mean()):6.1f} → начало {float(onset[c].mean()):6.1f} → дальше {float(steady[c].mean()):6.1f} Гц")
+        # Своя полоса (тонотопия: клетка j — волокно j, ± 2 полосы от 1 кГц) и прочие.
+        for nucleus in ("cn", "ic", "mgn"):
+            E = b.areas[nucleus].E
+            fiber = torch.arange(E.size, device=b.device) % ear.size
+            band = fiber // (ear.size // cfg.cochlea_bands)
+            own = (band - int((ear.centres - 1000.0).abs().argmin())).abs() <= 2
+            idx = torch.arange(E.start, E.stop, device=b.device)
+            for tag, m in ((f"{nucleus.upper()} E своей полосы", own), (f"{nucleus.upper()} E прочих", ~own)):
+                c = idx[m]
+                print(f"  {tag:19s} тишина {float(quiet[c].mean()):6.1f} → начало {float(onset[c].mean()):6.1f} → дальше {float(steady[c].mean()):6.1f} Гц")
 
     for label, pop in stages:
         print(f"  {label:13s} тишина {float(quiet[pop.slice].mean()):6.1f} → начало {float(onset[pop.slice].mean()):6.1f} → дальше {float(steady[pop.slice].mean()):6.1f} Гц")

@@ -3412,6 +3412,32 @@ class SpikingBrain:
                 self.chemical_plasticity(self._plastic_ms)
                 self._plastic_ms = 0.0
 
+        self._check_overflow()
+
+    def _check_overflow(self) -> None:
+        """
+        События, не вместившиеся в таблицу шага (dropped), — не молча:
+        cfg.event_overflow "error" останавливает прогон, "warn" — печатает
+        (диагностика переполнения). Счётчик обнуляют стенды — тогда
+        отсчёт заново.
+        """
+
+        lost = float(self.dropped)
+        seen = getattr(self, "_dropped_seen", 0.0)
+
+        if lost < seen:
+            seen = 0.0
+
+        if lost > seen:
+            self._dropped_seen = lost
+            message = (f"переполнение таблицы событий: потеряно {lost - seen:.0f} синаптических событий "
+                       f"(ёмкость {getattr(self.out_all, 'capacity', 0)}; cfg.event_capacity {self.cfg.event_capacity})")
+
+            if getattr(self.cfg, "event_overflow", "error") == "error":
+                raise RuntimeError(message + " — cfg.event_overflow='warn' для диагностики")
+
+            print("ВНИМАНИЕ:", message, flush=True)
+
     def observe(
         self,
         duration_ms: float,

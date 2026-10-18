@@ -2916,6 +2916,15 @@ class SpikingBrain:
         # Сигнал «изнутри тела» (мВ): чувство возбуждает свой набор
         # нейронов лимбической зоны — как ухо возбуждает слуховую кору.
         self.interoception = z()
+        # T-ток реле таламуса (cfg.thalamic_t_current, модель IFB — Smith et
+        # al. 2000): ворота h — восстановление ниже V_h, закрытие выше.
+        self.t_mask = torch.zeros(self.n_slots, dtype=torch.bool, device=self.device)
+
+        if getattr(cfg, "thalamic_t_current", False):
+            for name in ("lgn", "mgn", "md", "thalamus"):
+                if name in self.areas:
+                    self.t_mask[self.areas[name].E.slice] = True
+        self.t_h = z()
         # Короткий толчок (kick): ток на несколько шагов — сигнал начала
         # звука или команда «начать»; гаснет сам.
         self.kick_current = z()
@@ -3268,11 +3277,21 @@ class SpikingBrain:
         occupancy = (self.chemistry / (self.chemistry + self.chemistry_half)).to(torch.float32)
         modulated = occupancy @ self.receptor_mv
 
+        # T-ток (IFB): ток в мВ покоя = g_T / g_L · h · (E_T − V) при V ≥ V_h.
+        t_open = self.t_mask & (self.v >= cfg.t_vh_mv)
+        t_current = torch.where(t_open, cfg.t_gt_ratio * self.t_h * (cfg.t_et_mv - self.v), 0.0)
         dv = (
             cfg.v_rest - self.v + exp_term - self.adapt - self.adapt_slow
             + synaptic + self.bias + self.interoception + modulated + self.clock_mv
-            + self.kick_current * (self.kick_left > 0)
+            + self.kick_current * (self.kick_left > 0) + t_current
         ) * self.decay_m
+        # Ворота h: ниже V_h восстанавливаются (τ+), выше — закрываются (τ−).
+        self.t_h.copy_(torch.where(
+            self.t_mask,
+            torch.where(self.v < cfg.t_vh_mv, self.t_h + (1.0 - self.t_h) * (cfg.dt_ms / cfg.t_tau_rec_ms),
+                        self.t_h - self.t_h * (cfg.dt_ms / cfg.t_tau_inact_ms)),
+            0.0,
+        ))
         v = torch.where(self.refractory <= 0, self.v + dv, self.v)
         self.refractory.sub_(cfg.dt_ms)
 
@@ -4390,7 +4409,7 @@ class SpikingBrain:
     _DYNAMIC = (
         "v", "i_syn", "i_inh", "i_ngf", "ngf_mf", "i_nmda", "nmda_mf", "i_slow", "i_dend", "pool", "area_pool", "adapt", "adapt_slow", "refractory", "spikes",
         "trace_pre", "trace_pre_rise", "ltp_kernel", "trace_post", "counts", "eligibility",
-        "eligibility_scale", "dropped", "bias", "interoception", "kick_current", "kick_left", "stp_x", "stp_u4", "stp_x4", "inh_gain",
+        "eligibility_scale", "dropped", "bias", "interoception", "t_h", "kick_current", "kick_left", "stp_x", "stp_u4", "stp_x4", "inh_gain",
         "chemistry", "pending", "pending_dend", "tick", "mf_rate",
     )
 

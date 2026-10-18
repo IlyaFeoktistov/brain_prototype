@@ -1288,6 +1288,17 @@ class BrainConfig:
     # пути с постоянным весом (procedural_wiring) — без задержки (долг).
     axon_delays: bool = False
     axon_delay_ms: float = 6.0
+    # Задержки путей по типу (быстрые ядра, кольцо в engine; все входы —
+    # возбуждение, торможение, NMDA, дендрит): от спайка до тока. Внутри зоны
+    # — синапс + местный аксон ~1 мс [сверить по латентностям пар Campagnola
+    # 2022]; кора → кора 6 мс (axon_delay_ms: Swadlow; Caminiti et al. 2013);
+    # таламус → кора ~2 мс (Swadlow 1995: 1.5–2.5); кора → ядра, ядра ↔ ядра —
+    # 2 мс [сверить]. Выкл. — всё через шаг (dt).
+    path_delays: bool = False
+    delay_local_ms: float = 1.0
+    delay_cortical_ms: float = 6.0
+    delay_thalamocortical_ms: float = 2.0
+    delay_subcortical_ms: float = 2.0
     seed: int = 42
     # [не подбиралось] 1 мс: стандарт для LIF/AdEx с Эйлером.
     # [замер] 20 тыс., 2 прохода train-data → статья, факты до → после:

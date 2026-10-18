@@ -2272,6 +2272,38 @@ class SpikingBrain:
             if dst == "mgn.E" and psp > 0:
                 self._triad(proj)
 
+    def _path_delay_steps(self, p) -> int:
+        """
+        Задержка пути от спайка до тока в получателе (cfg.path_delays) — шагов
+        сверх обычного одного. Внутри зоны — синапс и местный аксон
+        (delay_local_ms); кора → кора — delay_cortical_ms; таламус → кора —
+        delay_thalamocortical_ms; прочее (кора → ядра, ядра ↔ ядра) —
+        delay_subcortical_ms.
+        """
+
+        cfg = self.cfg
+
+        if not getattr(cfg, "path_delays", False):
+            return 0
+
+        src = getattr(p, "pre_pop", None)
+        src = src.name.split(".")[0] if src is not None else ""
+        dst = p.post.name.split(".")[0]
+        a, b = self.areas.get(src), self.areas.get(dst)
+        cortex = lambda area: area is not None and area.layers is not None
+        relays = {"lgn", "mgn", "md", "thalamus", "vl_cb"}
+
+        if src == dst or not src:
+            ms = cfg.delay_local_ms
+        elif cortex(a) and cortex(b):
+            ms = cfg.delay_cortical_ms
+        elif src in relays and cortex(b):
+            ms = cfg.delay_thalamocortical_ms
+        else:
+            ms = cfg.delay_subcortical_ms
+
+        return max(0, round(ms / cfg.dt_ms) - 1)
+
     def _triad(self, driver: Projection) -> None:
         """
         Триада реле таламуса (Sherman & Guillery 2006; кошка — Montero 1991,
@@ -2645,6 +2677,11 @@ class SpikingBrain:
                 self.stp_free[p.offset: p.offset + p.weight.numel()] = True
         self.path_start = torch.tensor([p.offset for p in paths] + [self.n_synapses], dtype=torch.long, device=self.device)
         self.path_flags = torch.tensor(flags + [0], dtype=torch.uint8, device=self.device)
+        # Задержка каждого пути (шагов сверх одного) — по его типу
+        # (cfg.path_delays); кольцо — в _init_state.
+        delays = [self._path_delay_steps(p) for p in paths]
+        self.path_delay = torch.tensor(delays + [0], dtype=torch.int32, device=self.device)
+        self.ring_slots = max(delays + [0]) + 1
         # LTD пропорциональна весу синапса (stdp_ltd_weight_dependent): на
         # путь — 1 / средний врождённый вес, 0 — шаг LTD от веса не зависит.
         self.path_ltd_ref = None
@@ -2903,6 +2940,10 @@ class SpikingBrain:
         self.pending = torch.zeros(self.delay_slots, self.n_slots, device=self.device)
         self.pending_dend = torch.zeros(self.delay_slots, self.n_slots * branches, device=self.device)
         self.tick = torch.zeros(1, dtype=torch.long, device=self.device)
+        # Кольцо задержек путей (быстрые ядра): [шаг, вход (возб, торм, LAMP5,
+        # NMDA), клетка] и для веток дендрита.
+        self.ring = torch.zeros(self.ring_slots, 4, self.n_slots, device=self.device)
+        self.dend_ring = torch.zeros(self.ring_slots, self.n_slots * max(1, cfg.dendrite_branches), device=self.device)
         self.i_syn = z()
         # Тормозной ток (проводимость; cfg.layers): отдельно от возбуждающего.
         self.i_inh = z()
@@ -3121,7 +3162,23 @@ class SpikingBrain:
                 self.is_lamp5, self.ngf_d, 1.0 / (1.0 - cfg.lamp5_desens_u), KINDS.index("LAMP5"),
                 self.stp_x, self.inh_gain,
                 self.i_dend, drive, glutamate, inhibition, ngf,
+                self.path_delay, self.tick, self.ring, self.dend_ring,
             )
+
+            if self.ring_slots > 1:
+                # Пришедшее сейчас из кольца задержек — во входы шага.
+                now = self.tick % self.ring_slots
+                arrived = self.ring.index_select(0, now).squeeze(0)
+                drive.add_(arrived[0])
+                inhibition.add_(arrived[1])
+                ngf.add_(arrived[2])
+
+                if glutamate is not None:
+                    glutamate.add_(arrived[3])
+                self.i_dend.add_(self.dend_ring.index_select(0, now).squeeze(0).view_as(self.i_dend))
+                self.ring.index_fill_(0, now, 0.0)
+                self.dend_ring.index_fill_(0, now, 0.0)
+                self.tick.add_(1)
         else:
             synapses, pre_of = self._events(self.out_all, fired_before)
             post = self._posts().index_select(0, synapses)

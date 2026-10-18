@@ -10,7 +10,7 @@ eNeuro 2024 — IPSC/EPSC реле при максимальной стимул�
 В опыте ВПСТ мерили при −70 мВ, ТПСТ при 0 мВ — сравнивать надо отношение
 проводимостей (печатается).
 
-    PYTHONPATH=. .venv/bin/python tools/relay_ffi.py [fit=ic-off] [local=0] [off=] [volleys=20] [kick_mv=60] [kick_ms=1] [every=4] [scale=out*0.5] [seed=0]
+    PYTHONPATH=. .venv/bin/python tools/relay_ffi.py [fit=ic-off] [local=0] [off=] [volleys=20] [kick_mv=60] [kick_ms=1] [delays=0] [every=4] [scale=out*0.5] [seed=0]
 
 off=mgn — без интернейронов → реле, off=trn — без TRN → реле.
 """
@@ -22,6 +22,11 @@ import torch
 from brain import anatomy
 from brain.config import BrainConfig
 from brain.mind import Mind
+from brain.engine import SpikingBrain
+
+# Шаг за запуск: observe округляет окно до CHUNK шагов (10 = 5 мс) — без
+# этого «по шагам» были отсчёты через 5 мс.
+SpikingBrain.CHUNK = 1
 
 opts = {"fit": "ic-off", "local": "0", "off": "", "volleys": "20", "kick_mv": "60", "kick_ms": "1", "scale": "", "seed": "0"}
 opts.update(dict(kv.split("=", 1) for kv in sys.argv[1:]))
@@ -34,6 +39,7 @@ cfg.dt_ms = 0.5
 cfg.seed = int(opts["seed"])
 cfg.ic_local_inhibition = False
 cfg.relay_local_inhibition = opts["local"] == "1"
+cfg.path_delays = opts["delays"] == "1"
 if opts["fit"]:
     anatomy.use_fit(cfg, opts["fit"])
 torch.manual_seed(cfg.seed)

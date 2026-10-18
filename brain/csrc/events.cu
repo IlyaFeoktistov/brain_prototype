@@ -85,7 +85,9 @@ __global__ void deliver_kernel(
     const bool* __restrict__ is_lamp5, const float* __restrict__ ngf_d, float lamp5_scale, int64_t lamp5_kind,
     const float* __restrict__ stp_x, const float* __restrict__ inh_gain,
     float* __restrict__ dendrite, float* __restrict__ drive, float* __restrict__ glutamate,
-    float* __restrict__ inhibition, float* __restrict__ ngf) {
+    float* __restrict__ inhibition, float* __restrict__ ngf,
+    const int32_t* __restrict__ path_delay, const int64_t* __restrict__ tick, int64_t delay_slots,
+    int64_t stride, float* __restrict__ ring, float* __restrict__ dend_ring) {
   const float ach = ach_suppression > 0.0f ? *acetylcholine * ach_suppression : 0.0f;
   FOR_EVENTS(fired, slots, n, start, count, perm) {
     const int64_t syn = perm[row_ + j_];
@@ -97,9 +99,20 @@ __global__ void deliver_kernel(
     float w = net_weight[syn];
     const uint8_t flags = path_flags[path];
     if (flags & 2) w *= 1.0f - ach;
+    // Задержка пути (шагов сверх одного): событие — в кольцо на шаг
+    // tick + d; без задержки — прямо во входы шага.
+    const int d = path_delay[path];
+    float *to_drive = drive, *to_glu = glutamate, *to_inh = inhibition, *to_ngf = ngf, *to_dend = dendrite;
+    if (d > 0) {
+      const int64_t s = (*tick + d) % delay_slots;
+      float* base = ring + s * 4 * stride;
+      to_drive = base; to_inh = base + stride; to_ngf = base + 2 * stride;
+      to_glu = glutamate ? base + 3 * stride : nullptr;
+      to_dend = dend_ring + s * stride * branches;
+    }
     // Рабочая память -> смысл: на дальний дендрит (вес до истощения).
     if ((dendrite_pre[pre] && dendrite_post[post]) || (flags & 1)) {
-      atomicAdd(dendrite + post * branches + net_branch[syn], w);
+      atomicAdd(to_dend + post * branches + net_branch[syn], w);
       continue;
     }
     const bool typed = typed_pre[pre];
@@ -116,10 +129,10 @@ __global__ void deliver_kernel(
     }
     if (w < 0.0f) {
       w *= inh_gain[post];
-      atomicAdd((cell_type[pre] == lamp5_kind ? ngf : inhibition) + post, w);
+      atomicAdd((cell_type[pre] == lamp5_kind ? to_ngf : to_inh) + post, w);
     } else if (w > 0.0f) {
-      atomicAdd(drive + post, w);
-      if (glutamate) atomicAdd(glutamate + post, w);
+      atomicAdd(to_drive + post, w);
+      if (to_glu) atomicAdd(to_glu + post, w);
     }
   }
 }
@@ -182,7 +195,8 @@ void deliver(torch::Tensor fired, int64_t n, torch::Tensor start, torch::Tensor 
              torch::Tensor is_lamp5, torch::Tensor ngf_d, double lamp5_scale, int64_t lamp5_kind,
              torch::Tensor stp_x, torch::Tensor inh_gain,
              torch::Tensor dendrite, torch::Tensor drive, c10::optional<torch::Tensor> glutamate,
-             torch::Tensor inhibition, torch::Tensor ngf) {
+             torch::Tensor inhibition, torch::Tensor ngf,
+             torch::Tensor path_delay, torch::Tensor tick, torch::Tensor ring, torch::Tensor dend_ring) {
   auto stream = at::cuda::getCurrentCUDAStream();
   deliver_kernel<<<BLOCKS, THREADS, 0, stream>>>(
       fired.data_ptr<int64_t>(), fired.size(0), n, start.data_ptr<int32_t>(), count.data_ptr<int32_t>(), perm.data_ptr<int32_t>(),
@@ -197,7 +211,9 @@ void deliver(torch::Tensor fired, int64_t n, torch::Tensor start, torch::Tensor 
       stp_x.data_ptr<float>(), inh_gain.data_ptr<float>(),
       dendrite.data_ptr<float>(), drive.data_ptr<float>(),
       glutamate.has_value() ? glutamate->data_ptr<float>() : nullptr,
-      inhibition.data_ptr<float>(), ngf.data_ptr<float>());
+      inhibition.data_ptr<float>(), ngf.data_ptr<float>(),
+      path_delay.data_ptr<int32_t>(), tick.data_ptr<int64_t>(), ring.size(0),
+      drive.size(0), ring.data_ptr<float>(), dend_ring.data_ptr<float>());
 }
 
 void ltd(torch::Tensor fired, int64_t n, torch::Tensor start, torch::Tensor count, torch::Tensor perm,

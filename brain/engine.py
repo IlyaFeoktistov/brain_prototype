@@ -1780,12 +1780,15 @@ class SpikingBrain:
                 # главные — anatomy.RATES_HZ, тормозные — частота из таблицы.
                 from brain import anatomy
 
-                k_ei, ei, k_ie, ie, k_ii, ii, i_hz = spec.local_psp
+                k_ei, ei, k_ie, ie, k_ii, ii, i_hz = spec.local_psp[:7]
+                # Необязательно — местное возбуждение главных (входов E → E, ВПСП).
+                k_ee, ee = spec.local_psp[7:9] if len(spec.local_psp) >= 9 else (0, 0.0)
                 e_hz = anatomy.RATES_HZ.get(spec.name, 1.0)
 
                 for name, pre, post, k, psp, hz in (("E->I", area.E, area.I, k_ei, ei, e_hz),
                                                      ("I->E", area.I, area.E, k_ie, ie, i_hz),
-                                                     ("I->I", area.I, area.I, k_ii, ii, i_hz)):
+                                                     ("I->I", area.I, area.I, k_ii, ii, i_hz),
+                                                     ("E->E local", area.E, area.E, k_ee, ee, e_hz)):
                     if k <= 0:
                         continue
 
@@ -1808,6 +1811,9 @@ class SpikingBrain:
                         spec.name == "mgn" and getattr(cfg, "relay_local_inhibition", False)) or (
                         spec.name in ("cn", "ic"))
                     index = self._lgn_local(area, pre, post, built) if local else None
+
+                    if spec.name == "cn" and name == "I->E" and index is not None:
+                        index = self._cn_d_stellate_out(area, index)
                     self._connect(f"{spec.name}: {name}", pre, post, built, (w * root, w * root), pre_index=index)
 
                 continue
@@ -2219,6 +2225,34 @@ class SpikingBrain:
                 proj.source_kind = src_area[0].kind
 
             self.projections.append(proj)
+
+    def _cn_d_stellate_out(self, area, index: torch.Tensor) -> torch.Tensor:
+        """
+        Выход D-звёздчатых CN широкий (аксоны по многим изочастотным
+        пластинам; Oertel et al. 1990; Smith & Rhode 1989): доля входов
+        T-клетки, равная доле D среди тормозных (cfg.cn_d_stellate), берётся
+        у D-клеток в пределах ± полос их входа, остальные — ближайшие L.
+        """
+
+        share, wide = self.cfg.cn_d_stellate
+        every = max(1, round(1.0 / share)) if share > 0 else 0
+
+        if not every:
+            return index
+
+        I = area.I
+        d_cells = torch.arange(0, I.size, every, device=self.device)
+        d_band = self._relay_place(area, I)[d_cells, 0].long()
+        e_band = self._relay_place(area, area.E)[:, 0].long()
+        n_d = max(1, round(index.shape[1] * share))
+        g = self.generator
+        # Для каждой T-клетки — случайные D из её ± wide полос.
+        near = (d_band[None, :] - e_band[:, None]).abs() <= wide
+        weights = near.float() + 1e-9
+        pick = torch.multinomial(weights, n_d, replacement=False, generator=g)
+        out = index.clone()
+        out[:, -n_d:] = (I.start + d_cells[pick]).to(out.dtype)
+        return out
 
     def _lgn_local(self, area, pre: Population, post: Population, k: int) -> torch.Tensor:
         """

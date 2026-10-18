@@ -1993,6 +1993,7 @@ class SpikingBrain:
                     f"{sensor.name} -> {relay.E.name}", "sensory", (cells + offset)[:, None], relay.E,
                     torch.full((relay.E.size, 1), driver, device=self.device),
                 ))
+                self._triad(self.projections[-1])
                 # Местные тормозные клетки реле получают сетчатку так же (1–3
                 # входа, триады; ~25% клеток таламуса приматов — Arcelli et al.
                 # 1997).
@@ -2226,6 +2227,35 @@ class SpikingBrain:
 
             self.projections.append(proj)
 
+            if dst == "mgn.E" and psp > 0:
+                self._triad(proj)
+
+    def _triad(self, driver: Projection) -> None:
+        """
+        Триада реле таламуса (Sherman & Guillery 2006; кошка — Montero 1991,
+        Van Horn et al. 2000): окончание водителя возбуждает реле и дендрит
+        интернейрона, дендрит сразу тормозит то же реле — без спайка сомы
+        интернейрона. Здесь — парный тормозной синапс от того же водителя на
+        то же реле: проводимость cfg.triad_ratio от возбуждающей (прямое
+        торможение реле LGN мыши — IPSC/EPSC 0.53 при равных движущих силах,
+        eNeuro 2024). Вес торможения нормирован к ipsp_holding, возбуждения —
+        к epsp_holding: w_I = r · w_E · (V_ipsp − E_GABA) / (E_AMPA − V_epsp).
+        Задержка ~1 мс (Blitz & Regehr 2005) не воспроизведена — приходит в
+        тот же шаг, что ВПСП (задержки путей — только медленным путём).
+        """
+
+        cfg = self.cfg
+        ratio = getattr(cfg, "triad_ratio", 0.0)
+
+        if ratio <= 0:
+            return
+
+        scale = (cfg.ipsp_holding_mv - cfg.gaba_reversal_mv) / (cfg.ampa_reversal_mv - cfg.epsp_holding_mv)
+        proj = Projection(f"{driver.name} (триада)", driver.source, driver.pre.clone(), driver.post, -ratio * scale * driver.weight.abs())
+        proj.pre_pop = getattr(driver, "pre_pop", None)
+        proj.source_kind = getattr(driver, "source_kind", None)
+        self.projections.append(proj)
+
     def _cn_d_stellate_out(self, area, index: torch.Tensor) -> torch.Tensor:
         """
         Выход D-звёздчатых CN широкий (аксоны по многим изочастотным
@@ -2454,6 +2484,7 @@ class SpikingBrain:
         for p in net:
             p.branch = self.net_branch[p.offset: p.offset + p.weight.numel()].view(p.weight.shape)
         self.ear_pre, self.ear_post, self.ear_weight = flatten(sensory, dummy=False)
+        self.ear_inhibitory = bool((self.ear_weight < 0).any())
 
         # Задержка каждого синапса — лишние шаги сверху обычного одного (0 —
         # приходит на следующем шаге, как всегда). Между зонами — axon_delay_ms
@@ -3129,7 +3160,15 @@ class SpikingBrain:
             heard_now = (heard_now + (torch.rand_like(heard_now) < self.spontaneous).float()).clamp(max=1.0)
 
         heard = heard_now.index_select(0, self.ear_pre)
-        drive.index_add_(0, self.ear_post, heard * self.ear_weight)
+
+        if self.ear_inhibitory and self.conductance:
+            # Тормозные синапсы рецепторов (триады сетчатка → LGN) — в
+            # проводимость торможения, как у синапсов мозга.
+            heard = heard * self.ear_weight
+            drive.index_add_(0, self.ear_post, heard.clamp(min=0.0))
+            inhibition.index_add_(0, self.ear_post, heard.clamp(max=0.0))
+        else:
+            drive.index_add_(0, self.ear_post, heard * self.ear_weight)
 
         if plastic:
             # LTD: пре пришёл после поста. Нейроны рабочей памяти

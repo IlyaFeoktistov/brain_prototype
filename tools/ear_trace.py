@@ -40,6 +40,7 @@ cfg.dt_ms = 0.5
 cfg.seed = int(opts["seed"])
 cfg.relay_local_inhibition = opts["local"] == "1"
 cfg.ic_local_inhibition = opts["ic_inh"] == "1"
+cfg.mgn_interneuron_out = float(opts.get("mgn_out", "1"))  # обход MGN (диагностика)
 if opts["fit"]:
     from brain import anatomy
 

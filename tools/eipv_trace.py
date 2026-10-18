@@ -42,6 +42,7 @@ cfg.anatomy = True
 cfg.hand = True
 cfg.dt_ms = 0.5
 cfg.ic_local_inhibition = False
+cfg.mgn_interneuron_out = float(opts.get("mgn_out", "1"))  # обход MGN (диагностика)
 if opts["fit"]:
     from brain import anatomy
 

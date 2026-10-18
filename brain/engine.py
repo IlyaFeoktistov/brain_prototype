@@ -1786,6 +1786,10 @@ class SpikingBrain:
                         continue
 
                     w = psp / self._psp_peak(post)
+
+                    if spec.name == "mgn" and name == "I->E":
+                        # Диагностический обход (cfg.mgn_interneuron_out), не норма.
+                        w *= getattr(cfg, "mgn_interneuron_out", 1.0)
                     built = max(1, min(k, pre.size))
                     root = math.sqrt(k / built)
                     tau = float(self.tau_m[post.start])

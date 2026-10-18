@@ -14,7 +14,7 @@ pv_off=association.L4 — диагностика: торможение PV → E 
 inh_off=cn,mgn — ещё и местное торможение главных клеток этих ядер выключено
 (диагностика: на широкополосной речи гаснут CN и MGN, DESIGN).
 
-    PYTHONPATH=. .venv/bin/python tools/word_trace.py [words=кот,кит,дом,мама] [pair=кот,кит] [reps=4] [after=100] [ic=0] [inh_off=] [fit=ic-off] [seed=0]
+    PYTHONPATH=. .venv/bin/python tools/word_trace.py [words=кот,кит,дом,мама] [pair=кот,кит] [reps=4] [after=100] [ic=0] [inh_off=] [fit=ic-off] [stem=0] [seed=0]
 """
 
 import random
@@ -36,6 +36,7 @@ cfg.anatomy = True
 cfg.hand = True
 cfg.dt_ms = 0.5
 cfg.ic_local_inhibition = opts["ic"] == "1"
+cfg.mgn_interneuron_out = float(opts.get("mgn_out", "1"))  # обход MGN (диагностика)
 if opts["fit"]:
     # Фон режима из ~/.brain/fits/<имя>.json (anatomy_fit out=имя).
     from brain import anatomy
@@ -80,6 +81,11 @@ if opts["chain"] == "1":
         "премотор L2/3": b.areas["premotor"].layers["L23"]["E"], "стриатум D1": b.areas["striatum_d1"].E,
         "рука L2/3": b.areas["hand"].layers["L23"]["E"],
     }
+if opts.get("stem", "0") == "1":
+    # stem=1 — с ядрами ствола и таламуса до коры: где пропадает различие слов.
+    stem = {"нерв": None, "CN": b.areas["cn"].E, "IC": b.areas["ic"].E, "MGN": b.areas["mgn"].E}
+    stem.pop("нерв")
+    stages = {**stem, **stages}
 words = opts["words"].split(",")
 order = [w for w in words for _ in range(int(opts["reps"]))]
 random.Random(cfg.seed).shuffle(order)

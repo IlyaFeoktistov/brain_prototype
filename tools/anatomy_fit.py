@@ -5,12 +5,13 @@
 «стреляет больше нормы — меньше фона» (как веса фона по типам у Billeh et
 al. 2020). Цели — anatomy.RATES_HZ и column_target_hz.
 
-    PYTHONPATH=. .venv/bin/python tools/anatomy_fit.py [steps=20] [ms=500] [dt=0.5] [fresh=0] [write=1] [kinds=PV,SOM,VIP,LAMP5] [ic_inh=1] [out=имя]
+    PYTHONPATH=. .venv/bin/python tools/anatomy_fit.py [steps=20] [ms=500] [dt=0.5] [fresh=0] [write=1] [kinds=PV,SOM,VIP,LAMP5] [ic_inh=1] [mgn_out=1] [start=имя] [out=имя]
 
 Стартует с чисел brain/anatomy.py (fresh=1 — фон колонок с нуля), в конце
 печатает найденное и записывает его туда же (NUCLEUS_BIAS_MV,
 COLUMN_EXTERNAL_POP); write=0 — только напечатать. ic_inh=0 — диагностический
-режим без местного торможения IC (cfg.ic_local_inhibition); out=имя — фон
+режим без местного торможения IC (cfg.ic_local_inhibition); mgn_out —
+множитель выхода интернейронов MGN (cfg.mgn_interneuron_out, обход); out=имя — фон
 в ~/.brain/fits/имя.json (anatomy.save_fit), не в anatomy.py: фон обхода не
 должен заменять фон мозга без обходов. Стенды берут его по fit=имя.
 """
@@ -50,6 +51,7 @@ def measure(bias: dict, pop: dict) -> tuple[dict, dict, dict]:
     cfg.size = opts["size"]
     cfg.dt_ms = float(opts["dt"])
     cfg.ic_local_inhibition = opts.get("ic_inh", "1") == "1"
+    cfg.mgn_interneuron_out = float(opts.get("mgn_out", "1"))
     cfg.nucleus_bias_mv = tuple(bias.items())
     cfg.column_gain_external_pop = tuple((*key, g) for key, g in pop.items())
     mind = Mind(cfg)
@@ -84,7 +86,14 @@ def measure(bias: dict, pop: dict) -> tuple[dict, dict, dict]:
 base = BrainConfig()
 targets = {(layer, kind): hz for layer, *v in base.column_target_hz for kind, hz in zip(KINDS, v)}
 # Старт — уже найденное (anatomy.py), продолжить подбор.
-bias: dict = dict(anatomy.NUCLEUS_BIAS_MV)
+# start=имя — старт с сохранённого фона (~/.brain/fits/имя.json): близкий
+# режим сходится за меньше шагов, чем от фона мозга без обходов.
+start_bias, start_pop = anatomy.NUCLEUS_BIAS_MV, anatomy.COLUMN_EXTERNAL_POP
+if opts.get("start"):
+    probe = BrainConfig()
+    anatomy.use_fit(probe, opts["start"])
+    start_bias, start_pop = probe.nucleus_bias_mv, probe.column_gain_external_pop
+bias: dict = dict(start_bias)
 
 if opts["fresh_nuclei"] == "1":
     # Фон ядер — с нуля (после изменения устройства ядер); узел сна —
@@ -92,8 +101,8 @@ if opts["fresh_nuclei"] == "1":
     bias = {n: v for n, v in bias.items() if n in anatomy.SLEEP_RATES_HZ}
 # Фон колонок — свой у каждой зоны (зона, слой, тип); старт — общий по
 # (слой, тип) из anatomy.py.
-common = {(e[0], e[1]): e[-1] for e in anatomy.COLUMN_EXTERNAL_POP if len(e) == 3}
-own = {tuple(e[:3]): e[-1] for e in anatomy.COLUMN_EXTERNAL_POP if len(e) == 4}
+common = {(e[0], e[1]): e[-1] for e in start_pop if len(e) == 3}
+own = {tuple(e[:3]): e[-1] for e in start_pop if len(e) == 4}
 pop: dict = {}
 
 if opts["fresh"] == "1":

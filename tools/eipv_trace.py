@@ -3,7 +3,9 @@
 мыши: 64% пар E–PV связаны взаимно; сила E → PV и PV → E у взаимных пар
 коррелирует, r 0.57; сходство ответов объясняет ~15% вариации силы E → PV
 и ~18% PV → E — r ≈ 0.4; вероятность связи от сходства не зависит).
-Обход ствола (IC выкл. флагом, inh_off=cn,mgn), свежий мозг small.
+Обход ствола — только IC (местное торможение выкл. флагом; inh_off=cn,mgn —
+ещё и CN, MGN), свежий мозг small; fit=имя — фон из ~/.brain/fits/имя.json
+(anatomy_fit out=имя ic_inh=0 — фон этого режима).
 
 1. Проба (PV → E смысловой L4 выкл.): средний ответ каждой клетки L4 E и
    PV на каждое слово; настройка пары — корреляция её ответов по словам.
@@ -18,7 +20,7 @@ geometry=1 (по умолчанию) — колонки без карты как
 по расстоянию между клетками пары, частоты в покое; ee_sigma — σ E → E
 на листе, мкм (0 — партнёры E → E случайно по зоне).
 
-    PYTHONPATH=. .venv/bin/python tools/eipv_trace.py [geometry=1] [ee_sigma=124.6] [words=кот,дом,кит,мама] [probe=4] [test=8] [target=0.4] [seed=0]
+    PYTHONPATH=. .venv/bin/python tools/eipv_trace.py [geometry=1] [ee_sigma=124.6] [words=кот,дом,кит,мама] [probe=4] [test=8] [target=0.4] [inh_off=] [fit=ic-off] [seed=0]
 """
 
 import random
@@ -31,7 +33,7 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 from brain.world import Voice
 
-opts = {"geometry": "1", "ee_sigma": "124.6", "words": "кот,дом,кит,мама", "probe": "4", "test": "8", "target": "0.4", "inh_off": "cn,mgn", "seed": "0"}
+opts = {"geometry": "1", "ee_sigma": "124.6", "words": "кот,дом,кит,мама", "probe": "4", "test": "8", "target": "0.4", "inh_off": "", "fit": "", "seed": "0"}
 opts.update(dict(kv.split("=", 1) for kv in sys.argv[1:]))
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
@@ -40,6 +42,10 @@ cfg.anatomy = True
 cfg.hand = True
 cfg.dt_ms = 0.5
 cfg.ic_local_inhibition = False
+if opts["fit"]:
+    from brain import anatomy
+
+    anatomy.use_fit(cfg, opts["fit"])
 cfg.column_geometry = opts["geometry"] == "1"
 cfg.sigma_ee_um = float(opts["ee_sigma"])
 cfg.seed = int(opts["seed"])

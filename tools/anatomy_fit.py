@@ -5,11 +5,14 @@
 «стреляет больше нормы — меньше фона» (как веса фона по типам у Billeh et
 al. 2020). Цели — anatomy.RATES_HZ и column_target_hz.
 
-    PYTHONPATH=. .venv/bin/python tools/anatomy_fit.py [steps=20] [ms=500] [dt=0.5] [fresh=0] [write=1] [kinds=PV,SOM,VIP,LAMP5]
+    PYTHONPATH=. .venv/bin/python tools/anatomy_fit.py [steps=20] [ms=500] [dt=0.5] [fresh=0] [write=1] [kinds=PV,SOM,VIP,LAMP5] [ic_inh=1] [out=имя]
 
 Стартует с чисел brain/anatomy.py (fresh=1 — фон колонок с нуля), в конце
 печатает найденное и записывает его туда же (NUCLEUS_BIAS_MV,
-COLUMN_EXTERNAL_POP); write=0 — только напечатать.
+COLUMN_EXTERNAL_POP); write=0 — только напечатать. ic_inh=0 — диагностический
+режим без местного торможения IC (cfg.ic_local_inhibition); out=имя — фон
+в ~/.brain/fits/имя.json (anatomy.save_fit), не в anatomy.py: фон обхода не
+должен заменять фон мозга без обходов. Стенды берут его по fit=имя.
 """
 
 import math
@@ -46,6 +49,7 @@ def measure(bias: dict, pop: dict) -> tuple[dict, dict, dict]:
     cfg.hand = True
     cfg.size = opts["size"]
     cfg.dt_ms = float(opts["dt"])
+    cfg.ic_local_inhibition = opts.get("ic_inh", "1") == "1"
     cfg.nucleus_bias_mv = tuple(bias.items())
     cfg.column_gain_external_pop = tuple((*key, g) for key, g in pop.items())
     mind = Mind(cfg)
@@ -140,8 +144,10 @@ for step in range(int(opts["steps"])):
     if sum(errors) / len(errors) < best[0]:
         best = (sum(errors) / len(errors), dict(bias), dict(pop))
 
-        if opts["write"] == "1":
-            # Лучшее — сразу в файл: прерванный подбор не теряет найденное.
+        # Лучшее — сразу в файл: прерванный подбор не теряет найденное.
+        if opts.get("out"):
+            anatomy.save_fit(opts["out"], tuple(bias.items()), tuple((*key, g) for key, g in pop.items()))
+        elif opts["write"] == "1":
             anatomy.write_fitted(tuple(bias.items()), tuple((*key, g) for key, g in pop.items()))
 
     worst = sorted([kv for kv in columns.items() if kv[0][2] != "LAMP5" or lamp5], key=lambda kv: -abs(math.log((kv[1] + 0.5) / (targets[kv[0][1:]] + 0.5))))[:8]
@@ -187,7 +193,9 @@ bias, pop = best[1], best[2]
 print("nucleus_bias_mv =", tuple((n, round(v, 2)) for n, v in bias.items()))
 print("column_gain_external_pop =", tuple((*key, round(g, 3)) for key, g in pop.items()))
 
-if opts["write"] == "1":
+if opts.get("out"):
+    print(f"записано в {anatomy.save_fit(opts['out'], tuple(bias.items()), tuple((*key, g) for key, g in pop.items()))}")
+elif opts["write"] == "1":
     # Записать найденное в brain/anatomy.py вместо прежних чисел.
     path = anatomy.write_fitted(tuple(bias.items()), tuple((*key, g) for key, g in pop.items()))
     print(f"записано в {path}")

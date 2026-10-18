@@ -6,7 +6,9 @@ small, звук на 65 дБ (улитка приводит к уровню ре
 возбуждающий (i_syn) и тормозной (i_inh) токи, средние по 10-мс окнам.
 
 У тона — ещё реле своей полосы (± 2 полосы от 1 кГц) и прочих отдельно.
-local=1 — местное торможение реле (cfg.relay_local_inhibition).
+local=1 — местное торможение реле (cfg.relay_local_inhibition). ic_inh=0 —
+диагностика без местного торможения IC (флаг); fit=имя — фон из
+~/.brain/fits/имя.json (anatomy_fit out=имя).
 inh_off=cn,ic — диагностика: местное торможение главных клеток этих ядер
 выключено (синапсы тормозные → E и их среднее поле), остальное как есть.
 У тона CN и IC по полосам (своя ± 2, соседи 3–10, дальние) — главные и
@@ -14,7 +16,7 @@ inh_off=cn,ic — диагностика: местное торможение г
 У тона, своя полоса — ещё задержка первого спайка после начала (медиана
 по клеткам, ответившим за 50 мс).
 
-    PYTHONPATH=. .venv/bin/python tools/ear_trace.py [local=0] [text=Кот живёт в доме.] [seed=0]
+    PYTHONPATH=. .venv/bin/python tools/ear_trace.py [local=0] [ic_inh=1] [fit=имя] [text=Кот живёт в доме.] [seed=0]
 """
 
 import math
@@ -27,7 +29,7 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 from brain.world import Voice
 
-opts = {"inh_off": "", "local": "0", "text": "Кот живёт в доме.", "seed": "0"}
+opts = {"inh_off": "", "ic_inh": "1", "fit": "", "local": "0", "text": "Кот живёт в доме.", "seed": "0"}
 opts.update(dict(kv.split("=", 1) for kv in sys.argv[1:]))
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
@@ -37,6 +39,11 @@ cfg.hand = True
 cfg.dt_ms = 0.5
 cfg.seed = int(opts["seed"])
 cfg.relay_local_inhibition = opts["local"] == "1"
+cfg.ic_local_inhibition = opts["ic_inh"] == "1"
+if opts["fit"]:
+    from brain import anatomy
+
+    anatomy.use_fit(cfg, opts["fit"])
 torch.manual_seed(cfg.seed)
 b = Mind(cfg).brain
 b.plasticity = False

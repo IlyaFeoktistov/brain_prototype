@@ -681,6 +681,35 @@ def write_fitted(bias, pop) -> str:
     return str(path)
 
 
+def save_fit(name: str, bias, pop) -> str:
+    """
+    Фон диагностического режима (обход, не норма) — в ~/.brain/fits/<имя>.json,
+    не в этот файл: здесь — фон мозга без обходов.
+    """
+
+    import json
+
+    from brain.config import BRAIN_HOME
+
+    path = BRAIN_HOME / "fits" / f"{name}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"bias": [list(b) for b in bias], "pop": [list(p) for p in pop]}, ensure_ascii=False), encoding="utf-8")
+
+    return str(path)
+
+
+def use_fit(cfg, name: str) -> None:
+    """Взять фон из ~/.brain/fits/<имя>.json (save_fit) вместо чисел этого файла."""
+
+    import json
+
+    from brain.config import BRAIN_HOME
+
+    data = json.loads((BRAIN_HOME / "fits" / f"{name}.json").read_text(encoding="utf-8"))
+    cfg.nucleus_bias_mv = tuple(tuple(b) for b in data["bias"])
+    cfg.column_gain_external_pop = tuple(tuple(p) for p in data["pop"])
+
+
 def apply(cfg) -> None:
     """Достроить cfg до анатомического мозга (вызывается из Mind)."""
 

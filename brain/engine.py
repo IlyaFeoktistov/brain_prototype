@@ -2205,7 +2205,7 @@ class SpikingBrain:
         else:
             j = ((torch.arange(pop.size, device=self.device).float() + 0.5) * area.E.size / pop.size).long()
 
-        if area.name in ("mgn", "cn", "ic"):
+        if area.name in ("mgn", "cn", "ic", "vnll"):
             j = j % cfg.sensory_size
             band = (j // (cfg.sensory_size // cfg.cochlea_bands)).float()
             return torch.stack([band, torch.zeros_like(band)], 1)

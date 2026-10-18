@@ -58,7 +58,7 @@ for name in filter(None, opts["inh_off"].split(",")):
         if p.name == f"{name}: I->E":
             p.weight.zero_()
     b.mf_inh[int(b.mf_post_id[nucleus.E.start]), int(b.mf_pre_id[nucleus.I.start])] = 0.0
-stages = [(f"{n.upper()} {k}", getattr(b.areas[n], k)) for n in ("cn", "ic") if n in b.areas for k in ("E", "I")] + [("MGN E", b.areas["mgn"].E), ("MGN I", b.areas["mgn"].I), ("TRN", b.areas["trn_mgn"].E),
+stages = [(f"{n.upper()} {k}", getattr(b.areas[n], k)) for n in ("cn", "vnll", "ic") if n in b.areas for k in ("E", "I") if getattr(b.areas[n], k).size] + [("MGN E", b.areas["mgn"].E), ("MGN I", b.areas["mgn"].I), ("TRN", b.areas["trn_mgn"].E),
           ("слух L4 E", A["L4"]["E"]), ("слух L4 PV", A["L4"]["PV"]), ("слух L2/3 E", A["L23"]["E"]), ("слух L2/3 PV", A["L23"]["PV"])]
 WIN = 10.0
 rate = 16000

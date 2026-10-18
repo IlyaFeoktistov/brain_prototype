@@ -2151,10 +2151,45 @@ class SpikingBrain:
                     )
                 )
 
+        self._v1_to_colliculus()
         self._external_minus_modeled()
         self._build_mean_field()
         self._pack()
         self._init_nmda()
+
+    def _v1_to_colliculus(self) -> None:
+        """
+        V1 L5 → верхнее двухолмие (Lund et al. 1975; Schiller & Tehovnik 2001,
+        примат): по месту в поле. Карты обе вокруг точки взгляда — у V1 окно
+        ямки (столбец − fovea_col, px), у двухолмия боковое поле (место клетки
+        − середина, как цель саккады в session); клетка двухолмия в пределах
+        окна ямки получает cfg.v1_colliculus_k ближайших по горизонтали клеток
+        V1 L5, вне окна — без этого входа.
+        """
+
+        cfg = self.cfg
+        k, psp = getattr(cfg, "v1_colliculus", (0, 0.0))
+
+        if not (k and getattr(cfg, "anatomy", False) and self.eye_sensor is not None
+                and "colliculus" in self.areas and self.areas.get("visual") is not None
+                and self.areas["visual"].layers and "L5" in self.areas["visual"].layers):
+            return
+
+        L5 = self.areas["visual"].layers["L5"]["E"]
+        SC = self.areas["colliculus"].E
+        _, _, cols = self._oriented_layout(self.eye_sensor, L5.size)
+        x_v1 = cols.float() - cfg.fovea_col
+        field = cfg.retina_cols * cfg.periphery_fields
+        x_sc = (torch.arange(SC.size, device=self.device).float() + 0.5) * field / SC.size - field / 2
+        inside = (x_sc >= float(x_v1.min())) & (x_sc <= float(x_v1.max()))
+        d = (x_sc[:, None] - x_v1[None, :]).abs() + torch.rand((SC.size, L5.size), device=self.device, generator=self.generator)
+        pre = d.topk(min(k, L5.size), dim=1, largest=False).indices + L5.start
+        w = psp / self._psp_peak(SC)
+        weight = torch.where(inside[:, None], w, 0.0).expand(SC.size, pre.shape[1]).contiguous()
+        proj = Projection(f"{L5.name} -> {SC.name}", "net", pre.to(torch.int32), SC, weight)
+        proj.pre_pop = L5
+        proj.source_kind = self.areas["visual"].kind
+        self.projections.append(proj)
 
     def _relay_place(self, area, pop: Population) -> torch.Tensor:
         """

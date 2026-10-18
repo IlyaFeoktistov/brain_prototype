@@ -90,7 +90,8 @@ __global__ void deliver_kernel(
   FOR_EVENTS(fired, slots, n, start, count, perm) {
     const int64_t syn = perm[row_ + j_];
     const int64_t pre = neuron_;
-    // Признаки пути: бит 0 — на дендрит, бит 1 — подавляет ацетилхолин.
+    // Признаки пути: бит 0 — на дендрит, бит 1 — подавляет ацетилхолин,
+    // бит 2 — без истощения пресинапса.
     const int64_t path = path_of(path_start, paths, syn);
     const int64_t post = path_post[path] + (syn - path_start[path]) / path_fanin[path];
     float w = net_weight[syn];
@@ -109,7 +110,8 @@ __global__ void deliver_kernel(
       float gain = u * stp_x4[slot] / fmaxf(1.0f - u, 1e-3f) / stp_U4[slot];
       if (is_lamp5[pre]) gain *= ngf_d[pre] * lamp5_scale;
       w *= gain;
-    } else {
+    } else if (!(flags & 4)) {
+      // Бит 2 — путь без истощения (другой выход клетки с депрессией пути).
       w *= stp_x[pre];
     }
     if (w < 0.0f) {
@@ -248,7 +250,8 @@ __global__ void deliver_buf_kernel(
   for (int64_t e = blockIdx.x * (int64_t)blockDim.x + threadIdx.x; e < end; e += (int64_t)gridDim.x * blockDim.x) {
     const int64_t syn = synapses[e];
     const int64_t pre = pre_of[e];
-    // Признаки пути: бит 0 — на дендрит, бит 1 — подавляет ацетилхолин.
+    // Признаки пути: бит 0 — на дендрит, бит 1 — подавляет ацетилхолин,
+    // бит 2 — без истощения пресинапса.
     const int64_t path = path_of(path_start, paths, syn);
     const int64_t post = path_post[path] + (syn - path_start[path]) / path_fanin[path];
     float w = net_weight[syn];
@@ -267,7 +270,8 @@ __global__ void deliver_buf_kernel(
       float gain = u * stp_x4[slot] / fmaxf(1.0f - u, 1e-3f) / stp_U4[slot];
       if (is_lamp5[pre]) gain *= ngf_d[pre] * lamp5_scale;
       w *= gain;
-    } else {
+    } else if (!(flags & 4)) {
+      // Бит 2 — путь без истощения (другой выход клетки с депрессией пути).
       w *= stp_x[pre];
     }
     if (w < 0.0f) {

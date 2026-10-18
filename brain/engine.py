@@ -757,7 +757,14 @@ class SpikingBrain:
             adapts = spec.inhibition_adapts
             if adapts if adapts is not None else (spec.kind == "cortex" and spec.ee_plastic):
                 self.inh_adapts[self.areas[spec.name].E.slice] = 1.0
-        self.stp_recover = dt / cfg.stp_tau_rec_ms
+        self.stp_recover = torch.full((self.n_slots,), dt / cfg.stp_tau_rec_ms, device=self.device)
+        self.stp_u_cell = cfg.stp_u * self.cortex_e
+
+        for src, _, U, tau_rec in getattr(cfg, "nucleus_stp", ()):
+            if src in self.areas:
+                cells = self.areas[src].E.slice
+                self.stp_u_cell[cells] = U
+                self.stp_recover[cells] = dt / tau_rec
         self.decay_inh_gain = math.exp(-dt / cfg.inh_gain_tau_ms)
         # Затухание адаптации: у ядер может быть своё (медленное) время.
         self.decay_adapt = torch.full(
@@ -2583,7 +2590,24 @@ class SpikingBrain:
         # синапс не нужно (0.84 ГБ на 279 млн синапсов). Маски — только для
         # шага на PyTorch (процессор).
         paths = sorted((p for p in net if p.weight.numel()), key=lambda p: p.offset)
-        flags = [int(p in dendritic) | (int(p in suppressed) << 1) for p in paths]
+        # Кратковременная депрессия путей ядер (cfg.nucleus_stp): ресурс — у
+        # клетки-источника (stp_x), прочие выходы этих клеток — без истощения.
+        stp_sources = {src for src, *_ in getattr(self.cfg, "nucleus_stp", ())}
+        stp_paths = {(src, dst) for src, dst, *_ in getattr(self.cfg, "nucleus_stp", ())}
+
+        def no_depletion(p) -> bool:
+            src = getattr(p, "pre_pop", None)
+            src = src.name.split(".")[0] if src is not None else ""
+            return src in stp_sources and (src, p.post.name.split(".")[0]) not in stp_paths
+
+        flags = [int(p in dendritic) | (int(p in suppressed) << 1) | (int(no_depletion(p)) << 2) for p in paths]
+        free = [p for p in paths if no_depletion(p)]
+        self.stp_free = None
+
+        if free:
+            self.stp_free = torch.zeros(self.net_weight.shape, dtype=torch.bool, device=self.device)
+            for p in free:
+                self.stp_free[p.offset: p.offset + p.weight.numel()] = True
         self.path_start = torch.tensor([p.offset for p in paths] + [self.n_synapses], dtype=torch.long, device=self.device)
         self.path_flags = torch.tensor(flags + [0], dtype=torch.uint8, device=self.device)
         # LTD пропорциональна весу синапса (stdp_ltd_weight_dependent): на
@@ -3115,6 +3139,9 @@ class SpikingBrain:
                 # (у клеток с типами — своё, выше).
                 depletion = self.stp_x.index_select(0, pre_of)
 
+                if self.stp_free is not None:
+                    depletion = torch.where(self.stp_free.index_select(0, synapses), 1.0, depletion)
+
                 if self.has_som:
                     depletion = torch.where(typed, 1.0, depletion)
                 weight = weight * depletion
@@ -3362,7 +3389,7 @@ class SpikingBrain:
             # Истощаются синапсы E зон с обучаемыми связями и все E колонок
             # (E → E и E → PV ослабевают при повторе — Markram et al. 1998;
             # Campagnola et al. 2022).
-            self.stp_x.sub_(cfg.stp_u * self.stp_x * self.spikes * self.cortex_e)
+            self.stp_x.sub_(self.stp_u_cell * self.stp_x * self.spikes)
             # Усиление торможения: каждый спайк E коры поднимает, медленно
             # возвращается к 1 (в равновесии 1 + шаг · τ · частота).
             self.inh_gain.sub_(1.0).mul_(self.decay_inh_gain).add_(1.0)

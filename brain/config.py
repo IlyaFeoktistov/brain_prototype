@@ -2128,6 +2128,16 @@ class BrainConfig:
     # seed 42 13 → 13, seed 7 11 → 16; очага нет, стенд (/health) чист.
     # DESIGN «Базовый контур».
     base_circuit: bool = True
+    # Кратковременная депрессия путей ядер (Tsodyks & Markram 1997): (от,
+    # к, U, восстановление мс); ресурс — у клетки-источника, прочие её
+    # выходы — без истощения. GPe → GPi/SNr U 0.2, ~1 с; STN → GPi/SNr U 0.35,
+    # ~0.8 с (Connelly et al. 2010; Shen & Johnson 2006 — по модели Lindahl &
+    # Hellgren Kotaleski 2016): при 40 / 15 Гц in vivo ресурс ~11% / ~19%.
+    # Пуркинье → ядра мозжечка: при ~50 Гц устаёт до ~40% (Telgkamp & Raman
+    # 2002) — U 0.3, 100 мс [сверить U и τ]. PSP путей — первого спайка.
+    nucleus_stp: tuple[tuple[str, str, float, float], ...] = (
+        ("gpe", "gpi", 0.2, 1000.0), ("stn", "gpi", 0.35, 800.0), ("purkinje", "dcn", 0.3, 100.0),
+    )
     stp_u: float = 0.2
     stp_tau_rec_ms: float = 500.0
     inh_gain_per_spike: float = 0.004

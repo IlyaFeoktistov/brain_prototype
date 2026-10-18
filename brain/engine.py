@@ -2806,6 +2806,22 @@ class SpikingBrain:
             ]
             self.galanin_i, self.noradrenaline_i = names.index("galanin"), names.index("noradrenaline")
 
+        if getattr(self.cfg, "anatomy", False):
+            # Мозг стартует бодрствующим, а не «без химии»: вещество ядра — в
+            # устойчивом уровне наяву, c = частота ядра × τ / 1000 (спайков на
+            # клетку за τ; anatomy.RATES_HZ). Без этого первые сотни мс
+            # ацетилхолина нет — коллатерали CA3 не подавлены, и стартовый
+            # всплеск разжигал судорогу, которая держалась и после подъёма
+            # ацетилхолина (tools/hippo_onset.py). Аденозин — давление сна,
+            # утром после сна низкое: с нуля.
+            from brain import anatomy
+
+            for i, name in enumerate(names):
+                hz = anatomy.RATES_HZ.get(modulators[name] or "", 0.0)
+
+                if name != "adenosine" and hz > 0:
+                    self.chemistry[i] = hz * getattr(self.cfg, f"{name}_tau_ms") / 1000.0
+
     def _chemistry_rates(self, asleep: bool) -> tuple[list[float], list[float], list[float]]:
         """τ (мс), выброс на долю выстреливших, постоянный выброс за шаг — по веществам."""
 

@@ -5,7 +5,7 @@
 «стреляет больше нормы — меньше фона» (как веса фона по типам у Billeh et
 al. 2020). Цели — anatomy.RATES_HZ и column_target_hz.
 
-    PYTHONPATH=. .venv/bin/python tools/anatomy_fit.py [steps=20] [ms=500] [dt=0.5] [fresh=0] [write=1] [kinds=PV,SOM,VIP,LAMP5] [ic_inh=1] [mgn_out=1] [start=имя] [out=имя]
+    PYTHONPATH=. .venv/bin/python tools/anatomy_fit.py [steps=20] [ms=500] [dt=0.5] [fresh=0] [write=1] [kinds=PV,SOM,VIP,LAMP5] [ic_inh=1] [mgn_out=1] [start=имя] [reset=ca3,ca1] [out=имя]
 
 Стартует с чисел brain/anatomy.py (fresh=1 — фон колонок с нуля), в конце
 печатает найденное и записывает его туда же (NUCLEUS_BIAS_MV,
@@ -94,6 +94,10 @@ if opts.get("start"):
     anatomy.use_fit(probe, opts["start"])
     start_bias, start_pop = probe.nucleus_bias_mv, probe.column_gain_external_pop
 bias: dict = dict(start_bias)
+# reset=ca3,ca1 — фон этих ядер с нуля (после изменения их устройства:
+# прежний подбор уравновешивал другую схему).
+for name in filter(None, opts.get("reset", "").split(",")):
+    bias.pop(name, None)
 
 if opts["fresh_nuclei"] == "1":
     # Фон ядер — с нуля (после изменения устройства ядер); узел сна —

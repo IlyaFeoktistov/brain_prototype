@@ -24,7 +24,7 @@ from brain.config import AreaSpec, PathwaySpec
 RATES_HZ = {
     # Реле таламуса: тоническая частота наяву ~10 Гц (Swadlow & Gusev 2001 —
     # VB кролика; LGN мыши — Niell & Stryker 2010 [сверить]).
-    "lgn": 10.0, "mgn": 10.0, "thalamus": 15.0, "md": 10.0,
+    "lgn": 10.0, "mgn": 10.0, "thalamus": 15.0, "vl_cb": 15.0, "md": 10.0,
     # Слуховой ствол: T-звёздчатые клетки кохлеарного ядра в тишине ~10–30
     # Гц, нижнее двухолмие наяву ~5–10 Гц [сверить по бодрствующим].
     "cn": 20.0, "ic": 8.0,
@@ -80,7 +80,7 @@ SLEEP_RATES_HZ = {"vlpo": 7.0, "lc": 1.0, "raphe": 1.0, "orexin": 0.1, "nbm": 0.
 NUCLEI = {
     # Реле таламуса: местные тормозные ~25% клеток у приматов (Arcelli et
     # al. 1997), ТПСП на реле ~1–2 мВ (Cox, Zhou & Sherman 1998 [сверить]).
-    **{name: (0.25, (20, 1.0, 20, -1.5, 10, -1.0, 10.0)) for name in ("lgn", "mgn", "md", "thalamus")},
+    **{name: (0.25, (20, 1.0, 20, -1.5, 10, -1.0, 10.0)) for name in ("lgn", "mgn", "md", "thalamus", "vl_cb")},
     # VTA: ~35% ГАМК-клеток (Nair-Roberts et al. 2008), тормозят дофаминовые
     # [величины сверить].
     "vta": (0.35, (10, 0.5, 20, -1.0, 10, -1.0, 15.0)),
@@ -153,6 +153,11 @@ def areas(cfg) -> list[AreaSpec]:
         # Harting 2003; Pinault 2004). Одно общее ядро связывало все реле:
         # моторная и слуховая петли через него тормозили LGN, весь таламус
         # качался вместе ~25 Гц. trn — зрительный сектор.
+        # Моторный таламус — две части с разным входом (Uno et al. 1978;
+        # Percheron et al. 1996; Sakai et al. 1996, примат): VA/VLa — вход
+        # GPi, выход в премоторную кору (зона «thalamus»); VLp — вход ядер
+        # мозжечка, выход в первичную моторную. Доля VLp [сверить].
+        _area("vl_cb", "таламус VLp (вход мозжечка) → моторная кора", 0.0025),
         _area("trn", "ретикулярное ядро: зрительный сектор", 0.00075),
         _area("trn_mgn", "ретикулярное ядро: слуховой сектор", 0.00075),
         _area("trn_md", "ретикулярное ядро: сектор MD (ПФК)", 0.00075),
@@ -225,8 +230,8 @@ def pathways(cfg) -> list[PathwaySpec]:
     # синапсов клетки реле — Van Horn, Erişir & Sherman 2000); L6 → TRN —
     # в 2–3 раза сильнее (Golshani, Liu & Jones 2001). Реле → TRN —
     # коллатерали; TRN → реле — ГАМК, IPSP ~1–2 мВ [сверить].
-    relays = [("visual", "lgn"), ("auditory", "mgn"), ("prefrontal", "md"), ("goal", "md"), ("motor", "thalamus")]
-    sector = {"lgn": "trn", "mgn": "trn_mgn", "md": "trn_md", "thalamus": "trn_motor"}
+    relays = [("visual", "lgn"), ("auditory", "mgn"), ("prefrontal", "md"), ("goal", "md"), ("motor", "thalamus"), ("motor", "vl_cb")]
+    sector = {"lgn": "trn", "mgn": "trn_mgn", "md": "trn_md", "thalamus": "trn_motor", "vl_cb": "trn_motor"}
 
     for cortex, relay in relays:
         out += [
@@ -411,7 +416,11 @@ def pathways(cfg) -> list[PathwaySpec]:
             _path("granule", "purkinje", 1000, 0.05, plastic=True, modulator="climbing"),
             _path("purkinje", "dcn", 40, -0.8),
             _path("io", "purkinje", 1, 10.0),
-            _path("dcn", "thalamus", 20, 1.0),
+            # Ядра мозжечка → VLp (мозжечковая часть моторного таламуса,
+            # Asanuma et al. 1983), не в часть с входом GPi.
+            _path("dcn", "vl_cb", 20, 1.0),
+            _path("vl_cb", "hand", 20, 0.6, "thalamic"),
+            _path("vl_cb", "motor", 20, 0.6, "thalamic"),
             # Коллатерали мшистых волокон — к ядрам мозжечка (Eccles 1967):
             # ядра возбуждает тот же вход, что гранулярные клетки (PSP
             # [сверить]).
@@ -499,6 +508,7 @@ def cortex_chain(cfg) -> list[PathwaySpec]:
         _path("premotor", "thalamus", 50, 0.3, "ct"),
         _path("premotor", "trn_motor", 50, 0.7, "ct"),
         _path("hand", "thalamus", 50, 0.3, "ct"),
+        _path("hand", "vl_cb", 50, 0.3, "ct"),
         _path("hand", "trn_motor", 50, 0.7, "ct"),
         # Гиперпрямой путь и вход быстрых тормозных стриатума — от моторной
         # коры, как от ПФК (Nambu et al. 2002; Mallet et al. 2005).
@@ -797,8 +807,7 @@ def apply(cfg) -> None:
     # VA/VL (Koster & Sherman 2024, мышь; PPR и амплитуды не приведены).
     # Сходимость, амплитуда, коэффициент депрессии не найдены [сверить] —
     # при 60 Гц GPi ~70 мВ торможения, подбор держит VA/VL фоном ~+55 мВ.
-    # Долг: у кошки клетки VA/VL с входом GPi и с входом мозжечка — разные
-    # части ядра (Uno 1978), у нас — один таламус.
+    # Часть с входом мозжечка — отдельное ядро vl_cb (Uno 1978).
     fixed = {
         ("gpi", "thalamus"): dict(psp_mv=-2.0, k_inhibitory=0),
         ("association", "amygdala"): dict(psp_mv=0.15, k_inhibitory=0, plastic=True, modulator="dopamine"),

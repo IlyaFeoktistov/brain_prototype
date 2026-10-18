@@ -2952,7 +2952,7 @@ class SpikingBrain:
         self.t_mask = torch.zeros(self.n_slots, dtype=torch.bool, device=self.device)
 
         if getattr(cfg, "thalamic_t_current", False):
-            for name in ("lgn", "mgn", "md", "thalamus"):
+            for name in ("lgn", "mgn", "md", "thalamus", "vl_cb"):
                 if name in self.areas:
                     self.t_mask[self.areas[name].E.slice] = True
         self.t_h = z()

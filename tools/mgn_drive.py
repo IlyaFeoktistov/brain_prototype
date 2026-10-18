@@ -5,7 +5,7 @@
 кора. local=1 — вход и выход интернейронов по карте
 (cfg.relay_local_inhibition). Режим — диагностический (IC без местного торможения, фон fit=).
 
-    PYTHONPATH=. .venv/bin/python tools/mgn_drive.py [fit=ic-off] [local=0] [seed=0]
+    PYTHONPATH=. .venv/bin/python tools/mgn_drive.py [fit=ic-off] [local=0] [scale=out*0.5] [seed=0]
 """
 
 import math
@@ -18,7 +18,7 @@ from brain.mind import Mind
 from brain.world import Voice
 from brain import anatomy
 
-opts = {"fit": "ic-off", "local": "0", "seed": "0"}
+opts = {"fit": "ic-off", "local": "0", "scale": "", "seed": "0"}
 opts.update(dict(kv.split("=", 1) for kv in sys.argv[1:]))
 cfg = BrainConfig(); cfg.save_path = "/nonexistent/brain.pt"; cfg.autosave = False
 cfg.anatomy = True; cfg.hand = True; cfg.dt_ms = 0.5; cfg.seed = int(opts["seed"]); cfg.ic_local_inhibition = False
@@ -30,6 +30,14 @@ b = Mind(cfg).brain; b.plasticity = False
 i = [s.name for s in b.sensors].index("ear")
 ear = Cochlea(cfg, b.sensor_offsets[i], b.sensors[i].size, b.device)
 m = b.areas["mgn"]
+# scale=out*0.5,in*0.25 — диагностика: вес пути в этом мозге × множитель
+# (out — интернейроны → реле, in — IC → интернейроны); модель не меняется.
+SCALE = {"out": "mgn: I->E", "in": "ic -> mgn.I"}
+for item in filter(None, opts.get("scale", "").split(",")):
+    key, factor = item.split("*")
+    for p in b.projections:
+        if p.name == SCALE[key]:
+            p.weight.mul_(float(factor))
 paths = [p for p in b.projections if (p.post is m.E or p.post is m.I) and float(p.weight.abs().sum()) > 0]
 centre = int((ear.centres - 1000.0).abs().argmin())
 dist = {tag: (b._relay_place(m, pop)[:, 0].long() - centre).abs() for tag, pop in (("E", m.E), ("I", m.I))}

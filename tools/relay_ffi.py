@@ -10,7 +10,7 @@ eNeuro 2024 — IPSC/EPSC реле при максимальной стимул�
 В опыте ВПСТ мерили при −70 мВ, ТПСТ при 0 мВ — сравнивать надо отношение
 проводимостей (печатается).
 
-    PYTHONPATH=. .venv/bin/python tools/relay_ffi.py [fit=ic-off] [local=0] [off=] [volleys=20] [kick_mv=60] [kick_ms=1] [every=4] [seed=0]
+    PYTHONPATH=. .venv/bin/python tools/relay_ffi.py [fit=ic-off] [local=0] [off=] [volleys=20] [kick_mv=60] [kick_ms=1] [every=4] [scale=out*0.5] [seed=0]
 
 off=mgn — без интернейронов → реле, off=trn — без TRN → реле.
 """
@@ -23,7 +23,7 @@ from brain import anatomy
 from brain.config import BrainConfig
 from brain.mind import Mind
 
-opts = {"fit": "ic-off", "local": "0", "off": "", "volleys": "20", "kick_mv": "60", "kick_ms": "1", "seed": "0"}
+opts = {"fit": "ic-off", "local": "0", "off": "", "volleys": "20", "kick_mv": "60", "kick_ms": "1", "scale": "", "seed": "0"}
 opts.update(dict(kv.split("=", 1) for kv in sys.argv[1:]))
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
@@ -49,6 +49,14 @@ for key in filter(None, opts["off"].split(",")):
         b.mf_inh[int(b.mf_post_id[mgn.E.start]), int(b.mf_pre_id[mgn.I.start])] = 0.0
 
 relay = mgn.E.slice
+# scale=out*0.5,in*0.25 — диагностика: вес пути в этом мозге × множитель
+# (out — интернейроны → реле, in — IC → интернейроны); модель не меняется.
+SCALE = {"out": "mgn: I->E", "in": "ic -> mgn.I"}
+for item in filter(None, opts.get("scale", "").split(",")):
+    key, factor = item.split("*")
+    for p in b.projections:
+        if p.name == SCALE[key]:
+            p.weight.mul_(float(factor))
 steps = int(40 / cfg.dt_ms)
 pre_steps = int(10 / cfg.dt_ms)
 ex = torch.zeros(steps, device=b.device)

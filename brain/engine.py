@@ -2182,7 +2182,16 @@ class SpikingBrain:
             order = torch.argsort(src_band)
             counts = torch.bincount(src_band, minlength=cfg.cochlea_bands)
             starts = torch.cumsum(counts, 0) - counts
-            want = bands(area, post)[:, None] + torch.randint(-spread, spread + 1, (post.size, k), device=self.device, generator=g)
+            spread = torch.full((post.size, 1), spread, device=self.device)
+
+            if dst == "cn.I":
+                # Тормозные CN: каждая ~1/доля-я — D-звёздчатая (широкая
+                # полоса), прочие — L-звёздчатые (cfg.cn_d_stellate).
+                share, wide = cfg.cn_d_stellate
+                every = max(1, round(1.0 / share)) if share > 0 else post.size + 1
+                spread[torch.arange(post.size, device=self.device) % every == 0] = wide
+
+            want = bands(area, post)[:, None] + (torch.rand((post.size, k), device=self.device, generator=g) * (2 * spread + 1)).long() - spread
             want = want.clamp(0, cfg.cochlea_bands - 1)
             pick = starts[want] + (torch.rand((post.size, k), device=self.device, generator=g) * counts[want]).long()
             pre = src_index[order[pick]]

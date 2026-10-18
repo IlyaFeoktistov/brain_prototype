@@ -2184,8 +2184,11 @@ class SpikingBrain:
             if name == "nerve":
                 band = torch.arange(sensor.size, device=self.device) // per
                 return band, torch.arange(sensor.size, device=self.device) + offset, "sensory", None
-            area = self.areas[name]
-            return bands(area, area.E), torch.arange(area.E.start, area.E.stop, device=self.device), "net", area
+            # «ic.I» — тормозные клетки ядра (ГАМК-проекция IC → MGN).
+            area_name, _, kind = name.partition(".")
+            area = self.areas[area_name]
+            pop = area.I if kind == "I" else area.E
+            return bands(area, pop), torch.arange(pop.start, pop.stop, device=self.device), "net", (area, pop)
 
         for src, dst, k, spread, psp in cfg.brainstem_links:
             name, kind = dst.split(".")
@@ -2212,8 +2215,8 @@ class SpikingBrain:
             proj = Projection(f"{src} -> {post.name}", table, pre if table == "sensory" else pre.to(torch.int32), post, weight)
 
             if src_area is not None:
-                proj.pre_pop = src_area.E
-                proj.source_kind = src_area.kind
+                proj.pre_pop = src_area[1]
+                proj.source_kind = src_area[0].kind
 
             self.projections.append(proj)
 

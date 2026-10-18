@@ -1506,12 +1506,15 @@ class SpikingBrain:
                             else:
                                 pre_index = self._nearest_pre(post, min(k, pre.size - (pre is post)), pre)
                             k = pre_index.shape[1]
-                        elif getattr(cfg, "column_geometry", False) and not (src_kind == "E" and dst_kind == "E"):
+                        elif getattr(cfg, "column_geometry", False) and not (src_kind == dst_kind == "E" and cfg.sigma_ee_um <= 0):
                             # Колонка без карты — лист коры: партнёр выбирается с
                             # вероятностью по расстоянию (Гаусс, σ — Campagnola
-                            # Fig. 2A: E → I 99, I → E 96, I → I 131 мкм); число
-                            # входов прежнее. E → E — пока случайно (σ нет).
-                            sigma = cfg.sigma_ei_um if src_kind == "E" else cfg.sigma_ie_um if dst_kind == "E" else cfg.sigma_ii_um
+                            # Fig. 2A: E → E 125, E → I 99, I → E 96, I → I 131
+                            # мкм); число входов прежнее.
+                            if src_kind == dst_kind == "E":
+                                sigma = cfg.sigma_ee_um
+                            else:
+                                sigma = cfg.sigma_ei_um if src_kind == "E" else cfg.sigma_ie_um if dst_kind == "E" else cfg.sigma_ii_um
                             pre_index = self._sheet_pre(spec, area, post, min(k, pre.size - (pre is post)), pre, sigma / 1000.0)
                             k = pre_index.shape[1]
 

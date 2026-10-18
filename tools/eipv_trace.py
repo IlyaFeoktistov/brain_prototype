@@ -14,10 +14,11 @@
    связи сдвинута к сходству пары (w · exp(k · сходство), сумма входа
    клетки прежняя), k — чтобы корреляция силы со сходством стала target.
 
-geometry=1 — колонки без карты как лист коры (cfg.column_geometry): взаимность
-по расстоянию между клетками пары, частоты в покое.
+geometry=1 (по умолчанию) — колонки без карты как лист коры (cfg.column_geometry): взаимность
+по расстоянию между клетками пары, частоты в покое; ee_sigma — σ E → E
+на листе, мкм (0 — партнёры E → E случайно по зоне).
 
-    PYTHONPATH=. .venv/bin/python tools/eipv_trace.py [geometry=0] [words=кот,дом,кит,мама] [probe=4] [test=8] [target=0.4] [seed=0]
+    PYTHONPATH=. .venv/bin/python tools/eipv_trace.py [geometry=1] [ee_sigma=124.6] [words=кот,дом,кит,мама] [probe=4] [test=8] [target=0.4] [seed=0]
 """
 
 import random
@@ -30,7 +31,7 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 from brain.world import Voice
 
-opts = {"geometry": "0", "words": "кот,дом,кит,мама", "probe": "4", "test": "8", "target": "0.4", "inh_off": "cn,mgn", "seed": "0"}
+opts = {"geometry": "1", "ee_sigma": "124.6", "words": "кот,дом,кит,мама", "probe": "4", "test": "8", "target": "0.4", "inh_off": "cn,mgn", "seed": "0"}
 opts.update(dict(kv.split("=", 1) for kv in sys.argv[1:]))
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
@@ -40,6 +41,7 @@ cfg.hand = True
 cfg.dt_ms = 0.5
 cfg.ic_local_inhibition = False
 cfg.column_geometry = opts["geometry"] == "1"
+cfg.sigma_ee_um = float(opts["ee_sigma"])
 cfg.seed = int(opts["seed"])
 torch.manual_seed(cfg.seed)
 b = Mind(cfg).brain

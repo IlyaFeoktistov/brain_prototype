@@ -10,7 +10,7 @@ eNeuro 2024 — IPSC/EPSC реле при максимальной стимул�
 В опыте ВПСТ мерили при −70 мВ, ТПСТ при 0 мВ — сравнивать надо отношение
 проводимостей (печатается).
 
-    PYTHONPATH=. .venv/bin/python tools/relay_ffi.py [fit=ic-off] [local=0] [off=] [volleys=20] [kick_mv=60] [kick_ms=1] [seed=0]
+    PYTHONPATH=. .venv/bin/python tools/relay_ffi.py [fit=ic-off] [local=0] [off=] [volleys=20] [kick_mv=60] [kick_ms=1] [every=4] [seed=0]
 
 off=mgn — без интернейронов → реле, off=trn — без TRN → реле.
 """
@@ -73,18 +73,20 @@ for _ in range(int(opts["volleys"])):
 
 
 def onset(x: torch.Tensor) -> float:
+    """Время до половины пика: порог 10% ловил фон между залпами."""
+
     peak = float(x.abs().max())
-    return float((x.abs() >= 0.1 * peak).nonzero()[0]) * cfg.dt_ms
+    return float((x.abs() >= 0.5 * peak).nonzero()[0]) * cfg.dt_ms
 
 
 pe, pi = float(ex.max()), float(-inh.min())
 print(f"залп: главных IC стреляло за 2 мс {sum(fired) / len(fired) * 4 * 100:.0f}% (средн. доля за шаг × 4)")
-print(f"ВПСТ реле: начало {onset(ex):.1f} мс, пик {pe:.2f} на {float(ex.argmax()) * cfg.dt_ms:.1f} мс, интеграл {float(ex.sum()) * cfg.dt_ms:.1f}")
-print(f"ТПСТ реле: начало {onset(inh):.1f} мс, пик {pi:.2f} на {float(inh.argmin()) * cfg.dt_ms:.1f} мс, интеграл {float(-inh.sum()) * cfg.dt_ms:.1f}")
+print(f"ВПСТ реле: половина пика {onset(ex):.1f} мс, пик {pe:.2f} на {float(ex.argmax()) * cfg.dt_ms:.1f} мс, интеграл {float(ex.sum()) * cfg.dt_ms:.1f}")
+print(f"ТПСТ реле: половина пика {onset(inh):.1f} мс, пик {pi:.2f} на {float(inh.argmin()) * cfg.dt_ms:.1f} мс, интеграл {float(-inh.sum()) * cfg.dt_ms:.1f}")
 print(f"ТПСТ / ВПСТ: пики {pi / max(pe, 1e-9):.2f}, интегралы {float(-inh.sum()) / max(float(ex.sum()), 1e-9):.2f}; задержка ТПСТ после ВПСТ {onset(inh) - onset(ex):+.1f} мс")
 # В опыте ВПСТ — при −70 мВ, ТПСТ — при 0 мВ: движущая сила у обоих ~70 мВ,
 # отношение токов = отношение проводимостей. У нас ток торможения нормирован к
 # −55 мВ (19 мВ до реверсии ГАМК), возбуждения — к −70 (70 мВ до AMPA).
 g_ratio = (pi / (cfg.ipsp_holding_mv - cfg.gaba_reversal_mv)) / max(pe / (cfg.ampa_reversal_mv - cfg.epsp_holding_mv), 1e-9)
 print(f"отношение проводимостей gI/gE по пикам {g_ratio:.2f} (опыт, LGN мыши, интернейроны: 0.53, IQR 0.42–0.73)")
-print("по шагам (мс: возб / торм): " + " ".join(f"{t * cfg.dt_ms:.0f}:{float(ex[t]):+.1f}/{float(inh[t]):+.1f}" for t in range(0, steps, 4)))
+print("по шагам (мс: возб / торм): " + " ".join(f"{t * cfg.dt_ms:.0f}:{float(ex[t]):+.1f}/{float(inh[t]):+.1f}" for t in range(0, steps, int(opts.get("every", "4")))))

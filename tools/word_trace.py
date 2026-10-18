@@ -14,7 +14,7 @@ pv_off=association.L4 — диагностика: торможение PV → E 
 inh_off=cn,mgn — ещё и местное торможение главных клеток этих ядер выключено
 (диагностика: на широкополосной речи гаснут CN и MGN, DESIGN).
 
-    PYTHONPATH=. .venv/bin/python tools/word_trace.py [words=кот,кит,дом,мама] [pair=кот,кит] [reps=4] [after=100] [ic=0] [inh_off=] [fit=ic-off] [stem=0] [seed=0]
+    PYTHONPATH=. .venv/bin/python tools/word_trace.py [words=кот,кит,дом,мама] [pair=кот,кит] [reps=4] [after=100] [ic=0] [inh_off=] [fit=ic-off] [stem=0] [delays=0] [seed=0]
 """
 
 import random
@@ -27,7 +27,7 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 from brain.world import Voice
 
-opts = {"pv_off": "", "chain": "0", "inh_off": "", "words": "кот,кит,дом,мама", "pair": "кот,кит", "reps": "4", "after": "100", "ic": "0", "fit": "", "seed": "0"}
+opts = {"pv_off": "", "chain": "0", "inh_off": "", "words": "кот,кит,дом,мама", "pair": "кот,кит", "reps": "4", "after": "100", "ic": "0", "fit": "", "delays": "0", "seed": "0"}
 opts.update(dict(kv.split("=", 1) for kv in sys.argv[1:]))
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
@@ -36,6 +36,7 @@ cfg.anatomy = True
 cfg.hand = True
 cfg.dt_ms = 0.5
 cfg.ic_local_inhibition = opts["ic"] == "1"
+cfg.path_delays = opts["delays"] == "1"
 cfg.mgn_interneuron_out = float(opts.get("mgn_out", "1"))  # обход MGN (диагностика)
 if opts["fit"]:
     # Фон режима из ~/.brain/fits/<имя>.json (anatomy_fit out=имя).

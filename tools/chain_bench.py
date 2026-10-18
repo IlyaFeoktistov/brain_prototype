@@ -121,7 +121,7 @@ for w in range(windows):
     part = raster[w * steps:(w + 1) * steps]
     rates = brain.observe(win, part)
     trace.append(torch.stack([retina(part)] + [rates[s].mean() for _, s in rows]))
-    key = hand.pressed(rates[brain.areas["hand"].E.slice])
+    key = hand.pressed(rates[brain.areas["hand"].output.slice])
 
     if key is not None and (not keys or keys[-1][1] != key):
         keys.append((w * win, key))

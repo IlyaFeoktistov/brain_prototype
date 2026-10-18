@@ -70,6 +70,15 @@ class Area:
     LAMP5: Population | None = None
 
     @property
+    def output(self) -> Population:
+        """
+        Выход зоны вниз (к мышцам, стволу, ядрам) — пирамидные L5 колонки
+        (кортикоспинальные клетки — L5, Lemon 2008); без слоёв — E.
+        """
+
+        return self.layers["L5"]["E"] if self.layers and "L5" in self.layers else self.E
+
+    @property
     def populations(self) -> list[tuple[str, Population]]:
         """(метка, популяция) всех клеток зоны: «E», «I», «L4.E», «L4.SOM» …"""
 

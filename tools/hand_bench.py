@@ -41,7 +41,7 @@ for kv in sys.argv[1:]:
 mind = Mind.load(opts["load"]) if opts["load"] else Mind(cfg)
 mind.cfg.autosave = False
 cfg, brain = mind.cfg, mind.brain
-H = brain.areas["hand"].E
+H = brain.areas["hand"].output
 keyboard = Keyboard()
 hand = Hand(len(keyboard), cfg.hand_cells)
 assert hand.keys * hand.cells <= H.size, (hand.keys * hand.cells, H.size)

@@ -41,7 +41,7 @@ class Session:
         self.wide = Screen(cfg.retina_rows, self.field)
         self.keyboard = Keyboard()
         self.hand = Hand(len(self.keyboard), cfg.hand_cells)
-        self.H = self.brain.areas["hand"].E
+        self.H = self.brain.areas["hand"].output
         self.SC = self.brain.areas["colliculus"].E
         # Цель саккады клетки двухолмия — её место в поле (px) минус середина.
         cell = torch.arange(self.SC.size, device=self.brain.device).float()

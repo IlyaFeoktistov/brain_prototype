@@ -9,6 +9,8 @@ small, звук на 65 дБ (улитка приводит к уровню ре
 local=1 — местное торможение реле (cfg.relay_local_inhibition).
 inh_off=cn,ic — диагностика: местное торможение главных клеток этих ядер
 выключено (синапсы тормозные → E и их среднее поле), остальное как есть.
+У тона CN и IC по полосам (своя ± 2, соседи 3–10, дальние) — главные и
+тормозные, у IC E — возбуждающий и тормозной токи (первые 50 мс → дальше).
 У тона, своя полоса — ещё задержка первого спайка после начала (медиана
 по клеткам, ответившим за 50 мс).
 
@@ -61,7 +63,7 @@ for name, wave, sr in sounds:
     steps = int(WIN / cfg.dt_ms)
     nerve = raster[:, ear.offset: ear.offset + ear.size].sum(1).mean() / ear.size * 1000.0 / cfg.dt_ms
     quiet = b.observe(500)
-    windows, ex, inh = [], [], []
+    windows, ex, inh, cur_ex, cur_inh = [], [], [], [], []
     relay = b.areas["mgn"].E.slice
 
     first = None
@@ -77,6 +79,8 @@ for name, wave, sr in sounds:
         first[hit] = start * cfg.dt_ms + WIN
         ex.append(float(b.i_syn[relay].float().mean()))
         inh.append(float(b.i_inh[relay].float().mean()))
+        cur_ex.append(b.i_syn[: b.n].float().clone())
+        cur_inh.append(b.i_inh[: b.n].float().clone())
 
     onset = torch.stack(windows[:5]).mean(0)
     steady = torch.stack(windows[5:]).mean(0)
@@ -96,6 +100,25 @@ for name, wave, sr in sounds:
                 lat = lat[lat <= 50]
                 when = f", первый спайк ~{float(lat.median()):.0f} мс у {len(lat)}/{len(c)}" if m is own and len(lat) else ""
                 print(f"  {tag:19s} тишина {float(quiet[c].mean()):6.1f} → начало {float(onset[c].mean()):6.1f} → дальше {float(steady[c].mean()):6.1f} Гц{when}")
+
+        # Ядра ствола по полосам — главные и тормозные (место — _relay_place):
+        # своя (± 2 от 1 кГц), соседние (3–10), дальние; у IC E — токи.
+        centre = int((ear.centres - 1000.0).abs().argmin())
+        for nucleus in ("cn", "ic"):
+            area = b.areas[nucleus]
+            for kind in ("E", "I"):
+                pop = getattr(area, kind)
+                d = (b._relay_place(area, pop)[:, 0].long() - centre).abs()
+                idx = torch.arange(pop.start, pop.stop, device=b.device)
+                parts = []
+                for tag, m in (("своя", d <= 2), ("соседи", (d > 2) & (d <= 10)), ("дальние", d > 10)):
+                    c = idx[m]
+                    parts.append(f"{tag} {float(quiet[c].mean()):.1f} → {float(steady[c].mean()):.1f}")
+                    if nucleus == "ic" and kind == "E":
+                        e0, e1 = torch.stack(cur_ex[:5]).mean(0)[c].mean(), torch.stack(cur_ex[5:]).mean(0)[c].mean()
+                        i0, i1 = torch.stack(cur_inh[:5]).mean(0)[c].mean(), torch.stack(cur_inh[5:]).mean(0)[c].mean()
+                        parts[-1] += f" (возб {float(e0):+.2f}→{float(e1):+.2f}, торм {float(i0):+.2f}→{float(i1):+.2f})"
+                print(f"  {nucleus.upper()} {kind} по полосам, тишина → дальше Гц: " + "; ".join(parts))
 
         # Слуховая L4 — тонотопия: клетка i — полоса (i + 0.5) · полос / клеток.
         L4 = A["L4"]["E"]

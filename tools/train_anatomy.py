@@ -7,11 +7,8 @@ chemical_plasticity).
 
 Ступени:
   letters  — азбука: буква на экране, указка под ней;
-  read     — строки train-data.md с указкой: по буквам, по слогам, по словам
-             (step=letter|syllable|word);
   babble   — лепет: пустой экран, что рука нажала — видно, указка у символа;
   copy     — учитель пишет букву, мозг печатает: совпало — сладкое, нет — горькое;
-  talk     — вопрос из teach-data.txt, ответ рукой, учитель оценивает;
   course   — курс data/course по номерам файлов (азбука → … → вопросы):
              шаг показа — из заголовка файла; first= / last= — номера
              файлов, n — сколько раз пройти курс.
@@ -30,7 +27,7 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 from brain.session import Session
 
-opts = {"stage": "letters", "n": "200", "first": "1", "last": "99", "load": "", "save": "", "step": "letter", "dwell": "300", "seed": "0", "save_every": "0", "alphabet": ""}
+opts = {"stage": "letters", "n": "200", "first": "1", "last": "99", "load": "", "save": "", "dwell": "300", "seed": "0", "save_every": "0", "alphabet": ""}
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
 cfg.autosave = False
@@ -125,12 +122,6 @@ def course() -> list[tuple[str, str, list[str]]]:
     return out
 
 
-def corpus() -> list[str]:
-    text = Path("train-data.md").read_text(encoding="utf-8").lower()
-    lines = [re.sub(r"[^а-яё ,.?!-]", " ", line) for line in text.splitlines() if line.strip() and not line.startswith("#")]
-    return [re.sub(r"\s+", " ", line).strip() for line in lines if len(line) > 3]
-
-
 start = time.time()
 n = int(opts["n"])
 stage = opts["stage"]
@@ -151,11 +142,6 @@ if stage == "letters":
         if opts["save"] and every and (i + 1) % every == 0:
             # Промежуточный мозг — для проверки обучения по ходу.
             mind.save(opts["save"].replace(".pt", f"-{i + 1}.pt"))
-elif stage == "read":
-    lines = corpus()
-
-    for i in range(n):
-        point(rng.choice(lines), opts["step"])
 elif stage == "babble":
     session.line, session.gaze = "", 0.0
     typed = ""
@@ -199,21 +185,6 @@ elif stage == "course":
 
             tail = f", верно {right}/{len(items)}" if step == "qa" else ""
             print(f"курс {lap + 1}/{n}: {name} ({step}, {len(items)}){tail}, {time.time() - start:.0f} с", flush=True)
-elif stage == "talk":
-    rows = [line.split("|") for line in Path("teach-data.txt").read_text(encoding="utf-8").splitlines()
-            if "|" in line and not line.startswith("#")]
-    right = 0
-
-    for i in range(n):
-        question, answer = rows[rng.randrange(len(rows))][:2]
-        reply = session.reply(question.strip(), max_ms=10000.0)
-        good = answer.strip().split()[-1][:4] in reply
-        right += good
-        session.praise(good)
-        print(f"{question.strip()} → {reply!r} ({'верно' if good else answer.strip()})", flush=True)
-
-    print(f"верно {right}/{n}")
-
 print(f"ступень {stage}: {n} за {time.time() - start:.0f} с; саккад {len(session.saccades)}")
 
 if opts["save"]:

@@ -174,7 +174,12 @@ def areas(cfg) -> list[AreaSpec]:
         # ---- гиппокамп (клеток — HIPPOCAMPUS_CELLS) ----
         _nucleus("entorhinal", "энторинальная кора (вход гиппокампа)", cells=HIPPOCAMPUS_CELLS["entorhinal"]),
         _nucleus("dentate", "зубчатая извилина", cells=HIPPOCAMPUS_CELLS["dentate"]),
-        # Коллатерали CA3 — STDP симметричное (Mishra et al. 2016).
+        # Коллатерали CA3 — STDP симметричное: МЫШЬ, пары CA3–CA3 (Mishra et
+        # al. 2016, https://doi.org/10.1038/ncomms11552). У человека
+        # (гиппокамп, поле не указано) пост раньше пре усиливает до −80 мс, а
+        # от −80 до −130 мс ослабляет (Testa-Silva et al. 2010,
+        # https://doi.org/10.3389/fnsyn.2010.00012) — наше окно с этим не
+        # совпадает [долг: окно по данным человека].
         _nucleus("ca3", "CA3 гиппокампа", cells=HIPPOCAMPUS_CELLS["ca3"], ee_symmetric=True),
         _nucleus("ca1", "CA1 гиппокампа", cells=HIPPOCAMPUS_CELLS["ca1"]),
         # ---- зрение и рука (колонки) ----

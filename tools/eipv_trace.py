@@ -3,9 +3,9 @@
 мыши: 64% пар E–PV связаны взаимно; сила E → PV и PV → E у взаимных пар
 коррелирует, r 0.57; сходство ответов объясняет ~15% вариации силы E → PV
 и ~18% PV → E — r ≈ 0.4; вероятность связи от сходства не зависит).
-Обход ствола — только IC (местное торможение выкл. флагом; inh_off=cn,mgn —
-ещё и CN, MGN), свежий мозг small; fit=имя — фон из ~/.brain/fits/имя.json
-(anatomy_fit out=имя ic_inh=0 — фон этого режима).
+Свежий мозг small; inh_off=cn,mgn — диагностика: местное торможение главных
+клеток этих ядер выключено; fit=имя — фон из ~/.brain/fits/имя.json
+(anatomy_fit out=имя).
 
 1. Проба (PV → E смысловой L4 выкл.): средний ответ каждой клетки L4 E и
    PV на каждое слово; настройка пары — корреляция её ответов по словам.
@@ -38,11 +38,7 @@ opts.update(dict(kv.split("=", 1) for kv in sys.argv[1:]))
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
 cfg.autosave = False
-cfg.anatomy = True
-cfg.hand = True
 cfg.dt_ms = 0.5
-cfg.ic_local_inhibition = False
-cfg.mgn_interneuron_out = float(opts.get("mgn_out", "1"))  # обход MGN (диагностика)
 if opts["fit"]:
     from brain import anatomy
 

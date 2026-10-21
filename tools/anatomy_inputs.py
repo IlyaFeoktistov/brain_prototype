@@ -10,7 +10,7 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 torch.manual_seed(0)
 cfg = BrainConfig(); cfg.save_path="/nonexistent/b.pt"; cfg.autosave=False
-cfg.anatomy=True; cfg.hand=True; cfg.size="small"; cfg.dt_ms=0.5
+cfg.size="small"; cfg.dt_ms=0.5
 b = Mind(cfg).brain; b.plasticity=False; b.run(2500.0)
 r = b.observe(1000.0)
 tau = cfg.e_tau_syn

@@ -42,8 +42,6 @@ torch.manual_seed(0)
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
 cfg.autosave = False
-cfg.anatomy = True
-cfg.hand = True
 cfg.size = opts["size"]
 cfg.dt_ms = float(opts["dt"])
 bias = dict(anatomy.NUCLEUS_BIAS_MV)

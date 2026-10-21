@@ -5,15 +5,13 @@
 «стреляет больше нормы — меньше фона» (как веса фона по типам у Billeh et
 al. 2020). Цели — anatomy.RATES_HZ и column_target_hz.
 
-    PYTHONPATH=. .venv/bin/python tools/anatomy_fit.py [steps=20] [ms=500] [dt=0.5] [fresh=0] [write=1] [kinds=PV,SOM,VIP,LAMP5] [ic_inh=1] [mgn_out=1] [start=имя] [reset=ca3,ca1] [out=имя]
+    PYTHONPATH=. .venv/bin/python tools/anatomy_fit.py [steps=20] [ms=500] [dt=0.5] [fresh=0] [write=1] [kinds=PV,SOM,VIP,LAMP5] [start=имя] [reset=ca3,ca1] [out=имя]
 
 Стартует с чисел brain/anatomy.py (fresh=1 — фон колонок с нуля), в конце
 печатает найденное и записывает его туда же (NUCLEUS_BIAS_MV,
-COLUMN_EXTERNAL_POP); write=0 — только напечатать. ic_inh=0 — диагностический
-режим без местного торможения IC (cfg.ic_local_inhibition); mgn_out —
-множитель выхода интернейронов MGN (cfg.mgn_interneuron_out, обход); out=имя — фон
-в ~/.brain/fits/имя.json (anatomy.save_fit), не в anatomy.py: фон обхода не
-должен заменять фон мозга без обходов. Стенды берут его по fit=имя.
+COLUMN_EXTERNAL_POP); write=0 — только напечатать. out=имя — фон в
+~/.brain/fits/имя.json (anatomy.save_fit), не в anatomy.py: опыт не
+заменяет фон мозга. Стенды берут его по fit=имя.
 """
 
 import math
@@ -46,12 +44,8 @@ def measure(bias: dict, pop: dict) -> tuple[dict, dict, dict]:
     cfg.column_gain_from_e = tuple(from_e)
     cfg.save_path = "/nonexistent/brain.pt"
     cfg.autosave = False
-    cfg.anatomy = True
-    cfg.hand = True
     cfg.size = opts["size"]
     cfg.dt_ms = float(opts["dt"])
-    cfg.ic_local_inhibition = opts.get("ic_inh", "1") == "1"
-    cfg.mgn_interneuron_out = float(opts.get("mgn_out", "1"))
     cfg.nucleus_bias_mv = tuple(bias.items())
     cfg.column_gain_external_pop = tuple((*key, g) for key, g in pop.items())
     mind = Mind(cfg)

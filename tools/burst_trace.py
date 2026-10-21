@@ -27,8 +27,6 @@ opts = {"ms": "1000", "pops": POPS, "seed": "0"}
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
 cfg.autosave = False
-cfg.anatomy = True
-cfg.hand = True
 cfg.dt_ms = 0.5
 cfg.event_overflow = "warn"
 

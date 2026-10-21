@@ -26,15 +26,13 @@ import sys
 
 import torch
 
-from brain.config import BrainConfig, default_areas
+from brain import anatomy
+from brain.config import BrainConfig
 from brain.engine import SpikingBrain, KINDS
 
 opts = {"ee": "1", "seed": "0", "kicks": "10,30", "ach": "0", "fit": "0", "inputs": "", "area": "auditory", "ear": "0"}
 cfg = BrainConfig()
-cfg.layers = True
-cfg.eye = False
 cfg.compile_step = False
-cfg.anatomy = True
 cfg.size = "20000"
 cfg.dt_ms = 0.5
 
@@ -50,7 +48,7 @@ for kv in sys.argv[1:]:
 
 cfg.seed = int(opts["seed"])
 torch.manual_seed(cfg.seed)
-cfg.areas = [a for a in default_areas() if a.name == opts["area"]]
+cfg.areas = [a for a in anatomy.areas(cfg) if a.name == opts["area"]]
 cfg.pathways = []
 b = SpikingBrain(cfg)
 b.plasticity = False
@@ -101,7 +99,7 @@ def ratio() -> str:
     g = G.index_select(1, b.mf_post_type).t()
     dc_e = b.dc_mv + ((b.mf_exc - b.acetylcholine * b.mf_ach) * g @ b.mf_rate).index_select(0, b.mf_post_id)
     dc_i = b.dc_inh_mv + ((b.mf_inh * g) @ b.mf_rate).index_select(0, b.mf_post_id)
-    e = (b.i_syn + b.i_slow + dc_e) / (cfg.ampa_reversal_mv - cfg.epsp_holding_mv)
+    e = (b.i_syn + dc_e) / (cfg.ampa_reversal_mv - cfg.epsp_holding_mv)
     i = -(b.i_inh + b.i_ngf + b.ngf_mf + dc_i) / (cfg.ipsp_holding_mv - cfg.gaba_reversal_mv)
     return " ".join(f"{l}:{float(i[g_['E'].slice].mean() / e[g_['E'].slice].mean().clamp(min=1e-6)):.1f}" for l, g_ in L.items())
 

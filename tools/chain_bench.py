@@ -22,8 +22,6 @@ opts = {"word": "мама", "ms": "300", "win": "20", "rest": "1000", "warm": "2
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
 cfg.autosave = False
-cfg.anatomy = True
-cfg.hand = True
 cfg.dt_ms = 0.5
 
 for kv in sys.argv[1:]:

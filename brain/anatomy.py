@@ -16,8 +16,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 from brain.config import AreaSpec, PathwaySpec
 
 # Частоты покоя у бодрствующих, Гц (стенд anatomy_bench).
@@ -132,109 +130,173 @@ NUCLEI = {
 }
 
 
-def _area(name, title, share, **kw) -> AreaSpec:
-    """Подкорковое ядро: без обучаемых связей внутри, без гомеостаза по словам."""
+def _nucleus(name, title, share=0.0, **kw) -> AreaSpec:
+    """Ядро: главные клетки E и местный контур по данным (NUCLEI), без обучаемых связей внутри."""
 
-    return AreaSpec(name, title, share, k_ee=10, ee_plastic=False, ee_weight=(0.0, 0.0), target_activity=0.0, **kw)
+    fraction, local = NUCLEI.get(name, (0.0, ()))
+    return AreaSpec(name, title, share, local_inhibitory=fraction, local_psp=local, **kw)
 
 
+# Доли колонок и ядер (AreaSpec.share) — из прежней схемы [сверить]: у
+# колонок они действуют только сверх min_column_neurons (в small все колонки
+# по 20 тыс.); у ядер с cells число клеток — по данным.
 def areas(cfg) -> list[AreaSpec]:
-    out = [
+    return [
+        # ---- кора (колонки по слоям; BrainConfig.layered_areas) ----
+        AreaSpec("auditory", "слуховая кора (A1)", 0.10),
+        # Связь E → E слоя 2/3 смысловой коры учится [сверить: у остальных
+        # колонок она не учится, правило — дофамин, а у путей коры — STDP
+        # сразу; из прежней схемы].
+        AreaSpec("association", "ассоциативная височная кора (смысл слов)", 0.66, ee_plastic=True,
+                 inhibition_adapts=True),
+        AreaSpec("prefrontal", "префронтальная кора", 0.10),
+        AreaSpec("motor", "речевая моторная кора / зона Брока", 0.05),
+        AreaSpec("goal", "префронтальная кора: цель", 0.04, inhibition_adapts=True),
+        AreaSpec("limbic", "поясная и островковая кора (чувства)", 0.04),
+        # ---- ядра ----
+        _nucleus("vta", "дофаминовое ядро (VTA)", 0.005),
+        _nucleus("amygdala", "базолатеральная миндалина", 0.01),
+        AreaSpec("category", "височный полюс", 0.02),
+        # Привыкание голубого пятна — α2-ауторецептор (химия, RECEPTORS), не
+        # адаптация клеток.
+        _nucleus("lc", "голубое пятно (норадреналин)", 0.005, adapt_b=0.0),
+        # Переключатель сна (Saper 2001): VLPO (сон) и ядра бодрствования
+        # тормозят друг друга.
+        _nucleus("vlpo", "VLPO гипоталамуса (сон)", 0.003),
+        _nucleus("scn", "супрахиазматическое ядро (суточные часы)", 0.003),
+        # Шипиковые клетки стриатума — без адаптации [сверить: у MSN есть
+        # медленные K-токи (Kv1, Kir), их сила здесь не выведена].
+        _nucleus("striatum_d1", "стриатум D1 («иди»)", 0.005, adapt_b=0.0),
+        _nucleus("striatum_d2", "стриатум D2 («стой»)", 0.005, adapt_b=0.0),
+        _nucleus("gpe", "бледный шар, наружный (GPe)", 0.003),
+        _nucleus("gpi", "бледный шар, внутренний (GPi)", 0.003),
+        _nucleus("thalamus", "таламус VA/VLa (вход GPi) → премоторная кора", 0.005),
+        # ---- гиппокамп (клеток — HIPPOCAMPUS_CELLS) ----
+        _nucleus("entorhinal", "энторинальная кора (вход гиппокампа)", cells=HIPPOCAMPUS_CELLS["entorhinal"]),
+        _nucleus("dentate", "зубчатая извилина", cells=HIPPOCAMPUS_CELLS["dentate"]),
+        # Коллатерали CA3 — STDP симметричное (Mishra et al. 2016).
+        _nucleus("ca3", "CA3 гиппокампа", cells=HIPPOCAMPUS_CELLS["ca3"], ee_symmetric=True),
+        _nucleus("ca1", "CA1 гиппокампа", cells=HIPPOCAMPUS_CELLS["ca1"]),
+        # ---- зрение и рука (колонки) ----
+        # V1 — простые клетки L4 (вход сетчатки) и сложные L2/3 (Hubel &
+        # Wiesel 1962).
+        AreaSpec("visual", "первичная зрительная кора V1", 0.24),
+        # Детекторы букв (V4 / LO): признаки не врождённые — их выучивает
+        # чтение (Dehaene et al. 2010). Окно STDP 20 мс — как в зрительной коре
+        # in vivo (Meliza & Dan 2006).
+        AreaSpec("letters", "V4 / LO: детекторы букв", 0.1, stdp_tau_plus=20.0, stdp_ltp_rise=0.0,
+                 stdp_tau_minus=20.0),
+        AreaSpec("hand", "моторная кора руки", 0.045),
+        # Гранулярный слой мозжечка: клеток во много раз больше, чем входов,
+        # у каждой ~4 мшистых волокна (Eccles 1967), стреляет, когда активны
+        # 2+ входа (Chadderton et al. 2004).
+        _nucleus("granule", "мозжечок: гранулярные клетки", 0.2),
         # ---- таламус ----
         # Реле органов чувств: клеток — сколько рецепторов (один к одному).
-        _area("lgn", "латеральное коленчатое тело (реле зрения)", 0.0,
-              cells=2 * cfg.retina_rows * cfg.retina_cols if cfg.eye else 0),
+        _nucleus("lgn", "латеральное коленчатое тело (реле зрения)", cells=2 * cfg.retina_rows * cfg.retina_cols),
         # Слуховой ствол: волокно нерва → кохлеарное ядро → нижнее двухолмие
         # → MGN; клеток — как волокон, место клетки — полоса улитки.
-        _area("cn", "кохлеарное ядро (T-звёздчатые)", 0.0, cells=cfg.sensory_size),
-        _area("ic", "нижнее двухолмие", 0.0, cells=cfg.sensory_size),
+        _nucleus("cn", "кохлеарное ядро (T-звёздчатые)", cells=cfg.sensory_size),
+        _nucleus("ic", "нижнее двухолмие", cells=cfg.sensory_size),
         # Вентральное ядро латеральной петли: почти все клетки тормозные
         # (глицин, ГАМК — Saint Marie et al. 1997, кошка), тонотопия (Merchán &
         # Berbel 1996); вход — CN, выход — торможение IC (главный внешний
         # тормозной вход IC вместе с DNLL). Популяция E здесь — сами
         # проекционные тормозные клетки (знак — в пути). DNLL — бинауральный
         # (вход — верхняя олива), с одним ухом не строится.
-        _area("vnll", "вентральное ядро латеральной петли (торможение IC)", 0.0, cells=cfg.sensory_size),
-        _area("mgn", "медиальное коленчатое тело (реле слуха)", 0.0, cells=cfg.sensory_size),
-        _area("md", "медиодорсальное ядро таламуса (реле ПФК)", 0.003),
-        # Ретикулярное ядро — только тормозные (ГАМК), тормозят реле. Оно
-        # разделено на секторы по модальностям: зрительный сектор связан с
-        # LGN и V1, слуховой — с MGN и слуховой корой и т. д. (Guillery &
-        # Harting 2003; Pinault 2004). Одно общее ядро связывало все реле:
-        # моторная и слуховая петли через него тормозили LGN, весь таламус
-        # качался вместе ~25 Гц. trn — зрительный сектор.
+        _nucleus("vnll", "вентральное ядро латеральной петли (торможение IC)", cells=cfg.sensory_size),
+        _nucleus("mgn", "медиальное коленчатое тело (реле слуха)", cells=cfg.sensory_size),
+        _nucleus("md", "медиодорсальное ядро таламуса (реле ПФК)", 0.003),
         # Моторный таламус — две части с разным входом (Uno et al. 1978;
         # Percheron et al. 1996; Sakai et al. 1996, примат): VA/VLa — вход
         # GPi, выход в премоторную кору (зона «thalamus»); VLp — вход ядер
         # мозжечка, выход в первичную моторную. Доля VLp [сверить].
-        _area("vl_cb", "таламус VLp (вход мозжечка) → моторная кора", 0.0025),
-        _area("trn", "ретикулярное ядро: зрительный сектор", 0.00075),
-        _area("trn_mgn", "ретикулярное ядро: слуховой сектор", 0.00075),
-        _area("trn_md", "ретикулярное ядро: сектор MD (ПФК)", 0.00075),
-        _area("trn_motor", "ретикулярное ядро: моторный сектор", 0.00075),
+        _nucleus("vl_cb", "таламус VLp (вход мозжечка) → моторная кора", 0.0025),
+        # Ретикулярное ядро — только тормозные (ГАМК), тормозят реле. Оно
+        # разделено на секторы по модальностям: зрительный сектор связан с
+        # LGN и V1, слуховой — с MGN и слуховой корой и т. д. (Guillery &
+        # Harting 2003; Pinault 2004).
+        _nucleus("trn", "ретикулярное ядро: зрительный сектор", 0.00075),
+        _nucleus("trn_mgn", "ретикулярное ядро: слуховой сектор", 0.00075),
+        _nucleus("trn_md", "ретикулярное ядро: сектор MD (ПФК)", 0.00075),
+        _nucleus("trn_motor", "ретикулярное ядро: моторный сектор", 0.00075),
         # ---- базальные ганглии ----
         # Быстрые тормозные стриатума — 1–2% клеток (Tepper et al. 2010).
-        _area("fsi", "стриатум: быстрые тормозные (PV)", 0.001),
+        _nucleus("fsi", "стриатум: быстрые тормозные (PV)", 0.001),
         # STN — пейсмейкер ~10 Гц в срезе (Bevan & Wilson 1999).
-        _area("stn", "субталамическое ядро", 0.002, autonomous_hz=10.0, tonic=True),
+        _nucleus("stn", "субталамическое ядро", 0.002, autonomous_hz=10.0),
         # ---- модуляторы ----
         # Шов — серотонин, пейсмейкер ~1–2 Гц (Vandermaelen & Aghajanian 1983).
-        _area("raphe", "дорсальное ядро шва (серотонин)", 0.002, autonomous_hz=1.5, tonic=True),
-        # Ядро Мейнерта — ацетилхолин коры.
-        _area("nbm", "базальное ядро Мейнерта (ацетилхолин)", 0.002),
-        # Орексин — латеральный гипоталамус, держит бодрствование
-        # (сам по себе стреляет — Eggermann et al. 2003).
-        _area("orexin", "латеральный гипоталамус (орексин)", 0.002, autonomous_hz=3.0, tonic=True),
-        # ---- миндалина ----
+        _nucleus("raphe", "дорсальное ядро шва (серотонин)", 0.002, autonomous_hz=1.5),
+        _nucleus("nbm", "базальное ядро Мейнерта (ацетилхолин)", 0.002),
+        # Орексин — латеральный гипоталамус, держит бодрствование (сам по
+        # себе стреляет — Eggermann et al. 2003).
+        _nucleus("orexin", "латеральный гипоталамус (орексин)", 0.002, autonomous_hz=3.0),
+        # ---- миндалина, награда, часы ----
         # Центральное ядро — тормозные клетки, выход миндалины.
-        _area("cea", "центральное ядро миндалины (выход)", 0.002),
+        _nucleus("cea", "центральное ядро миндалины (выход)", 0.002),
         # Латеральная уздечка — «хуже ожидаемого» (Matsumoto & Hikosaka 2007).
-        _area("lhb", "латеральная уздечка (хуже ожидаемого)", 0.002),
+        _nucleus("lhb", "латеральная уздечка (хуже ожидаемого)", 0.002),
         # Дорсомедиальный гипоталамус — выход суточных часов к узлу сна
         # (Chou et al. 2003; Aston-Jones et al. 2001).
-        _area("dmh", "дорсомедиальный гипоталамус (часы → бодрствование)", 0.002),
-    ]
-
-    if cfg.eye:
+        _nucleus("dmh", "дорсомедиальный гипоталамус (часы → бодрствование)", 0.002),
         # Верхнее двухолмие, промежуточный слой: карта целей саккады — клетка
         # стоит в своём месте поля зрения, её залп ведёт взгляд туда (Robinson
         # 1972; амплитуда — средний вектор выстреливших, Lee, Rohrer & Sparks
         # 1988). Клеток — по 4 на столбец сетчатки.
-        out.append(_area("colliculus", "верхнее двухолмие (куда посмотреть)", 0.0, cells=4 * cfg.retina_cols))
-
-    if cfg.hand:
+        _nucleus("colliculus", "верхнее двухолмие (куда посмотреть)", cells=4 * cfg.retina_cols),
         # Дорсальная премоторная кора, «зона Экснера» (BA 6, основание
         # средней лобной извилины): буква → движение руки при письме —
         # её поражение даёт аграфию при сохранном чтении (Exner 1881;
         # Roux et al. 2009 — стимуляция у человека; Planton et al. 2013 —
-        # метаанализ письма: левая дорсальная премоторная, верхняя теменная,
-        # мозжечок). Агранулярная колонка (как BA 6). Учится, как вся кора.
-        out.append(AreaSpec(
-            "premotor", "премоторная кора, зона Экснера (буква → движение руки)",
-            0.045, k_ee=10, target_activity=0.0,
-        ))
-
-    if cfg.hand:
-        out += [
-            # Пуркинье — пейсмейкеры ~40–50 Гц в срезе (Raman & Bean 1999);
-            # ядра мозжечка ~10–20 (Raman et al. 2000); олива ~1 Гц.
-            _area("purkinje", "мозжечок: клетки Пуркинье", 0.01, autonomous_hz=45.0, tonic=True),
-            _area("dcn", "ядра мозжечка", 0.003, autonomous_hz=15.0, tonic=True),
-            _area("io", "нижняя олива (лазающие волокна)", 0.002, autonomous_hz=1.0, tonic=True),
-        ]
-
-    return out
+        # метаанализ письма). Агранулярная колонка (как BA 6).
+        AreaSpec("premotor", "премоторная кора, зона Экснера (буква → движение руки)", 0.045, ee_plastic=True,
+                 inhibition_adapts=True),
+        # ---- мозжечок ----
+        # Пуркинье — пейсмейкеры ~40–50 Гц в срезе (Raman & Bean 1999);
+        # ядра мозжечка ~10–20 (Raman et al. 2000); олива ~1 Гц.
+        _nucleus("purkinje", "мозжечок: клетки Пуркинье", 0.01, autonomous_hz=45.0),
+        _nucleus("dcn", "ядра мозжечка", 0.003, autonomous_hz=15.0),
+        _nucleus("io", "нижняя олива (лазающие волокна)", 0.002, autonomous_hz=1.0),
+    ]
 
 
 def _path(src, dst, k, psp, direction="", **kw) -> PathwaySpec:
     """Путь с весом из PSP (мВ; знак — знак синапса), без отдельного торможения."""
 
-    return PathwaySpec(src, dst, k=k, weight=(0.0, 0.0), k_inhibitory=0, predictive=False,
-                       psp_mv=psp, direction=direction, **kw)
+    return PathwaySpec(src, dst, k=k, psp_mv=psp, direction=direction, **kw)
 
 
 def pathways(cfg) -> list[PathwaySpec]:
-    out = []
+    out = [
+        # GPi → таламус VA/VL: крупные окончания с многими синапсами (Bodor et
+        # al. 2008 — 8.5 синапса на окончание у SNr → таламус; у GPi не
+        # мерено); моносинаптический IPSP 1.6 мс (Uno, Ozawa & Yoshida 1978,
+        # кошка); только ГАМК-А, депрессирует на 10 и 40 Гц, вход GPi — у 32
+        # из 42 клеток VA/VL (Koster & Sherman 2024, мышь; PPR и амплитуды не
+        # приведены). Сходимость, амплитуда, коэффициент депрессии не найдены
+        # [сверить: 30 по −2 мВ] — при 60 Гц GPi ~70 мВ торможения, подбор
+        # держит VA/VL фоном ~+55 мВ.
+        _path("gpi", "thalamus", 30, -2.0),
+        # Моторный таламус → речевая моторная кора — путь таламуса в колонку
+        # (engine._thalamic_path: 85 входов по 1.0 мВ), как VA/VL → M1.
+        _path("thalamus", "motor", 20, 0.6, "thalamic"),
+        # Смысл → базолатеральная миндалина — путь коры (0.15 мВ), учится
+        # дофамином.
+        _path("association", "amygdala", 50, 0.15, plastic=True),
+        # V1 → буквы: обучаемый путь по данным (входов и PSP — как у всех
+        # путей коры, engine._cortical_path), с картой поля (окно 12 px — поле
+        # V4 в 2–3 раза шире поля V1, Dehaene et al. 2005).
+        PathwaySpec("visual", "letters", k=100, plastic=True, modulator="hebbian", retinotopic=12.0,
+                    direction="ff", learned=True),
+        # Мшистые волокна из V1 (через мост) → гранулярные клетки: 2 из
+        # зрительной коры, по одному из премоторной и моторной руки
+        # (cortex_chain). Синапс мшистого волокна на гранулярной клетке —
+        # крупный: клетке нужны 2–3 совпавших входа из ~4 (Chadderton,
+        # Margrie & Häusser 2004) — ~7 мВ [сверить]; окно 6 px — местное
+        # сочетание.
+        _path("visual", "granule", 2, 7.0, retinotopic=6.0),
+    ]
     # ---- таламус (Sherman & Guillery 2006) ----
     # L6 → реле: много слабых облегчающихся входов (модуляторы; ~30–50%
     # синапсов клетки реле — Van Horn, Erişir & Sherman 2000); L6 → TRN —
@@ -298,8 +360,7 @@ def pathways(cfg) -> list[PathwaySpec]:
         _path("gpe", "fsi", 10, -1.0),
     ]
     # Таламус VA/VL → рука (как моторная кора): «давай» из базальных ганглиев.
-    if cfg.hand:
-        out.append(_path("thalamus", "hand", 20, 0.6, "thalamic"))
+    out.append(_path("thalamus", "hand", 20, 0.6, "thalamic"))
     # ---- модуляторы ----
     # Ядро Мейнерта: вход — ПФК и миндалина (Zaborszky et al. 1997);
     # орексин → LC, Мейнерт (Hagan et al. 1999; Eggermann et al. 2001); VLPO
@@ -418,33 +479,32 @@ def pathways(cfg) -> list[PathwaySpec]:
     # cfg.nucleus_stp, PSP пути — первого спайка 2.0 мВ); олива →
     # Пуркинье — одно лазающее
     # волокно, сложный спайк; ядра → таламус VA/VL → моторная кора.
-    if cfg.hand:
-        out += [
-            # Учится по лазающему волокну (modulator "climbing", engine.
-            # chemical_plasticity): LTD при совпадении с ним, слабая LTP без
-            # него (Ito 1989; Coesmans et al. 2004).
-            _path("granule", "purkinje", 1000, 0.05, plastic=True, modulator="climbing"),
-            _path("purkinje", "dcn", 40, -2.0),  # первый спайк: 0.8 / 0.4 (nucleus_stp)
-            _path("io", "purkinje", 1, 10.0),
-            # Ядра мозжечка → VLp (мозжечковая часть моторного таламуса,
-            # Asanuma et al. 1983), не в часть с входом GPi.
-            _path("dcn", "vl_cb", 20, 1.0),
-            _path("vl_cb", "hand", 20, 0.6, "thalamic"),
-            _path("vl_cb", "motor", 20, 0.6, "thalamic"),
-            # Коллатерали мшистых волокон — к ядрам мозжечка (Eccles 1967):
-            # ядра возбуждает тот же вход, что гранулярные клетки (PSP
-            # [сверить]).
-            _path("premotor", "dcn", 20, 0.5),
-            _path("hand", "dcn", 20, 0.5),
-            _path("visual", "dcn", 20, 0.5),
-            _path("dcn", "io", 10, -1.0),
-            # Олива — сравнение: «что увидел» (зрительная кора → претектум /
-            # мезодиэнцефальное соединение → олива) и «что делал» (моторная
-            # кора → красное ядро → олива); ядра мозжечка гасят ожидаемое
-            # (De Zeeuw et al. 1998). PSP [сверить].
-            _path("letters", "io", 20, 0.5),
-            _path("premotor", "io", 20, 0.5),
-        ]
+    out += [
+        # Учится по лазающему волокну (modulator "climbing", engine.
+        # chemical_plasticity): LTD при совпадении с ним, слабая LTP без
+        # него (Ito 1989; Coesmans et al. 2004).
+        _path("granule", "purkinje", 1000, 0.05, plastic=True, modulator="climbing"),
+        _path("purkinje", "dcn", 40, -2.0),  # первый спайк: 0.8 / 0.4 (nucleus_stp)
+        _path("io", "purkinje", 1, 10.0),
+        # Ядра мозжечка → VLp (мозжечковая часть моторного таламуса,
+        # Asanuma et al. 1983), не в часть с входом GPi.
+        _path("dcn", "vl_cb", 20, 1.0),
+        _path("vl_cb", "hand", 20, 0.6, "thalamic"),
+        _path("vl_cb", "motor", 20, 0.6, "thalamic"),
+        # Коллатерали мшистых волокон — к ядрам мозжечка (Eccles 1967):
+        # ядра возбуждает тот же вход, что гранулярные клетки (PSP
+        # [сверить]).
+        _path("premotor", "dcn", 20, 0.5),
+        _path("hand", "dcn", 20, 0.5),
+        _path("visual", "dcn", 20, 0.5),
+        _path("dcn", "io", 10, -1.0),
+        # Олива — сравнение: «что увидел» (зрительная кора → претектум /
+        # мезодиэнцефальное соединение → олива) и «что делал» (моторная
+        # кора → красное ядро → олива); ядра мозжечка гасят ожидаемое
+        # (De Zeeuw et al. 1998). PSP [сверить].
+        _path("letters", "io", 20, 0.5),
+        _path("premotor", "io", 20, 0.5),
+    ]
     out += cortex_chain(cfg)
     # ---- взгляд (Hikosaka, Takikawa & Kawagoe 2000) ----
     # Карту двухолмия даёт сетчатка (боковое зрение, BrainConfig.sensors);
@@ -502,8 +562,7 @@ REPLACED_OLD = {("striatum_d1", "gpi"), ("striatum_d2", "gpe"), ("gpe", "gpi"), 
 
 def cortex_chain(cfg) -> list[PathwaySpec]:
     out = [
-        PathwaySpec(src, dst, k=1, weight=(0.0, 0.0), plastic=True, k_inhibitory=1, predictive=False,
-                    modulator="hebbian", direction=direction, learned=True)
+        PathwaySpec(src, dst, k=1, plastic=True, modulator="hebbian", direction=direction, learned=True)
         for src, dst, direction in LEARNED_CORTEX
     ]
     # Кора → стриатум: в стриатум проецирует вся кора (из L5; Kemp & Powell
@@ -560,9 +619,15 @@ def cortex_chain(cfg) -> list[PathwaySpec]:
 #   без сдвига потенциала покоя; у нас — током клетки) и холинергические
 #   базального мозга (Arrigoni et al. 2006); A2A деполяризует часть клеток
 #   VLPO (Gallopin et al. 2005), A1 гиперполяризует LC (Regenold & Illes
-#   1990) — единицы мВ [сверить]; заменяют подобранные под старый стенд
-#   +35 / −15 из cfg.receptors (с ними VLPO во сне ~30 Гц против 5–10).
+#   1990) — единицы мВ [сверить].
 RECEPTORS = (
+    # Из прежней схемы [не подбиралось, сверить величину]: дофамин в
+    # стриатуме — D1 возбуждают «иди», D2 тормозят «стой» (Gerfen & Surmeier
+    # 2011); α2-ауторецепторы — норадреналин тормозит голубое пятно
+    # (Aghajanian 1977), привыкание к серии неожиданностей.
+    ("dopamine", "striatum_d1", 10.0),
+    ("dopamine", "striatum_d2", -25.0),
+    ("noradrenaline", "lc", -40.0),
     ("acetylcholine", ":VIP", 5.0),
     ("acetylcholine", ":SOM", 5.0),
     ("acetylcholine", "", 2.0),
@@ -579,7 +644,6 @@ RECEPTORS = (
     ("adenosine", "lc", -5.0),
 )
 
-MODULATORS = (("serotonin", "raphe"), ("acetylcholine", "nbm"), ("orexin", "orexin"))
 
 # [согласовано с частотами in vivo] 2026-10-15. Оба набора пишут скрипты
 # подбора сами (anatomy.write_fitted), руками не править.
@@ -760,128 +824,21 @@ def use_fit(cfg, name: str) -> None:
 
 
 def apply(cfg) -> None:
-    """Достроить cfg до анатомического мозга (вызывается из Mind)."""
+    """Собрать анатомический мозг: зоны, пути, вещества и рецепторы, согласованный фон."""
 
-    names = {a.name for a in cfg.areas}
-    cfg.areas = cfg.areas + [a for a in areas(cfg) if a.name not in names and (a.cells or a.share)]
-    # Тормозные клетки ядер — без сдвига к порогу: 8 мВ (i_excitability) —
-    # подгонка старой ассоциативной зоны («торможение раньше залпа»), не
-    # данные; в ядрах ствола и таламуса она давала тормозным клеткам тот же
-    # вход, что главным, и фору к порогу — прямое торможение съедало ответ
-    # (DESIGN «Аудит», «MGN: ряд силы интернейронов»). Колонки коры —
-    # своё расстояние до порога по типу (pv_gap_mv и др.).
-    cfg.i_excitability = 0.0
-    # Окно STDP коры по данным: L2/3 зрительной коры, пары спайков — LTP
-    # +103% · exp(−Δt/13.5 мс), LTD −51% · exp(Δt/34.5 мс) (Froemke & Dan
-    # 2002 [сверить амплитуды]): узкое окно LTP без сдвига пика, широкое LTD,
-    # по интегралу LTD чуть сильнее (1.26) — некоррелированный фон веса не
-    # растит (Song, Miller & Abbott 2000). У человека (L2/3 височной коры)
-    # окно LTP шире (Testa-Silva et al. 2010; Verhoog et al. 2013) — долг.
-    # Прежнее окно (LTP exp(−t/80) − exp(−t/30), LTD τ 40) подбиралось под
-    # переходы слов старого мозга и по интегралу было втрое за LTP.
-    cfg.stdp_tau_plus, cfg.stdp_ltp_rise, cfg.stdp_tau_minus = 13.5, 0.0, 34.5
-    cfg.stdp_a_minus = cfg.stdp_a_plus * 51.0 / 103.0
-    cfg.stdp_ltd_weight_dependent = True
-    cfg.heterosynaptic_conservation = True
-    names = {a.name for a in cfg.areas}
-
-    if cfg.hand and "purkinje" in names:
-        # Выход мозжечка — через Пуркинье и ядра, а не прямой путь к руке.
-        cfg.pathways = [p for p in cfg.pathways if not (p.src == "granule" and p.dst == "hand")]
-
-    # Старый переключатель сна (VLPO ↔ LC через тормозные клетки
-    # получателя) — заменён ветвями по данным: VLPO → LC синапсом ГАМК,
-    # LC → VLPO норадреналином (RECEPTORS).
-    cfg.pathways = [p for p in cfg.pathways if {p.src, p.dst} != {"vlpo", "lc"}]
-    # Пути коры прежней схемы между теми же зонами, прежний вход коры в
-    # стриатум и связи базальных ганглиев (веса подбирались под стенды) —
-    # заменяют cortex_chain и pathways (по данным).
-    cfg.pathways = [
-        p for p in cfg.pathways
-        if (p.src, p.dst) not in REPLACED_CORTEX
-        and not (p.dst in ("striatum_d1", "striatum_d2") and p.src in cfg.layered_areas)
-        and (p.src, p.dst) not in REPLACED_OLD
-    ]
-
-    # Мшистые волокна гранулярной клетки: 2 из зрительной коры (было 4 —
-    # теперь ещё 2 из моторной коры, cortex_chain).
-    # Синапс мшистого волокна на гранулярной клетке — крупный: клетке нужны
-    # 2–3 совпавших входа из ~4 (Chadderton, Margrie & Häusser 2004) —
-    # ~7 мВ [сверить]; прежние 15 подбирались стендом.
-    cfg.pathways = [replace(p, k=2, psp_mv=7.0, k_inhibitory=0) if (p.src, p.dst) in (("complex", "granule"), ("visual", "granule")) else p
-                    for p in cfg.pathways]
-    # GPi → таламус —
-    # крупные терминали (Bodor et al. 2008), ~2 мВ [сверить]; смысл →
-    # базолатеральная миндалина — путь коры (0.15 мВ), учится дофамином
-    # (раньше вес ставил код — language._learn_value).
-    # Ядра по данным (NUCLEI): местный контур, без возбуждающих связей
-    # внутри «по умолчанию» (у реле таламуса и STN их нет, тормозные ядра
-    # друг друга не возбуждают; коллатерали — путями: CA3, MSN, GPe), без
-    # подобранных фона, торможения, обратной связи, целевой активности и
-    # гомеостаза — частоту ядра держит согласуемый фон (частоты in vivo).
-    # Привыкание LC — α2-ауторецептор (химия), не подобранная адаптация.
-    layered = set(cfg.layered_areas) | {"complex", "visual", "letters", "hand", "premotor"}
-    cfg.areas = [
-        replace(
-            a, ee_plastic=False, ee_weight=(0.0, 0.0), background=None, inhibition=1.0, feedback=1.0,
-            target_activity=0.0, homeostasis=1.0, inhibition_adapts=False,
-            adapt_b=0.0 if a.name == "lc" else a.adapt_b,
-            local_inhibitory=NUCLEI.get(a.name, (0.0, ()))[0], local_psp=NUCLEI.get(a.name, (0.0, ()))[1],
-            **({"share": 0.0, "cells": HIPPOCAMPUS_CELLS[a.name]} if a.name in HIPPOCAMPUS_CELLS else {}),
-        ) if a.name not in layered else a
-        for a in cfg.areas
-    ]
-    # Клетки окончания звука — клетки самой слуховой коры (Scholl et al.
-    # 2010), не отдельное ядро: в анатомическом мозге пока без них.
-    cfg.areas = [a for a in cfg.areas if a.name != "offset"]
-    cfg.pathways = [p for p in cfg.pathways if "offset" not in (p.src, p.dst)]
-    # GPi → таламус: крупные окончания с многими синапсами (Bodor et al.
-    # 2008 — 8.5 синапса на окончание у SNr → таламус; у GPi не мерено);
-    # моносинаптический IPSP 1.6 мс (Uno, Ozawa & Yoshida 1978, кошка);
-    # только ГАМК-А, депрессирует на 10 и 40 Гц, вход GPi — у 32 из 42 клеток
-    # VA/VL (Koster & Sherman 2024, мышь; PPR и амплитуды не приведены).
-    # Сходимость, амплитуда, коэффициент депрессии не найдены [сверить] —
-    # при 60 Гц GPi ~70 мВ торможения, подбор держит VA/VL фоном ~+55 мВ.
-    # Часть с входом мозжечка — отдельное ядро vl_cb (Uno 1978).
-    fixed = {
-        ("gpi", "thalamus"): dict(psp_mv=-2.0, k_inhibitory=0),
-        ("association", "amygdala"): dict(psp_mv=0.15, k_inhibitory=0, plastic=True, modulator="dopamine"),
-    }
-    cfg.pathways = [replace(p, **fixed[(p.src, p.dst)]) if (p.src, p.dst) in fixed else p for p in cfg.pathways]
-
-    if "premotor" in names:
-        cfg.layered_areas = tuple(cfg.layered_areas) + ("premotor",)
-        cfg.microcircuit_areas = tuple(cfg.microcircuit_areas) + ("premotor",)
-        cfg.agranular_areas = tuple(cfg.agranular_areas) + ("premotor",)
-
-    # Рука — колонка по данным: «колонки клавиш» (связи внутри набора клеток
-    # клавиши 8 мВ) и торможение ×4 подбирались под стенд — убраны; выбор
-    # одной клавиши — работа PV колонки и базальных ганглиев.
-    cfg.areas = [replace(a, columns=0, column_weight=0.0, inhibition=1.0, feedback=1.0) if a.name == "hand" else a
-                 for a in cfg.areas]
-    # V1 → буквы: обучаемый путь по данным (входов и PSP — как у всех путей
-    # коры), с картой поля (окно 12 px — поле V4 в 2–3 раза шире поля V1,
-    # Dehaene et al. 2005); прежние 0–0.5 / потолок 3 подбирались стендом.
-    cfg.pathways = [
-        replace(p, learned=True, direction="ff", modulator="hebbian")
-        if (p.src, p.dst) in (("visual", "letters"), ("complex", "letters")) else p
-        for p in cfg.pathways
-    ]
-
-    cfg.pathways = cfg.pathways + [p for p in pathways(cfg) if p.src in names and p.dst in names]
-    cfg.extra_modulators = MODULATORS
-    cortex = [a for a in cfg.layered_areas if a in names]
+    cfg.areas = areas(cfg)
+    cfg.pathways = pathways(cfg)
     receptors = []
 
     for substance, target, mv in RECEPTORS:
         if target.startswith(":"):
-            receptors += [(substance, f"{area}{target}", mv) for area in cortex]
+            receptors += [(substance, f"{area}{target}", mv) for area in cfg.layered_areas]
         elif target == "":
-            receptors += [(substance, area, mv) for area in cortex]
+            receptors += [(substance, area, mv) for area in cfg.layered_areas]
         else:
             receptors.append((substance, target, mv))
 
-    cfg.receptors = tuple(cfg.receptors) + tuple(receptors)
+    cfg.receptors = tuple(receptors)
 
     if not cfg.nucleus_bias_mv:
         cfg.nucleus_bias_mv = NUCLEUS_BIAS_MV

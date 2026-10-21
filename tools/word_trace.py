@@ -1,8 +1,7 @@
 """
 Где слово превращается в представление: слова голосом (world.Voice →
 body.Cochlea), каждое reps раз в перемешанном порядке, свежий мозг small
-(по умолчанию — диагностический режим: ic_local_inhibition выкл., DESIGN
-«Временный обход»). По звеньям — прибавка частоты на слово (слово + after
+(inh_off=ic,… — диагностика: местное торможение этих ядер выключено). По звеньям — прибавка частоты на слово (слово + after
 мс против тишины до него), воспроизводимость (сходство узоров прибавки на
 повторы одного слова), различимость (одно слово против разных; отдельно —
 похожая пара pair=), задержка (первое 10-мс окно после начала слова, где
@@ -27,17 +26,13 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 from brain.world import Voice
 
-opts = {"pv_off": "", "chain": "0", "inh_off": "", "words": "кот,кит,дом,мама", "pair": "кот,кит", "reps": "4", "after": "100", "ic": "0", "fit": "", "delays": "0", "seed": "0"}
+opts = {"pv_off": "", "chain": "0", "inh_off": "", "words": "кот,кит,дом,мама", "pair": "кот,кит", "reps": "4", "after": "100", "fit": "", "delays": "0", "seed": "0"}
 opts.update(dict(kv.split("=", 1) for kv in sys.argv[1:]))
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
 cfg.autosave = False
-cfg.anatomy = True
-cfg.hand = True
 cfg.dt_ms = 0.5
-cfg.ic_local_inhibition = opts["ic"] == "1"
 cfg.path_delays = opts["delays"] == "1"
-cfg.mgn_interneuron_out = float(opts.get("mgn_out", "1"))  # обход MGN (диагностика)
 if opts["fit"]:
     # Фон режима из ~/.brain/fits/<имя>.json (anatomy_fit out=имя).
     from brain import anatomy
@@ -129,7 +124,7 @@ def similarity(rows: list[torch.Tensor], a: str, c: str) -> float:
 
 
 a, c = opts["pair"].split(",")
-print(f"слова {words} × {opts['reps']}, IC местное торможение {'вкл' if cfg.ic_local_inhibition else 'выкл (обход)'}, ещё выкл: {opts['inh_off'] or '—'}")
+print(f"слова {words} × {opts['reps']}, выкл. местное торможение: {opts['inh_off'] or '—'}")
 print(f"{'звено':14s} {'прибавка':>9s} {'повтор':>7s} {'разные':>7s} {'различ.':>8s} {a + '/' + c:>9s}  задержка")
 
 for k in stages:

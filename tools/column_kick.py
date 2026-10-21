@@ -8,11 +8,12 @@ L2/3–L6 E 10 и 30 мВ на 100 мс — устойчива ли (возвр�
 """
 
 import sys, torch
-from brain.config import BrainConfig, default_areas
+from brain import anatomy
+from brain.config import BrainConfig
 from brain.engine import SpikingBrain
 to_e, ext_e, seed = float(sys.argv[1]), float(sys.argv[2]), int(sys.argv[3]) if len(sys.argv) > 3 else 0
 torch.manual_seed(seed)
-cfg = BrainConfig(); cfg.layers=True; cfg.eye=False; cfg.compile_step=False; cfg.anatomy=True
+cfg = BrainConfig(); cfg.compile_step=False
 cfg.size="20000"; cfg.dt_ms=0.5; cfg.seed = seed
 cfg.column_gain_to_e = (to_e,) * 4
 for kv in sys.argv[4:]:
@@ -22,7 +23,7 @@ for kv in sys.argv[4:]:
     elif k == "FROM_E":
         cfg.column_gain_from_e = tuple(float(x) for x in v.split(","))
 cfg.column_gain_external = (ext_e,) + tuple(cfg.column_gain_external[1:])
-cfg.areas=[a for a in default_areas() if a.name=="auditory"]; cfg.pathways=[]
+cfg.areas=[a for a in anatomy.areas(cfg) if a.name=="auditory"]; cfg.pathways=[]
 b = SpikingBrain(cfg); b.plasticity=False
 L = b.areas["auditory"].layers
 def ratio() -> str:
@@ -40,7 +41,7 @@ def ratio() -> str:
     g = G.index_select(1, b.mf_post_type).t()
     dc_e = b.dc_mv + ((b.mf_exc - b.acetylcholine * b.mf_ach) * g @ b.mf_rate).index_select(0, b.mf_post_id)
     dc_i = b.dc_inh_mv + ((b.mf_inh * g) @ b.mf_rate).index_select(0, b.mf_post_id)
-    e = (b.i_syn + b.i_slow + dc_e) / (cfg_.ampa_reversal_mv - cfg_.epsp_holding_mv)
+    e = (b.i_syn + dc_e) / (cfg_.ampa_reversal_mv - cfg_.epsp_holding_mv)
     i = -(b.i_inh + b.i_ngf + b.ngf_mf + dc_i) / (cfg_.ipsp_holding_mv - cfg_.gaba_reversal_mv)
     return " ".join(f"{l}:{float(i[g_['E'].slice].mean() / e[g_['E'].slice].mean().clamp(min=1e-6)):.1f}" for l, g_ in L.items())
 

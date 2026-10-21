@@ -1,5 +1,5 @@
 """
-Анатомический мозг в покое (ARCHITECTURE 11): новый мозг с cfg.anatomy живёт
+Анатомический мозг в покое (ARCHITECTURE 11): новый мозг живёт
 без входа; частота каждого ядра (главные клетки) и каждого слоя колонок
 сравнивается с записями у бодрствующих (anatomy.RATES_HZ,
 BrainConfig.column_target_hz). Первый стенд «по кусочкам»: что молчит, что
@@ -19,8 +19,6 @@ opts = {"size": "small", "ms": "1000"}
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
 cfg.autosave = False
-cfg.anatomy = True
-cfg.hand = True
 
 for kv in sys.argv[1:]:
     k, v = kv.split("=", 1)

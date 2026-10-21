@@ -17,11 +17,12 @@ import sys
 import torch
 from dataclasses import replace
 
-from brain.config import BrainConfig, default_areas, log_path
+from brain import anatomy
+from brain.config import BrainConfig, log_path
 from brain.engine import SpikingBrain
 
 opts = {"neurons": "10000", "evals": "300", "ms": "1000", "area": "auditory", "mode": "gains", "steps": "60", "dt": "2.0",
-        "batch": "24", "generations": "30", "warmup": "300", "anatomy": "0", "kick": "0", "start": ""}
+        "batch": "24", "generations": "30", "warmup": "300", "kick": "0", "start": ""}
 
 for kv in sys.argv[1:]:
     k, v = kv.split("=", 1)
@@ -32,15 +33,10 @@ from brain.engine import KINDS as TYPES
 
 def build(gains: list[float], pop: dict | None = None) -> SpikingBrain:
     cfg = BrainConfig()
-    cfg.layers = True
-    cfg.eye = False
     cfg.compile_step = False
-    # anatomy=1 — колонка как в анатомическом мозге: торможение
-    # проводимостью у всех, E → E слоя 2/3 с весами по данным.
-    cfg.anatomy = opts["anatomy"] == "1"
     cfg.size = opts["neurons"]
     cfg.dt_ms = float(opts["dt"])
-    cfg.areas = [a for a in default_areas() if a.name == opts["area"]]
+    cfg.areas = [a for a in anatomy.areas(cfg) if a.name == opts["area"]]
     cfg.pathways = []
     cfg.column_gain_external = tuple(gains[0:5])
     cfg.column_gain_from_e = tuple(gains[5:9])
@@ -81,7 +77,7 @@ def conductance_ratio(brain, cells) -> float:
     g = G.index_select(1, brain.mf_post_type).t()
     dc_e = brain.dc_mv + (((brain.mf_exc - brain.acetylcholine * brain.mf_ach) * g) @ brain.mf_rate).index_select(0, brain.mf_post_id)
     dc_i = brain.dc_inh_mv + ((brain.mf_inh * g) @ brain.mf_rate).index_select(0, brain.mf_post_id)
-    e = (brain.i_syn + brain.i_slow + dc_e) / (c.ampa_reversal_mv - c.epsp_holding_mv)
+    e = (brain.i_syn + dc_e) / (c.ampa_reversal_mv - c.epsp_holding_mv)
     i = -(brain.i_inh + brain.i_ngf + brain.ngf_mf + dc_i) / (c.ipsp_holding_mv - c.gaba_reversal_mv)
     return float(i[cells].mean() / e[cells].mean().clamp(min=1e-6))
 
@@ -156,20 +152,14 @@ def measure_batch(population: list[list[float]]) -> list[dict]:
 
     torch.manual_seed(0)
     cfg = BrainConfig()
-    cfg.layers = True
-    cfg.eye = False
     cfg.compile_step = False
-    # anatomy=1 — колонка как в анатомическом мозге: торможение
-    # проводимостью у всех, E → E слоя 2/3 с весами по данным.
-    cfg.anatomy = opts["anatomy"] == "1"
     cfg.dt_ms = float(opts["dt"])
-    spec = next(a for a in default_areas() if a.name == opts["area"])
+    spec = next(a for a in anatomy.areas(cfg) if a.name == opts["area"])
     copies = [replace(spec, name=spec.name if i == 0 else f"{spec.name}_{i}", column_gains=tuple(g))
               for i, g in enumerate(population)]
     cfg.areas = copies
     cfg.pathways = []
     cfg.layered_areas = tuple(a.name for a in copies)
-    cfg.microcircuit_areas = cfg.layered_areas
     cfg.size = str(int(opts["neurons"]) * len(population))
     brain = SpikingBrain(cfg)
     brain.plasticity = False

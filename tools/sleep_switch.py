@@ -6,7 +6,7 @@
 перескоков. Переключатель «шлёпанец»: внутри ступени перескоков нет, вверх
 засыпает позже, чем вниз просыпается (гистерезис).
 
-    PYTHONPATH=. .venv/bin/python tools/sleep_switch.py [МОЗГ] [anatomy=1 dt_ms=0.5 hour=14 ...]
+    PYTHONPATH=. .venv/bin/python tools/sleep_switch.py [МОЗГ] [hour=14 ...]
 
 Без МОЗГ — новый мозг small. hour — время суток (часы SCN), step_ms —
 длина ступени, win_ms — окно частот. Мозг заморожен.
@@ -45,9 +45,6 @@ for k, v in overrides:
     old = getattr(cfg, k)
     setattr(cfg, k, (v == "1") if isinstance(old, bool) else type(old)(v))
     print(f"{k} = {getattr(cfg, k)}")
-
-if cfg.anatomy:
-    cfg.hand = True
 
 if not args:
     mind = Mind(cfg)

@@ -10,7 +10,7 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 torch.manual_seed(0)
 cfg = BrainConfig(); cfg.save_path="/nonexistent/b.pt"; cfg.autosave=False
-cfg.anatomy=True; cfg.hand=True; cfg.size="small"; cfg.dt_ms=0.5
+cfg.size="small"; cfg.dt_ms=0.5
 b = Mind(cfg).brain; b.plasticity=False; b.run(200.0)
 cols = [("CA3", "ca3", None), ("CA1", "ca1", None), ("DG", "dentate", None), ("EC", "entorhinal", None),
         ("смыслE", "association", ("L23","E")), ("смыслPV", "association", ("L23","PV")),

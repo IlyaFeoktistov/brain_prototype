@@ -32,8 +32,6 @@ torch.manual_seed(0)
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
 cfg.autosave = False
-cfg.anatomy = True
-cfg.hand = True
 cfg.size = "small"
 cfg.dt_ms = 0.5
 mind = Mind(cfg)

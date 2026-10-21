@@ -14,7 +14,7 @@ from brain.session import Session
 
 opts = {"ms": "500", "warm": "500"}
 cfg = BrainConfig(); cfg.save_path = "/nonexistent/b.pt"; cfg.autosave = False
-cfg.anatomy = True; cfg.hand = True; cfg.dt_ms = 0.5
+cfg.dt_ms = 0.5
 
 for kv in sys.argv[1:]:
     k, v = kv.split("=", 1)

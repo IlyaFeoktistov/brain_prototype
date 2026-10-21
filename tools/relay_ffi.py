@@ -33,11 +33,8 @@ opts.update(dict(kv.split("=", 1) for kv in sys.argv[1:]))
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
 cfg.autosave = False
-cfg.anatomy = True
-cfg.hand = True
 cfg.dt_ms = 0.5
 cfg.seed = int(opts["seed"])
-cfg.ic_local_inhibition = False
 cfg.relay_local_inhibition = opts["local"] == "1"
 cfg.path_delays = opts["delays"] == "1"
 if opts["fit"]:

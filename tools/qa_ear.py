@@ -20,10 +20,10 @@
 Случайный уровень — 1 / число ответов (верхнее место), средний ранг —
 половина списка.
 
-Диагностический режим (DESIGN «Временный обход»): ic=0 (IC без местного
-торможения), inh_off=cn,mgn, pv_off=association.L4.
+Диагностика: inh_off=cn,mgn (местное торможение этих ядер выкл.),
+pv_off=association.L4.
 
-    PYTHONPATH=. .venv/bin/python tools/qa_ear.py [ic=1] [inh_off=] [pv_off=] [check=0] [passes=5] [reps=3] [recall=300] [pause=500] [areas=association,prefrontal] [seed=0] [save=имя.pt]
+    PYTHONPATH=. .venv/bin/python tools/qa_ear.py [inh_off=] [pv_off=] [check=0] [passes=5] [reps=3] [recall=300] [pause=500] [areas=association,prefrontal] [seed=0] [save=имя.pt]
 """
 
 import re
@@ -37,16 +37,13 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 from brain.world import Voice
 
-opts = {"ic": "1", "inh_off": "", "pv_off": "", "check": "0", "passes": "5", "reps": "3", "recall": "300", "pause": "500", "areas": "association,prefrontal", "seed": "0", "save": ""}
+opts = {"inh_off": "", "pv_off": "", "check": "0", "passes": "5", "reps": "3", "recall": "300", "pause": "500", "areas": "association,prefrontal", "seed": "0", "save": ""}
 opts.update(dict(kv.split("=", 1) for kv in sys.argv[1:]))
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
 cfg.autosave = False
-cfg.anatomy = True
-cfg.hand = True
 cfg.dt_ms = 0.5
 cfg.seed = int(opts["seed"])
-cfg.ic_local_inhibition = opts["ic"] == "1"
 torch.manual_seed(cfg.seed)
 mind = Mind(cfg)
 b = mind.brain

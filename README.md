@@ -114,9 +114,11 @@ pip install torch --index-url https://download.pytorch.org/whl/cu128
 pip install -r requirements.txt
 ```
 
-Веб и чат пока говорят со старым мозгом и не запускаются — будут
-переведены на `brain/session.py`. Сейчас с мозгом работают стенды
-(`PYTHONPATH=. .venv/bin/python tools/<стенд>.py`):
+Главный ввод — веб-интерфейс (`./run-web.sh`, http://localhost:8000):
+разговор с мозгом и наблюдение за ним. Консольного чата нет — нужный
+разговор в терминале требует отдельного TUI. Веб пока говорит со старым
+мозгом и не запускается — будет переведён на `brain/session.py`. Сейчас с
+мозгом работают стенды (`PYTHONPATH=. .venv/bin/python tools/<стенд>.py`):
 
 - `anatomy_bench` — мозг в покое: частота каждого ядра и слоя против
   записей у бодрствующих.
@@ -143,6 +145,6 @@ pip install -r requirements.txt
 - `brain/mind.py` — мозг целиком: сборка, сохранение, загрузка.
 - `brain/body.py`, `brain/world.py`, `brain/session.py` — тело, мир и
   разговор с миром.
-- `brain/server.py`, `brain/api.py`, `brain/neuron.py`, `web/` — веб
-  (ждёт перевода на новый мозг).
+- `brain/server.py`, `brain/api.py`, `brain/neuron.py`, `web/` — веб, главный
+  ввод (ждёт перевода на новый мозг).
 - `tools/` — стенды.

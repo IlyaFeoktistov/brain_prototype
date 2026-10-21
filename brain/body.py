@@ -192,7 +192,10 @@ class Cochlea:
             h = t ** 3 * torch.exp(-2 * torch.pi * b * t) * torch.cos(2 * torch.pi * f * t)
             # Единичное усиление на своей частоте.
             gain = (h * torch.exp(-2j * torch.pi * f * t)).sum(1, keepdim=True).abs()
-            self._kernels[rate] = (h / gain)[:, None, :].float()
+            # conv1d — корреляция: отклик разворачивается, чтобы свёртка была
+            # причинной (иначе звук приходил на ~длину ядра позже — 30–48 мс;
+            # нашла сверка с латентностью IC человека, tools/ic_latency.py).
+            self._kernels[rate] = (h / gain).flip(-1)[:, None, :].float()
 
         return self._kernels[rate]
 

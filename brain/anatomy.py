@@ -33,7 +33,10 @@ RATES_HZ = {
     "trn": 15.0, "trn_mgn": 15.0, "trn_md": 15.0, "trn_motor": 15.0,
     # Базальные ганглии (бодрствующая крыса/мышь; сводка — Lindahl &
     # Hellgren Kotaleski 2016, Table 1): MSN ~0.5, FSI ~15, GPe ~40, STN
-    # ~15, SNr/GPi ~60 Гц.
+    # ~15, SNr/GPi ~60 Гц. Человек — только при болезни Паркинсона (операции,
+    # микроэлектроды; Zhang et al. 2018,
+    # https://doi.org/10.1016/j.neulet.2018.06.021): STN 44.2 ± 7.6, GPi
+    # 80.9 ± 9.6, VL таламуса 26.7 ± 5.0 Гц — частоты болезни, не нормы.
     "striatum_d1": 0.5, "striatum_d2": 0.5, "fsi": 15.0, "gpe": 40.0, "stn": 15.0, "gpi": 60.0,
     # Модуляторы: VTA ~4.5 (Grace & Bunney 1984), LC ~2 наяву (Aston-Jones &
     # Bloom 1981), шов ~2 (Jacobs & Fornal 1999), ядро Мейнерта ~5 (Hangya

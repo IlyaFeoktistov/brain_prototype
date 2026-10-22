@@ -3556,6 +3556,45 @@ class SpikingBrain:
         self.kick_current[E.start + neurons] = amplitude
         self.kick_left.fill_(max(1.0, round(ms / self.cfg.dt_ms)))
 
+    def homeostasis_update(self, rates: torch.Tensor) -> None:
+        """
+        Гомеостаз возбудимости (cfg.homeostasis): по частотам окна rates [Гц,
+        клетки мозга] каждая регулируемая клетка сдвигает свой фон к
+        частоте покоя своего типа. Сдвиг копится в homeo_shift (±homeostasis_max_mv).
+        """
+
+        cfg = self.cfg
+
+        if getattr(self, "homeo_target", None) is None:
+            from brain import anatomy
+
+            target = torch.full((self.n,), float("nan"), device=self.device)
+            skip = set(anatomy.SLEEP_RATES_HZ) | set(anatomy.DATA_REST) | {
+                "striatum_d1", "striatum_d2", "fsi", "gpe", "stn", "gpi"}
+            by_layer = {layer: dict(zip(KINDS, v)) for layer, *v in cfg.column_target_hz}
+
+            for name, area in self.areas.items():
+                if area.layers is None:
+                    if name in anatomy.RATES_HZ and name not in skip:
+                        target[area.E.slice] = anatomy.RATES_HZ[name]
+                    continue
+
+                for layer, group in area.layers.items():
+                    for kind, pop in group.items():
+                        if kind in by_layer.get(layer, {}):
+                            target[pop.slice] = by_layer[layer][kind]
+            self.homeo_target = target
+            self.homeo_rate = torch.where(target.isnan(), 0.0, target)
+            self.homeo_shift = torch.zeros(self.n, device=self.device)
+
+        k = 1.0 / max(1, cfg.homeostasis_avg_windows)
+        self.homeo_rate.mul_(1.0 - k).add_(rates[: self.n] * k)
+        on = ~self.homeo_target.isnan()
+        step = cfg.homeostasis_step_mv * torch.log((self.homeo_target + 0.5) / (self.homeo_rate + 0.5))
+        new = (self.homeo_shift + torch.where(on, step, 0.0)).clamp(-cfg.homeostasis_max_mv, cfg.homeostasis_max_mv)
+        self.bias[: self.n] += new - self.homeo_shift
+        self.homeo_shift = new
+
     def silence(self, area: str) -> None:
         """
         Погасить устойчивую активность зоны (и её ток CAN): медленная волна

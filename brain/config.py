@@ -611,6 +611,22 @@ class BrainConfig:
     # 2007, https://doi.org/10.1523/JNEUROSCI.4677-06.2007), у модели с общим
     # V_T −50 — −39.4, как в срезе (docs/DESIGN.md «LGN: передача…»).
     relay_v_t_mv: float | None = None
+    # Гомеостаз возбудимости [гипотеза, по умолчанию выкл.]: клетка медленно
+    # сдвигает свой фон к частоте покоя своего типа (anatomy.RATES_HZ, ядра;
+    # column_target_hz, колонки) — пластичность собственной возбудимости
+    # (Desai, Rutherford & Turrigiano 1999, https://doi.org/10.1038/9165;
+    # масштабирование синапсов — Turrigiano et al. 1998,
+    # https://doi.org/10.1038/36103; оба — часы–сутки, крыса, культура).
+    # Здесь ускорено (фаза «развития», engine.homeostasis_update): шаг
+    # homeostasis_step_mv × ln(цель / средняя частота) за окно, средняя — за
+    # homeostasis_avg_windows окон, сдвиг клетки не больше ±homeostasis_max_mv
+    # (упор в край — сигнал пропущенного механизма, не успех). Не регулируются:
+    # LGN (покой по данным), узел сна (двустабилен — sleep_fit), базальные
+    # ганглии (качели GPi). [подобрано: шаг, окно и предел — не из данных]
+    homeostasis: bool = False
+    homeostasis_step_mv: float = 0.5
+    homeostasis_avg_windows: int = 5
+    homeostasis_max_mv: float = 10.0
     e_delta_t: float = 2.0
     # Адаптация: e_adapt_b мВ за спайк при индексе E мыши (e_adaptation_index),
     # спад e_adapt_tau [сверить: пересчёт индекса Allen в мВ не выведен].

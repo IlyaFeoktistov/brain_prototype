@@ -11,7 +11,10 @@
     запись     как записано;
     разброс    каждый спайк сдвинут случайно на ±jitter мс (синхронность ↓);
     сжатие=Δ   спайк сдвинут к началу своего окна Δ мс — спайки разных клеток
-               в одном окне совпадают (синхронность ↑).
+               в одном окне совпадают (синхронность ↑);
+    без=X      источник X (lgn, L6, L23, L5 — возбуждающие) молчит весь прогон:
+               разность тока с записью — вклад источника в работающей сети
+               (не прямой: без него меняется и сама L4).
 
 L4 — связанная сеть (E ↔ E, PV тормозит всех), поэтому вариант — отдельный
 прогон всего L4, а не группа клеток.
@@ -27,7 +30,7 @@ Reid 1996, https://doi.org/10.1038/383815a0); L4 гонит синхронный
 таламуса (крыса, in vivo — Bruno & Sakmann 2006,
 https://doi.org/10.1126/science.1124593).
 
-    PYTHONPATH=. python tools/l4_link_bench.py [seeds=1,2,3] [word=мама] [fit=lgn-a]
+    PYTHONPATH=. python tools/l4_link_bench.py [seeds=1,2,3] [word=мама] [fit=lgn-a] [homeo=имя]
         [relay_v_t_mv=-59] [relay_rest_mv=-48] [trn_scale=0.5] [variants=запись,разброс=10,сжатие=5,сжатие=10]
 """
 
@@ -110,6 +113,11 @@ def run_seed(seed: int, opts: dict, variants: list[str]):
     for p in b.projections:
         if p.name == "trn -> lgn":
             p.weight.mul_(float(opts.get("trn_scale", 1.0)))
+    if opts.get("homeo"):
+        # Сдвиги гомеостаза после развития (tools/develop.py out=имя) — заморожены.
+        from brain.config import BRAIN_HOME
+
+        b.bias[: b.n] += torch.load(BRAIN_HOME / "fits" / f"{opts["homeo"]}-homeo.pt").to(b.device)
     torch.manual_seed(seed)
     b.run(2500.0)
     b.CHUNK, b._graphs = 1, {}
@@ -168,10 +176,21 @@ def run_seed(seed: int, opts: dict, variants: list[str]):
     win = int(WIN_MS / dt)
     out = {}
 
+    vis = b.areas["visual"].layers
+    sources = {"lgn": lgn, "L6": vis["L6"]["E"], "L23": vis["L23"]["E"], "L5": vis["L5"]["E"]}
+
     for variant in variants:
-        lgn_r = shifted(rec[:, lgn_cols], variant, dt, g)
+        kind, _, val = variant.partition("=")
         clamp = rec.clone()
-        clamp[:, lgn_cols] = lgn_r
+        if kind == "без":
+            # Источник молчит весь прогон (его спайки и среднее поле — 0).
+            src = sources[val]
+            cols = ((pre >= src.start) & (pre < src.start + src.size)).cpu()
+            clamp[:, cols] = False
+            lgn_r = clamp[:, lgn_cols]
+        else:
+            lgn_r = shifted(rec[:, lgn_cols], variant, dt, g)
+            clamp[:, lgn_cols] = lgn_r
         clamp = clamp.to(b.device)
         settle = int(SETTLE_MS / dt)
         trace = []

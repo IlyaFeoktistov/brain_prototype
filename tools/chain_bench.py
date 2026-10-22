@@ -6,7 +6,7 @@ win мс — частота каждой ступени против покоя:
 задержкой (первое окно, где частота выше покоя на 3 σ окон покоя) и где
 пропал. Отладка идёт по этой таблице сверху вниз.
 
-    PYTHONPATH=. .venv/bin/python tools/chain_bench.py [word=мама] [ms=300] [win=20] [warm=2500] [load=МОЗГ] [trn_scale=1] [tc_depression=1]
+    PYTHONPATH=. .venv/bin/python tools/chain_bench.py [word=мама] [ms=300] [win=20] [warm=2500] [load=МОЗГ] [trn_scale=1] [tc_depression=1] [fit=имя] [homeo=имя]
 
 trn_scale — проводимость TRN → реле LGN ×k (анализ чувствительности, не число
 мозга); tc_depression=0 — без депрессии синапсов LGN → кора (причинный тест); прочие ключи — поля BrainConfig (relay_v_t_mv=-59, seed=2).
@@ -21,7 +21,7 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 from brain.world import Keyboard, Screen
 
-opts = {"word": "мама", "ms": "300", "win": "20", "rest": "1000", "warm": "2500", "load": "", "trn_scale": "1", "tc_depression": "1"}
+opts = {"word": "мама", "ms": "300", "win": "20", "rest": "1000", "warm": "2500", "load": "", "trn_scale": "1", "tc_depression": "1", "fit": "", "homeo": ""}
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
 cfg.autosave = False
@@ -36,10 +36,21 @@ for kv in sys.argv[1:]:
         old = getattr(cfg, k)
         setattr(cfg, k, (v == "1") if isinstance(old, bool) else float(v) if old is None else type(old)(v))
 
+if opts["fit"]:
+    # Фон из ~/.brain/fits/<имя>.json (anatomy_fit out=имя).
+    from brain import anatomy
+
+    anatomy.use_fit(cfg, opts["fit"])
 mind = Mind.load(opts["load"]) if opts["load"] else Mind(cfg)
 mind.cfg.autosave = False
 cfg, brain = mind.cfg, mind.brain
 brain.plasticity = False
+
+if opts["homeo"]:
+    # Сдвиги гомеостаза после развития (tools/develop.py out=имя) — заморожены.
+    from brain.config import BRAIN_HOME
+
+    brain.bias[: brain.n] += torch.load(BRAIN_HOME / "fits" / f"{opts["homeo"]}-homeo.pt").to(brain.device)
 
 for p in brain.projections:
     if p.name == "trn -> lgn":

@@ -162,7 +162,7 @@ for step in range(int(opts["steps"])):
     print("        хуже всех: " + " ".join(f"{a}.{l}{k}={r:.1f}/{targets[(l, k)]}" for (a, l, k), r in worst), flush=True)
 
     for name, r in nuclei.items():
-        if name in anatomy.SLEEP_RATES_HZ:
+        if name in anatomy.SLEEP_RATES_HZ or name in anatomy.DATA_REST:
             # Узел сна двустабилен — его согласует sleep_fit по двум состояниям.
             continue
 

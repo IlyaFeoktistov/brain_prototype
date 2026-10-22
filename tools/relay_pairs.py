@@ -19,6 +19,12 @@ contribution — доля спайков получателя, которым п
 сетчатки (20 Гц) — во входном растре стенда, чтобы знать их время.
 
     PYTHONPATH=. python tools/relay_pairs.py [seconds=20] [seed=42] [off=noise,t,trn,cortex,triad,local]
+        [lgn_bias=мВ] [trn_inputs=N] [stage=retina]
+
+lgn_bias — фон клеток LGN вместо подобранного (анализ чувствительности:
+деполяризация ацетилхолином ствола — несколько мВ); trn_inputs — сколько
+из построенных входов TRN → LGN оставить; stage=retina — только
+сетчатка → LGN.
 
 off= — выключить источники возбуждения и торможения клеток LGN (откуда
 спайки реле не от своего водителя): noise — случайный фон ядра, t — T-ток,
@@ -36,7 +42,8 @@ from brain.mind import Mind
 from brain.session import Session
 
 
-def main(seconds: float, seed: int, text: str, off: list[str]) -> None:
+def main(seconds: float, seed: int, text: str, off: list[str], lgn_bias: float | None = None,
+         trn_inputs: int | None = None, stage: str = "") -> None:
     cfg = BrainConfig()
     cfg.size = "small"
     cfg.seed = seed
@@ -50,6 +57,12 @@ def main(seconds: float, seed: int, text: str, off: list[str]) -> None:
         b.noise_gain[lgn.slice] = 0.0
     if "t" in off:
         b.t_mask[lgn.slice] = False
+    if lgn_bias is not None:
+        b.bias[lgn.slice] = lgn_bias
+    if trn_inputs is not None:
+        for p in b.projections:
+            if p.post is lgn and p.name == "trn -> lgn":
+                p.weight[:, trn_inputs:] = 0.0
     names = {"trn": "trn -> lgn", "cortex": "visual -> lgn", "triad": "(триада)", "local": "lgn: I->E"}
     for key, name in names.items():
         if key in off:
@@ -127,6 +140,35 @@ def main(seconds: float, seed: int, text: str, off: list[str]) -> None:
 
     every = torch.arange(size)
     pairs(every, R, every, L, "сетчатка → LGN (водитель)", "кошка: связь — при перекрытии центров ≥ 50%, окно 2–5 мс; Usrey et al. 1999")
+    # Доля спайков LGN, которым за 1–5 мс предшествовал спайк своего водителя
+    # (без вычитания случайных; макака: > 95% со своим ВПСП — Sincich 2007).
+    before = torch.zeros_like(L[:, :size])
+    for lag in range(int(1 / dt), int(5 / dt) + 1):
+        before[lag:] |= R[:-lag]
+    led = float((L[:, :size] & before).sum() / L[:, :size].sum().clamp(min=1))
+    # Передача спайка сетчатки по интервалу от предыдущего спайка того же
+    # рецептора (кошка, одна пара: после паузы 29.7%, второй спайк через
+    # 10 мс — 47%; Usrey, Reppas & Reid 1998).
+    follow_any = follow(R, L[:, :size])
+    last = torch.full((size,), -10 ** 9)
+    bins = {"< 10 мс": [0, 0], "10–30 мс": [0, 0], "> 30 мс": [0, 0]}
+    for t in range(steps):
+        fired = R[t].nonzero().squeeze(1)
+        if len(fired):
+            gap = (t - last[fired]) * dt
+            ok = follow_any[t, fired]
+            for name, sel in (("< 10 мс", gap < 10), ("10–30 мс", (gap >= 10) & (gap < 30)), ("> 30 мс", gap >= 30)):
+                bins[name][0] += int(sel.sum())
+                bins[name][1] += int(ok[sel].sum())
+            last[fired] = t
+    chance = float(L[:, :size].float().mean()) * (hi - lo + 1)
+    print(f"   спайков LGN со спайком водителя за 1–5 мс до: {led:.0%}   [макака: > 95%, Sincich 2007]")
+    print("   передача по интервалу от прошлого спайка сетчатки: " + ", ".join(
+        f"{k} {v[1] / max(1, v[0]) - chance:.0%} (n {v[0]})" for k, v in bins.items()) + "   [кошка, пара: пауза 30%, 2-й через 10 мс 47%]")
+    print(f"   LGN {float(L[:, :size].float().mean()) * 1000 / dt:.1f} Гц, сетчатка {float(R.float().mean()) * 1000 / dt:.1f} Гц")
+
+    if stage == "retina":
+        return
     cols = l4_pre[watched].flatten()
     post_idx = watched.repeat_interleave(l4_pre.shape[1])
     pairs(cols, L, post_idx, C, "LGN → V1 L4 E", "кошка: contribution 3.1% (макс 10.3%), задержка ВПСП 2.6 мс; Reid & Alonso 1995, Sedigh-Sarvestani 2019")
@@ -168,4 +210,6 @@ def main(seconds: float, seed: int, text: str, off: list[str]) -> None:
 if __name__ == "__main__":
     opts = dict(kv.split("=", 1) for kv in sys.argv[1:])
     main(float(opts.get("seconds", 20)), int(opts.get("seed", 42)), opts.get("text", "мама мыла раму"),
-         list(filter(None, opts.get("off", "").split(","))))
+         list(filter(None, opts.get("off", "").split(","))),
+         float(opts["lgn_bias"]) if "lgn_bias" in opts else None,
+         int(opts["trn_inputs"]) if "trn_inputs" in opts else None, opts.get("stage", ""))

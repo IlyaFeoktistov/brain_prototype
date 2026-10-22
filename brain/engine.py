@@ -630,6 +630,12 @@ class SpikingBrain:
         self.v_peak[self.n:] = float("inf")
         self.tau_m[self.n:] = 1.0
         self.tau_syn[self.n:] = 1.0
+        # Торможение — своя постоянная тока (у всех, кроме клетки реле LGN,
+        # та же, что у возбуждения): ВПСП сетчатки у реле быстрый (AMPA).
+        self.tau_syn_inh = self.tau_syn.clone()
+
+        if "lgn" in self.areas:
+            self.tau_syn[self.areas["lgn"].E.slice] = cfg.relay_ampa_tau_ms
         self.is_adex = self.delta_t > 0
         # Ветка LTD (пре после поста) — у всех синапсов (маску читает ядро ltd).
         self.ltd_mask = self._fill(1.0, 1.0)
@@ -647,10 +653,12 @@ class SpikingBrain:
         # Скачок синаптического тока при весе J даёт
         # интеграл PSP ≈ J мВ·τm независимо от τsyn.
         self.syn_scale = self.tau_m / self.tau_syn
+        self.syn_scale_inh = self.tau_m / self.tau_syn_inh
 
         dt = cfg.dt_ms
         self.decay_m = dt / self.tau_m
         self.decay_syn = torch.exp(-dt / self.tau_syn)
+        self.decay_syn_inh = torch.exp(-dt / self.tau_syn_inh)
         # Медленное торможение LAMP5 (нейроглиаформные): свой ток со своим
         # спадом; скачок τm/τ — тот же интеграл PSP, что у быстрого синапса.
         self.decay_ngf = math.exp(-dt / cfg.lamp5_tau_syn)
@@ -827,16 +835,17 @@ class SpikingBrain:
         # Вес 1 даёт заряд τm; вес, дающий пик ee_psp_mv, — ee_psp_mv / пик.
         return cfg.ee_psp_mv / peak * tau_m
 
-    def _psp_peak(self, pop: Population, tau_syn: float | None = None) -> float:
+    def _psp_peak(self, pop: Population, tau_syn: float | None = None, inhibitory: bool = False) -> float:
         """
         Пик PSP (мВ) клетки популяции от веса 1 — тем же шагом, что в _step:
         ток прыгает на τm/τsyn и спадает за τsyn, мембрана копит его за τm.
         Вес связи = измеренный PSP / пик. tau_syn — у медленного синапса
-        (LAMP5), иначе — синапс клетки.
+        (LAMP5), иначе — синапс клетки (inhibitory — её тормозной).
         """
 
         tau_m = float(self.tau_m[pop.start])
-        tau_syn = float(self.tau_syn[pop.start]) if tau_syn is None else tau_syn
+        own = self.tau_syn_inh if inhibitory else self.tau_syn
+        tau_syn = float(own[pop.start]) if tau_syn is None else tau_syn
         dt = self.cfg.dt_ms
         current, v, peak = tau_m / tau_syn, 0.0, 0.0
 
@@ -1382,7 +1391,7 @@ class SpikingBrain:
                         # Синапс LAMP5 медленный (lamp5_tau_syn): тот же пик
                         # PSP — меньший вес, но заряд больше.
                         slow = cfg.lamp5_tau_syn if src_kind == "LAMP5" else None
-                        weight = gain * psp / self._psp_peak(post, slow)
+                        weight = gain * psp / self._psp_peak(post, slow, inhibitory=src_ei == "I")
                         rate = rates[src_layer][src_kind] / 1000.0
                         tau = float(self.tau_m[post.start])
 
@@ -1561,7 +1570,7 @@ class SpikingBrain:
                 if k <= 0:
                     continue
 
-                w = psp / self._psp_peak(post)
+                w = psp / self._psp_peak(post, inhibitory=psp < 0)
                 built = max(1, min(k, pre.size))
                 root = math.sqrt(k / built)
                 tau = float(self.tau_m[post.start])
@@ -1605,7 +1614,7 @@ class SpikingBrain:
             if path.psp_mv is not None:
                 # Вес из измеренного PSP; обучаемый — от 0 до 2 средних,
                 # потолок learned_cap_psp средних.
-                w = path.psp_mv / self._psp_peak(post)
+                w = path.psp_mv / self._psp_peak(post, inhibitory=path.psp_mv < 0)
                 weight = (w, w)
 
                 if path.k_data > 0:
@@ -1967,7 +1976,7 @@ class SpikingBrain:
             want = want.clamp(0, cfg.cochlea_bands - 1)
             pick = starts[want] + (torch.rand((post.size, k), device=self.device, generator=g) * counts[want]).long()
             pre = src_index[order[pick]]
-            weight = torch.full((post.size, k), psp / self._psp_peak(post), device=self.device)
+            weight = torch.full((post.size, k), psp / self._psp_peak(post, inhibitory=psp < 0), device=self.device)
             proj = Projection(f"{src} -> {post.name}", table, pre if table == "sensory" else pre.to(torch.int32), post, weight)
 
             if src_area is not None:
@@ -2624,9 +2633,19 @@ class SpikingBrain:
                 self.bias[E.slice] = (q * g - a) / (q - 1.0) - background
 
         # Фон ядер — согласование с частотами in vivo (cfg.nucleus_bias_mv).
+        from brain import anatomy
+
         for name, mv in cfg.nucleus_bias_mv:
-            if name in self.areas:
+            if name in self.areas and name not in anatomy.DATA_REST:
                 self.bias[self.areas[name].E.slice] += mv
+
+        if "lgn" in self.areas:
+            # Покой клетки реле — по данным (cfg.relay_rest_mv), за вычетом
+            # средней прибавки случайного фона ядра; не подбирается.
+            E = self.areas["lgn"].E
+            tau = float(self.tau_m[E.start])
+            background = float(self.noise_mean[E.start] / cfg.dt_ms * self.noise_gain[E.start] * tau)
+            self.bias[E.slice] = cfg.relay_rest_mv - cfg.v_rest - background
 
         # Разброс возбудимости между клетками ядра — как у главных клеток
         # колонок (Allen, column_gap_sd_mv E): без него все клетки ядра
@@ -2888,7 +2907,7 @@ class SpikingBrain:
                 )
 
         self.i_syn.mul_(self.decay_syn).add_(drive * self.syn_scale)
-        self.i_inh.mul_(self.decay_syn).add_(inhibition * self.syn_scale)
+        self.i_inh.mul_(self.decay_syn_inh).add_(inhibition * self.syn_scale_inh)
         self.i_ngf.mul_(self.decay_ngf).add_(ngf * self.ngf_scale)
 
         if self.nmda_on:

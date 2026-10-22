@@ -948,6 +948,10 @@ def nucleus_cells(spec) -> tuple[int, int]:
 # (масштаб модели, не число клеток у человека).
 NUCLEUS_SCALE = 273_666
 
+# Ядра, чей покой задан данными (engine: cfg.relay_rest_mv), — подбор фона
+# (tools/anatomy_fit.py) их не трогает: частота должна получаться от входов.
+DATA_REST = ("lgn",)
+
 
 def area_sizes(cfg) -> dict[str, int]:
     """

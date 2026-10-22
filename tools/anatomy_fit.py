@@ -181,6 +181,9 @@ for step in range(int(opts["steps"])):
                 continue
             hz = [r for k, r in columns.items() if k[2] == kind]
             aim = [targets[k[1:]] for k in columns if k[2] == kind]
+            if not hz:
+                # Типа нет в колонках этого мозга (колонка E + PV).
+                continue
             ratio = ((sum(aim) / len(aim) + 0.5) / (sum(hz) / len(hz) + 0.5)) ** 0.15
             from_e[i] *= min(1.15, max(1 / 1.15, ratio))
 

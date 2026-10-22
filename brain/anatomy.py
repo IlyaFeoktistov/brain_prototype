@@ -686,84 +686,84 @@ NUCLEUS_BIAS_MV = (
     ('raphe', -3.33),
     ('nbm', 14.79),
     ('orexin', -1.07),
-    ('vta', 26.33),
-    ('amygdala', 9.39),
-    ('scn', -6.18),
-    ('striatum_d1', 10.13),
-    ('striatum_d2', 31.24),
-    ('gpe', 55.89),
-    ('gpi', 138.71),
-    ('thalamus', 71.6),
-    ('granule', 6.83),
-    ('lgn', 29.49),
-    ('mgn', 21.83),
-    ('md', 20.22),
-    ('trn', 27.05),
-    ('trn_mgn', 13.57),
-    ('trn_md', 13.96),
-    ('trn_motor', 5.24),
-    ('fsi', 27.88),
-    ('stn', 22.75),
-    ('cea', 16.2),
-    ('lhb', 8.19),
-    ('dmh', 13.34),
-    ('colliculus', 42.22),
-    ('purkinje', 14.42),
-    ('dcn', 53.56),
-    ('io', -0.18),
-    ('cn', 12.18),
-    ('ic', 10.9),
-    ('vnll', 10.32),
-    ('vl_cb', 8.9),
-    ('entorhinal', -11.32),
-    ('dentate', -19.42),
-    ('ca3', 9.77),
-    ('ca1', 4.35),
+    ('vta', 23.82),
+    ('amygdala', 9.03),
+    ('scn', -5.91),
+    ('striatum_d1', 11.51),
+    ('striatum_d2', 30.94),
+    ('gpe', 55.94),
+    ('gpi', 142.66),
+    ('thalamus', 77.06),
+    ('granule', 4.8),
+    ('lgn', 64.76),
+    ('mgn', 24.48),
+    ('md', 24.81),
+    ('trn', 32.06),
+    ('trn_mgn', 13.07),
+    ('trn_md', 11.73),
+    ('trn_motor', -4.66),
+    ('fsi', 18.97),
+    ('stn', 13.18),
+    ('cea', 15.55),
+    ('lhb', 10.29),
+    ('dmh', 13.09),
+    ('colliculus', 34.58),
+    ('purkinje', 14.57),
+    ('dcn', 53.55),
+    ('io', 2.57),
+    ('cn', 11.88),
+    ('ic', 11.15),
+    ('vnll', 9.99),
+    ('vl_cb', 16.05),
+    ('entorhinal', -34.68),
+    ('dentate', -48.6),
+    ('ca3', 0.37),
+    ('ca1', -11.62),
 )
 # (зона, слой, тип клетки, множитель внешнего фона)
 COLUMN_EXTERNAL_POP = (
-    ('auditory', 'L23', 'E', 0.159), ('auditory', 'L23', 'PV', 0.013),
-    ('auditory', 'L4', 'E', 0.003), ('auditory', 'L4', 'PV', 0.004),
-    ('auditory', 'L5', 'E', 0.998), ('auditory', 'L5', 'PV', 0.099),
-    ('auditory', 'L6', 'E', 1.093), ('auditory', 'L6', 'PV', 0.588),
-    ('association', 'L23', 'E', 1.18), ('association', 'L23', 'PV', 0.143),
-    ('association', 'L4', 'E', 1.588), ('association', 'L4', 'PV', 0.292),
-    ('association', 'L5', 'E', 1.499), ('association', 'L5', 'PV', 1.036),
-    ('association', 'L6', 'E', 1.199), ('association', 'L6', 'PV', 1.074),
-    ('prefrontal', 'L23', 'E', 0.058), ('prefrontal', 'L23', 'PV', 0.003),
-    ('prefrontal', 'L4', 'E', 0.004), ('prefrontal', 'L4', 'PV', 0.004),
-    ('prefrontal', 'L5', 'E', 0.132), ('prefrontal', 'L5', 'PV', 0.028),
-    ('prefrontal', 'L6', 'E', 1.015), ('prefrontal', 'L6', 'PV', 0.088),
-    ('motor', 'L23', 'E', 1.862), ('motor', 'L23', 'PV', 0.278),
-    ('motor', 'L4', 'E', 0.002), ('motor', 'L4', 'PV', 0.008),
-    ('motor', 'L5', 'E', 1.831), ('motor', 'L5', 'PV', 1.649),
-    ('motor', 'L6', 'E', 1.248), ('motor', 'L6', 'PV', 2.177),
-    ('goal', 'L23', 'E', 0.062), ('goal', 'L23', 'PV', 0.004),
-    ('goal', 'L4', 'E', 0.004), ('goal', 'L4', 'PV', 0.004),
-    ('goal', 'L5', 'E', 0.136), ('goal', 'L5', 'PV', 0.029),
-    ('goal', 'L6', 'E', 1.01), ('goal', 'L6', 'PV', 0.096),
-    ('limbic', 'L23', 'E', 3.614), ('limbic', 'L23', 'PV', 1.479),
-    ('limbic', 'L5', 'E', 2.09), ('limbic', 'L5', 'PV', 2.259),
-    ('limbic', 'L6', 'E', 1.402), ('limbic', 'L6', 'PV', 2.681),
-    ('category', 'L23', 'E', 1.707), ('category', 'L23', 'PV', 0.16),
-    ('category', 'L4', 'E', 0.751), ('category', 'L4', 'PV', 0.535),
-    ('category', 'L5', 'E', 1.315), ('category', 'L5', 'PV', 1.155),
-    ('category', 'L6', 'E', 1.207), ('category', 'L6', 'PV', 1.481),
-    ('visual', 'L23', 'E', 0.089), ('visual', 'L23', 'PV', 0.007),
-    ('visual', 'L4', 'E', 0.005), ('visual', 'L4', 'PV', 0.003),
-    ('visual', 'L5', 'E', 0.682), ('visual', 'L5', 'PV', 0.015),
-    ('visual', 'L6', 'E', 1.14), ('visual', 'L6', 'PV', 0.087),
-    ('letters', 'L23', 'E', 1.717), ('letters', 'L23', 'PV', 0.102),
-    ('letters', 'L4', 'E', 1.056), ('letters', 'L4', 'PV', 0.077),
-    ('letters', 'L5', 'E', 1.803), ('letters', 'L5', 'PV', 0.22),
-    ('letters', 'L6', 'E', 1.167), ('letters', 'L6', 'PV', 0.619),
-    ('hand', 'L23', 'E', 1.753), ('hand', 'L23', 'PV', 0.1),
-    ('hand', 'L4', 'E', 0.002), ('hand', 'L4', 'PV', 0.01),
-    ('hand', 'L5', 'E', 1.888), ('hand', 'L5', 'PV', 0.535),
-    ('hand', 'L6', 'E', 1.115), ('hand', 'L6', 'PV', 0.979),
-    ('premotor', 'L23', 'E', 0.044), ('premotor', 'L23', 'PV', 0.003),
-    ('premotor', 'L5', 'E', 1.752), ('premotor', 'L5', 'PV', 0.067),
-    ('premotor', 'L6', 'E', 1.153), ('premotor', 'L6', 'PV', 0.105),
+    ('auditory', 'L23', 'E', 0.013), ('auditory', 'L23', 'PV', 0.001),
+    ('auditory', 'L4', 'E', 0.0), ('auditory', 'L4', 'PV', 0.0),
+    ('auditory', 'L5', 'E', 0.312), ('auditory', 'L5', 'PV', 0.01),
+    ('auditory', 'L6', 'E', 1.206), ('auditory', 'L6', 'PV', 0.07),
+    ('association', 'L23', 'E', 0.171), ('association', 'L23', 'PV', 0.016),
+    ('association', 'L4', 'E', 0.254), ('association', 'L4', 'PV', 0.035),
+    ('association', 'L5', 'E', 0.685), ('association', 'L5', 'PV', 0.207),
+    ('association', 'L6', 'E', 1.223), ('association', 'L6', 'PV', 0.283),
+    ('prefrontal', 'L23', 'E', 0.006), ('prefrontal', 'L23', 'PV', 0.0),
+    ('prefrontal', 'L4', 'E', 0.0), ('prefrontal', 'L4', 'PV', 0.0),
+    ('prefrontal', 'L5', 'E', 0.018), ('prefrontal', 'L5', 'PV', 0.003),
+    ('prefrontal', 'L6', 'E', 0.969), ('prefrontal', 'L6', 'PV', 0.012),
+    ('motor', 'L23', 'E', 0.372), ('motor', 'L23', 'PV', 0.033),
+    ('motor', 'L4', 'E', 0.0), ('motor', 'L4', 'PV', 0.001),
+    ('motor', 'L5', 'E', 1.712), ('motor', 'L5', 'PV', 0.564),
+    ('motor', 'L6', 'E', 1.137), ('motor', 'L6', 'PV', 1.169),
+    ('goal', 'L23', 'E', 0.006), ('goal', 'L23', 'PV', 0.0),
+    ('goal', 'L4', 'E', 0.0), ('goal', 'L4', 'PV', 0.0),
+    ('goal', 'L5', 'E', 0.018), ('goal', 'L5', 'PV', 0.003),
+    ('goal', 'L6', 'E', 0.918), ('goal', 'L6', 'PV', 0.013),
+    ('limbic', 'L23', 'E', 3.563), ('limbic', 'L23', 'PV', 2.091),
+    ('limbic', 'L5', 'E', 2.166), ('limbic', 'L5', 'PV', 2.68),
+    ('limbic', 'L6', 'E', 1.431), ('limbic', 'L6', 'PV', 3.126),
+    ('category', 'L23', 'E', 0.279), ('category', 'L23', 'PV', 0.019),
+    ('category', 'L4', 'E', 0.092), ('category', 'L4', 'PV', 0.068),
+    ('category', 'L5', 'E', 0.273), ('category', 'L5', 'PV', 0.202),
+    ('category', 'L6', 'E', 1.061), ('category', 'L6', 'PV', 0.396),
+    ('visual', 'L23', 'E', 0.823), ('visual', 'L23', 'PV', 0.056),
+    ('visual', 'L4', 'E', 0.028), ('visual', 'L4', 'PV', 0.018),
+    ('visual', 'L5', 'E', 1.571), ('visual', 'L5', 'PV', 0.119),
+    ('visual', 'L6', 'E', 1.11), ('visual', 'L6', 'PV', 0.85),
+    ('letters', 'L23', 'E', 1.038), ('letters', 'L23', 'PV', 0.024),
+    ('letters', 'L4', 'E', 2.171), ('letters', 'L4', 'PV', 0.02),
+    ('letters', 'L5', 'E', 1.247), ('letters', 'L5', 'PV', 0.051),
+    ('letters', 'L6', 'E', 1.165), ('letters', 'L6', 'PV', 0.247),
+    ('hand', 'L23', 'E', 0.918), ('hand', 'L23', 'PV', 0.021),
+    ('hand', 'L4', 'E', 0.0), ('hand', 'L4', 'PV', 0.001),
+    ('hand', 'L5', 'E', 1.811), ('hand', 'L5', 'PV', 0.269),
+    ('hand', 'L6', 'E', 1.125), ('hand', 'L6', 'PV', 0.611),
+    ('premotor', 'L23', 'E', 0.003), ('premotor', 'L23', 'PV', 0.0),
+    ('premotor', 'L5', 'E', 1.089), ('premotor', 'L5', 'PV', 0.007),
+    ('premotor', 'L6', 'E', 1.329), ('premotor', 'L6', 'PV', 0.015),
 )
 
 
@@ -919,12 +919,23 @@ def nucleus_cells(spec) -> tuple[int, int]:
     return spec.cells, (max(2, round(spec.cells * fraction / (1.0 - fraction))) if fraction < 1 else 2)
 
 
+# Ядра без числа клеток по данным — доля от этого постоянного масштаба, а не
+# от размера мозга: клетки ядра и входы из него не меняются с размером, и
+# один подобранный фон годится всем мозгам (растёт только кора). [замер]
+# доля от размера мозга давала зрительному TRN 10 клеток в мозге подбора и
+# 118 в мозге из веба — клетка LGN получала 10 и 20 входов торможения, и
+# фон, подобранный на одном, глушил LGN на другом (0.1 Гц вместо 7).
+# Число — размер, при котором ядра стояли в мозге-минимуме из веба
+# (масштаб модели, не число клеток у человека).
+NUCLEUS_SCALE = 273_666
+
+
 def area_sizes(cfg) -> dict[str, int]:
     """
     Клеток в каждой зоне при размере мозга cfg.total_neurons. Ядра с числом
     клеток по данным (реле — по рецепторам органа, гиппокамп — по
-    разреженности связей) — столько; прочие ядра — своей долей от размера
-    мозга; всё остальное — колонкам коры по их долям, но колонка не меньше
+    разреженности связей) — столько; прочие ядра — своей долей от
+    NUCLEUS_SCALE (не от размера мозга); всё остальное — колонкам коры по их долям, но колонка не меньше
     min_column_neurons (в малой зоне почти весь вход — ток недостающих
     соседей). Доли (AreaSpec.share) — из прежней схемы [сверить: площади зон
     коры человека, напр. HCP-MMP — Glasser et al. 2016,
@@ -939,7 +950,7 @@ def area_sizes(cfg) -> dict[str, int]:
         if a.name in cfg.layered_areas:
             continue
 
-        out[a.name] = sum(nucleus_cells(a)) if a.cells > 0 else max(10, int(total * a.share / every))
+        out[a.name] = sum(nucleus_cells(a)) if a.cells > 0 else max(10, int(NUCLEUS_SCALE * a.share / every))
 
     cortex = [a for a in cfg.areas if a.name in cfg.layered_areas]
     budget = max(0, total - sum(out.values()))

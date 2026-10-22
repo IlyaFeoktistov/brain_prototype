@@ -82,18 +82,6 @@ const RAMPS: Record<string, number[]> = Object.fromEntries(
   ]),
 );
 
-function scatter(count: number, seed: number): Int32Array {
-  const order = new Int32Array(count);
-  for (let i = 0; i < count; i++) order[i] = i;
-  let state = seed || 1;
-  for (let i = count - 1; i > 0; i--) {
-    state = (state * 1664525 + 1013904223) >>> 0;
-    const j = state % (i + 1);
-    [order[i], order[j]] = [order[j], order[i]];
-  }
-  return order;
-}
-
 interface Section {
   area: Area;
   cols: number;
@@ -110,8 +98,8 @@ interface Section {
 const layerOf = (pop: Population) => (pop.label.includes(".") ? pop.label.split(".")[0] : "L23");
 
 // Колонка — слоями сверху вниз (L2/3, L4, L5, L6), как на срезе коры;
-// внутри слоя главные и тормозные клетки перемешаны. Ядро — одной полосой.
-function layout(area: Area, canvas: HTMLCanvasElement, index: number): Section {
+// внутри слоя клетки по номеру, типы вкраплены друг в друга. Ядро — одной полосой.
+function layout(area: Area, canvas: HTMLCanvasElement): Section {
   const cols = Math.max(1, Math.ceil(Math.sqrt(area.size)));
   const bands = new Map<string, Population[]>();
   for (const pop of area.populations) {
@@ -127,11 +115,16 @@ function layout(area: Area, canvas: HTMLCanvasElement, index: number): Section {
   let row0 = 0;
 
   order.forEach((key, b) => {
-    const pops = bands.get(key)!;
-    const cells = pops.flatMap((p) => Array.from({ length: p.size }, (_, k) => [p.start - area.start + k, p.kind] as const));
-    const place = scatter(rowsOf[b] * cols, 7919 * (index + 1) + b);
+    // Клетки — по номеру: у многих зон номер — место на карте (V1 — место в
+    // поле зрения, A1 — полоса частот, рука — клавиша, двухолмие — цель
+    // саккады), и карта видна. Популяции слоя вкраплены друг в друга по
+    // своей доле: k-я клетка популяции — на доле (k + ½) / размер полосы.
+    const cells = bands.get(key)!
+      .flatMap((p) => Array.from({ length: p.size }, (_, k) => [p.start - area.start + k, p.kind, (k + 0.5) / p.size] as const))
+      .sort((x, y) => x[2] - y[2]);
     cells.forEach(([local, kind], k) => {
-      const pixel = row0 * cols + place[k];
+      // Пустое стекло (неполный последний ряд) — ровно между клетками, а не полосой в конце.
+      const pixel = row0 * cols + Math.floor((k * rowsOf[b] * cols) / cells.length);
       cellOf[local] = pixel;
       neuronAt[pixel] = local;
       ramp[local] = RAMPS[kind] ?? RAMPS.I;
@@ -231,9 +224,9 @@ export function Microscope({ anatomy, fluo, selected, links, onHover, onSelect, 
 
   useEffect(() => {
     const rebuild = () => {
-      sections.current = anatomy.areas.flatMap((area, i) => {
+      sections.current = anatomy.areas.flatMap((area) => {
         const canvas = canvases.current.get(area.name);
-        return canvas ? [layout(area, canvas, i)] : [];
+        return canvas ? [layout(area, canvas)] : [];
       });
     };
     rebuild();

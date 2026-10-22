@@ -31,7 +31,7 @@ for kv in sys.argv[1:]:
         opts[k] = v
     else:
         old = getattr(cfg, k)
-        setattr(cfg, k, (v == "1") if isinstance(old, bool) else type(old)(v))
+        setattr(cfg, k, (v == "1") if isinstance(old, bool) else float(v) if old is None else type(old)(v))
 
 mind = Mind.load(opts["load"]) if opts["load"] else Mind(cfg)
 mind.cfg.autosave = False

@@ -19,13 +19,13 @@ contribution — доля спайков получателя, которым п
 сетчатки (20 Гц) — во входном растре стенда, чтобы знать их время.
 
     PYTHONPATH=. python tools/relay_pairs.py [seconds=20] [seed=42] [off=noise,t,trn,cortex,triad,local]
-        [lgn_bias=мВ] [trn_inputs=N] [stage=retina] [driver_scale=1]
+        [lgn_bias=мВ] [trn_inputs=N] [stage=retina] [driver_scale=1] [relay_v_t=мВ]
 
 lgn_bias — фон клеток LGN вместо подобранного (анализ чувствительности:
 деполяризация ацетилхолином ствола — несколько мВ); trn_inputs — сколько
 из построенных входов TRN → LGN оставить; stage=retina — только
 сетчатка → LGN; driver_scale — множитель силы синапса сетчатки на реле (вместе с
-его триадой).
+его триадой); relay_v_t — V_T клетки реле (гипотеза, BrainConfig.relay_v_t_mv).
 
 off= — выключить источники возбуждения и торможения клеток LGN (откуда
 спайки реле не от своего водителя): noise — случайный фон ядра, t — T-ток,
@@ -44,8 +44,10 @@ from brain.session import Session
 
 
 def main(seconds: float, seed: int, text: str, off: list[str], lgn_bias: float | None = None,
-         trn_inputs: int | None = None, stage: str = "", driver_scale: float = 1.0) -> None:
+         trn_inputs: int | None = None, stage: str = "", driver_scale: float = 1.0,
+         relay_v_t: float | None = None) -> None:
     cfg = BrainConfig()
+    cfg.relay_v_t_mv = relay_v_t
     cfg.size = "small"
     cfg.seed = seed
     cfg.autosave = False
@@ -217,4 +219,4 @@ if __name__ == "__main__":
          list(filter(None, opts.get("off", "").split(","))),
          float(opts["lgn_bias"]) if "lgn_bias" in opts else None,
          int(opts["trn_inputs"]) if "trn_inputs" in opts else None, opts.get("stage", ""),
-         float(opts.get("driver_scale", 1.0)))
+         float(opts.get("driver_scale", 1.0)), float(opts["relay_v_t"]) if "relay_v_t" in opts else None)

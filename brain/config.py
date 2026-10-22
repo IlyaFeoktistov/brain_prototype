@@ -605,6 +605,12 @@ class BrainConfig:
     # https://doi.org/10.1113/jphysiol.1987.sp016697).
     relay_rest_mv: float = -63.0
     relay_ampa_tau_ms: float = 2.0
+    # V_T клетки реле LGN вместо общего v_threshold; None — общий. Только для
+    # стендов-гипотез [временно]: порог реле in vivo не измерен; в таламусе
+    # in vivo начало спайка (dV/dt > 10) около −49 (ядро VM крысы, Paz et al.
+    # 2007, https://doi.org/10.1523/JNEUROSCI.4677-06.2007), у модели с общим
+    # V_T −50 — −39.4, как в срезе (docs/DESIGN.md «LGN: передача…»).
+    relay_v_t_mv: float | None = None
     e_delta_t: float = 2.0
     # Адаптация: e_adapt_b мВ за спайк при индексе E мыши (e_adaptation_index),
     # спад e_adapt_tau [сверить: пересчёт индекса Allen в мВ не выведен].

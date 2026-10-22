@@ -12,7 +12,9 @@ TRN, местные тормозные, кора, случайный фон; п�
 al. 2007); около половины ретинальных спайков проходят (Carandini, Horton &
 Sincich 2007).
 
-    PYTHONPATH=. python tools/relay_threshold.py
+    PYTHONPATH=. python tools/relay_threshold.py [relay_v_t=мВ]
+
+relay_v_t — V_T клетки реле (гипотеза, BrainConfig.relay_v_t_mv).
 """
 
 from __future__ import annotations
@@ -23,8 +25,9 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 
 
-def main() -> None:
+def main(relay_v_t: float | None = None) -> None:
     cfg = BrainConfig()
+    cfg.relay_v_t_mv = relay_v_t
     cfg.size = "small"
     cfg.autosave = False
     b = Mind(cfg).brain
@@ -66,7 +69,7 @@ def main() -> None:
         v_prev = v.clone()
 
     ok = ~onset.isnan()
-    print(f"1. порог: заданный V_T {cfg.v_threshold:.0f} мВ (ΔT {float(b.delta_t[lgn.start]):.1f}); "
+    print(f"1. порог: заданный V_T {float(b.v_t[lgn.start]):.1f} мВ (ΔT {float(b.delta_t[lgn.start]):.1f}); "
           f"начало спайка (dV/dt > 10 мВ/мс) {float(onset[ok].median()):.1f} мВ (медиана, {int(ok.sum())} клеток)")
 
     # 2. Одиночный ВПСП при −63.
@@ -104,4 +107,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    opts = dict(kv.split("=", 1) for kv in sys.argv[1:])
+    main(float(opts["relay_v_t"]) if "relay_v_t" in opts else None)

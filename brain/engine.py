@@ -636,6 +636,11 @@ class SpikingBrain:
 
         if "lgn" in self.areas:
             self.tau_syn[self.areas["lgn"].E.slice] = cfg.relay_ampa_tau_ms
+        # Порог экспоненты AdEx у каждой клетки (у реле — cfg.relay_v_t_mv).
+        self.v_t = self._fill(cfg.v_threshold, cfg.v_threshold)
+
+        if "lgn" in self.areas and cfg.relay_v_t_mv is not None:
+            self.v_t[self.areas["lgn"].E.slice] = cfg.relay_v_t_mv
         self.is_adex = self.delta_t > 0
         # Ветка LTD (пре после поста) — у всех синапсов (маску читает ядро ltd).
         self.ltd_mask = self._fill(1.0, 1.0)
@@ -2918,7 +2923,7 @@ class SpikingBrain:
             self.is_adex,
             self.delta_t
             * torch.exp(
-                ((self.v - cfg.v_threshold) / self.safe_delta_t).clamp(max=10.0)
+                ((self.v - self.v_t) / self.safe_delta_t).clamp(max=10.0)
             ),
             0.0,
         )

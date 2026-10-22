@@ -77,7 +77,7 @@ function Synapses({ list, onSynapse, onNeuron, direction }: {
           return (
             <tr key={s.id}>
               <td>
-                <button type="button" className="link" onClick={() => onNeuron(other)}>
+                <button type="button" className="link" onClick={() => onNeuron(other)} title="открыть эту клетку">
                   {direction === "in" ? s.preName : s.postName} №{other}
                 </button>
               </td>
@@ -87,7 +87,7 @@ function Synapses({ list, onSynapse, onNeuron, direction }: {
               <td>{s.plastic ? f(s.eligibility, 4) : "—"}</td>
               <td>{s.dendrite ? s.branch : "сома"}</td>
               <td>
-                <button type="button" className="link" onClick={() => onSynapse(s)}>синапс</button>
+                <button type="button" className="link" onClick={() => onSynapse(s)} title="всё об этом синапсе: вес, врождённая и выученная части, след обучения, задержка">синапс</button>
               </td>
             </tr>
           );
@@ -118,17 +118,17 @@ export function SynapseCard({ synapse, onNeuron, onClose }: {
     <div className="card">
       <header>
         <h3>Синапс №{synapse.id}</h3>
-        <button type="button" className="close" onClick={onClose} aria-label="закрыть">×</button>
+        <button type="button" className="close" onClick={onClose} aria-label="закрыть" title="закрыть карточку">×</button>
       </header>
       <dl>
         <Row name="путь" value={synapse.path} hint="анатомический путь, к которому принадлежит синапс (откуда → куда)" />
         <div className="kv">
           <dt>от</dt>
-          <dd><button type="button" className="link" onClick={() => onNeuron(synapse.pre)}>{synapse.preName} №{synapse.pre}</button></dd>
+          <dd><button type="button" className="link" onClick={() => onNeuron(synapse.pre)} title="открыть клетку, которая передаёт сигнал">{synapse.preName} №{synapse.pre}</button></dd>
         </div>
         <div className="kv">
           <dt>к</dt>
-          <dd><button type="button" className="link" onClick={() => onNeuron(synapse.post)}>{synapse.postName} №{synapse.post}</button></dd>
+          <dd><button type="button" className="link" onClick={() => onNeuron(synapse.post)} title="открыть клетку, которая получает сигнал">{synapse.postName} №{synapse.post}</button></dd>
         </div>
         <Row name="вес" value={f(synapse.weight, 4)} hint="в единицах движка; в мВ — строка «сила»" />
         <Row name="сила" value={`${f(synapse.psp, 3)} мВ`} hint="пик ВПСП/ТПСП у получателя в покое" />
@@ -194,16 +194,18 @@ export function NeuronCard({ index, fluo, now, onNeuron, onSynapse, onClose, onL
         <h3>
           {info.areaTitle} · {info.population} №{info.local}
         </h3>
-        <button type="button" className="close" onClick={onClose} aria-label="закрыть">×</button>
+        <button type="button" className="close" onClick={onClose} aria-label="закрыть" title="закрыть карточку">×</button>
       </header>
       <p className="muted">
         {KIND_TITLE[info.kind] ?? info.kind} · {m.type} · клетка №{info.index}
       </p>
       <Raster times={fluo.watched.get(info.index) ?? []} now={now} />
       <nav className="tabs">
-        {([["cell", "клетка"], ["dendrite", "дендрит"], ["in", `входы (${info.incoming.reduce((a, g) => a + g.count, 0)})`],
-           ["out", `выходы (${info.outgoing.reduce((a, g) => a + g.count, 0)})`]] as [Tab, string][]).map(([key, title]) => (
-          <button key={key} type="button" className={tab === key ? "on" : ""} onClick={() => setTab(key)}>{title}</button>
+        {([["cell", "клетка", "модель клетки, её параметры, состояние сейчас, вещества и фон"],
+           ["dendrite", "дендрит", "ветки дендрита: ток и плато на каждой"],
+           ["in", `входы (${info.incoming.reduce((a, g) => a + g.count, 0)})`, "все входящие синапсы по путям и самые сильные поштучно"],
+           ["out", `выходы (${info.outgoing.reduce((a, g) => a + g.count, 0)})`, "все исходящие синапсы по путям и самые сильные поштучно"]] as [Tab, string, string][]).map(([key, title, hint]) => (
+          <button key={key} type="button" className={tab === key ? "on" : ""} onClick={() => setTab(key)} title={hint}>{title}</button>
         ))}
       </nav>
 

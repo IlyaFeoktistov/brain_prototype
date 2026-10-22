@@ -99,7 +99,7 @@ export function Conversation({ face, entries, screen, typing, busy, onSay, thoug
         }}
       >
         <input value={text} onChange={(e) => setText(e.target.value)} placeholder={busy ? `мозг занят: ${busy}` : "реплика"} />
-        <button type="submit" disabled={!text.trim()}>Сказать</button>
+        <button type="submit" disabled={!text.trim()} title="показать реплику на экране мира; мозг читает её и печатает ответ, пока не замолчит на 2 с (не дольше 10 с своей жизни)">Сказать</button>
         {/* Прервать ответ или урок: мозг дочитывает текущее окно (~0.1 с жизни мозга) и останавливается. */}
         {busy && <button type="button" className="stop" onClick={() => api.stop()} title="прервать ответ или урок">Стоп</button>}
       </form>
@@ -140,7 +140,7 @@ function Lessons({ actions }: { actions: MenuActions }) {
       </div>
       <textarea rows={3} value={text} placeholder="текст: учитель покажет его по словам с указкой" onChange={(e) => setText(e.target.value)} />
       <div className="buttons">
-        <button type="button" disabled={!text.trim()} onClick={() => run("read", { text })}>Прочитать текст</button>
+        <button type="button" disabled={!text.trim()} onClick={() => run("read", { text })} title="учитель показывает текст по словам, указка ведёт взгляд под каждой буквой">Прочитать текст</button>
         <label className="file">
           из файла
           <input type="file" accept=".txt,.md" onChange={(e) => e.target.files?.[0]?.text().then(setText)} />
@@ -201,17 +201,19 @@ export function Menu({ status, actions }: { status: Status; actions: MenuActions
       <div className="menu-group">
         <h4>Учитель</h4>
         <div className="buttons">
-          <button type="button" onClick={() => api.praise(true).then(() => actions.info("сладкое (верно)")).catch(fail)}>Верно — сладкое</button>
-          <button type="button" onClick={() => api.praise(false).then(() => actions.info("горькое (неверно)")).catch(fail)}>Неверно — горькое</button>
-          <button type="button" onClick={() => api.stop().then(() => actions.info("остановлено")).catch(fail)}>Стоп</button>
+          <button type="button" onClick={() => api.praise(true).then(() => actions.info("сладкое (верно)")).catch(fail)}
+                  title="награда: 0.3 с вкуса сладкого — дофамин закрепляет то, что мозг только что делал">Верно — сладкое</button>
+          <button type="button" onClick={() => api.praise(false).then(() => actions.info("горькое (неверно)")).catch(fail)}
+                  title="наказание: 0.3 с вкуса горького — провал дофамина ослабляет то, что мозг только что делал">Неверно — горькое</button>
+          <button type="button" onClick={() => api.stop().then(() => actions.info("остановлено")).catch(fail)} title="прервать ответ или урок (жизнь в тишине выключается отдельно, флажком ниже)">Стоп</button>
         </div>
       </div>
       <Lessons actions={actions} />
       <div className="menu-group">
         <h4>Наблюдение</h4>
         <div className="buttons">
-          <button type="button" onClick={() => api.summary().then((d) => actions.report("Сводка", <SummaryView data={d} />)).catch(fail)}>Сводка</button>
-          <button type="button" onClick={() => { actions.info("здоровье: мозг в покое 500 мс…"); api.health(500).then((d) => actions.report("Здоровье", <HealthView data={d} />)).catch(fail); }}>Здоровье</button>
+          <button type="button" onClick={() => api.summary().then((d) => actions.report("Сводка", <SummaryView data={d} />)).catch(fail)} title="сколько клеток и синапсов, сколько их учится и что выучено на каждом пути (вкладка «Отчёт»)">Сводка</button>
+          <button type="button" onClick={() => { actions.info("здоровье: мозг в покое 500 мс…"); api.health(500).then((d) => actions.report("Здоровье", <HealthView data={d} />)).catch(fail); }} title="полсекунды покоя без входа и без обучения: частоты ядер и слоёв коры против записей у людей и животных (вкладка «Отчёт»)">Здоровье</button>
         </div>
         <label className="toggle">
           <input type="checkbox" checked={status.live} onChange={(e) => api.setLive(e.target.checked).catch(fail)} />
@@ -221,8 +223,8 @@ export function Menu({ status, actions }: { status: Status; actions: MenuActions
       <div className="menu-group">
         <h4>Мозг</h4>
         <div className="buttons">
-          <button type="button" onClick={() => api.save().then((r) => actions.info(`сохранено: ${r.brain}`)).catch(fail)}>Сохранить</button>
-          <button type="button" onClick={actions.choose}>Другой мозг…</button>
+          <button type="button" onClick={() => api.save().then((r) => actions.info(`сохранено: ${r.brain}`)).catch(fail)} title="записать мозг на диск (~/.brain/brains) со всем выученным">Сохранить</button>
+          <button type="button" onClick={actions.choose} title="открыть сохранённый мозг или создать новый (текущий сначала сохраняется)">Другой мозг…</button>
         </div>
       </div>
     </div>
@@ -251,14 +253,14 @@ export function Chooser({ brains, onClose, info }: { brains: Brains; onClose?: (
   return (
     <div className="chooser">
       <h2>Мозг</h2>
-      {onClose && <button type="button" className="close" onClick={onClose} aria-label="закрыть">×</button>}
+      {onClose && <button type="button" className="close" onClick={onClose} aria-label="закрыть" title="вернуться к текущему мозгу">×</button>}
       <section>
         <h3>Открыть сохранённый</h3>
         {brains.items.length === 0 && <p className="muted">Сохранённых мозгов нового формата нет.</p>}
         <ul className="brains">
           {brains.items.map((b) => (
             <li key={b.name}>
-              <button type="button" disabled={busy} onClick={() => act(api.load(b.name), `загружаю ${b.name}`)}>
+              <button type="button" disabled={busy} onClick={() => act(api.load(b.name), `загружаю ${b.name}`)} title="загрузить этот мозг (текущий сначала сохраняется)">
                 <strong>{b.name}</strong>
                 <span>{(b.neurons ?? 0).toLocaleString("ru")} нейронов · {b.megabytes} МБ · прожито {bioTime(b.timeMs ?? 0)} · {new Date(b.modified * 1000).toLocaleString("ru")}</span>
               </button>
@@ -276,7 +278,7 @@ export function Chooser({ brains, onClose, info }: { brains: Brains; onClose?: (
             клеток. Минимум — {brains.minNeurons.toLocaleString("ru")}.
             {preview && <> Получится <strong>{preview.total.toLocaleString("ru")}</strong> нейронов.</>}
           </p>
-          <button type="submit" disabled={busy || !name.trim()}>Создать</button>
+          <button type="submit" disabled={busy || !name.trim()} title="собрать новый мозг с нуля, без выученного, и сразу сохранить его">Создать</button>
         </form>
       </section>
     </div>

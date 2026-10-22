@@ -137,7 +137,7 @@ export function Pathways({ anatomy, activity }: { anatomy: Anatomy; activity: Re
       <figcaption className="muted">
         Цветные пути учатся, серые — врождённые; толщина — число синапсов; кольцо — зона учится сама на себя.
         Ореол — доля горящих клеток. {summary ? `Выученное — по сводке на ${(summary.timeMs / 1000).toFixed(1)} с жизни.` : error ? `Сводка: ${error}.` : "Сводка грузится…"}{" "}
-        <button type="button" className="link" onClick={refresh}>обновить</button>
+        <button type="button" className="link" onClick={refresh} title="заново запросить сводку: сколько синапсов каждого пути изменилось">обновить</button>
       </figcaption>
     </figure>
   );

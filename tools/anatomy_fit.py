@@ -5,7 +5,7 @@
 «стреляет больше нормы — меньше фона» (как веса фона по типам у Billeh et
 al. 2020). Цели — anatomy.RATES_HZ и column_target_hz.
 
-    PYTHONPATH=. .venv/bin/python tools/anatomy_fit.py [steps=20] [ms=500] [dt=0.5] [fresh=0] [write=1] [kinds=PV,SOM,VIP,LAMP5] [start=имя] [reset=ca3,ca1] [out=имя] [relay_v_t=мВ] [relay_rest=мВ]
+    PYTHONPATH=. .venv/bin/python tools/anatomy_fit.py [steps=20] [ms=500] [dt=0.5] [fresh=0] [write=1] [kinds=PV,SOM,VIP,LAMP5] [start=имя] [reset=ca3,ca1] [out=имя] [relay_v_t=мВ] [relay_rest=мВ] [trn_scale=1]
 
 Стартует с чисел brain/anatomy.py (fresh=1 — фон колонок с нуля), в конце
 печатает найденное и записывает его туда же (NUCLEUS_BIAS_MV,
@@ -55,6 +55,11 @@ def measure(bias: dict, pop: dict) -> tuple[dict, dict, dict]:
     mind = Mind(cfg)
     brain = mind.brain
     brain.plasticity = False
+
+    for p in brain.projections:
+        if p.name == "trn -> lgn":
+            # Анализ чувствительности: проводимость TRN → реле ×k.
+            p.weight.mul_(float(opts.get("trn_scale", "1")))
     # Разгон: после сборки кора оседает ~2–3 с (ПФК PV с ~100 до ~12 Гц на
     # ~2.5-й секунде) — мерить покой, а не переходный процесс.
     brain.run(float(opts["warm"]))

@@ -167,6 +167,22 @@ export interface Link {
   inhibitory: boolean;
 }
 
+// Залп зоны по её путям: дуга от горящих клеток источника к зоне-получателю.
+interface Arc {
+  key: string;
+  d: string;
+  born: number;
+  plastic: boolean;
+  width: number;
+}
+
+// Сколько дуга видна (мс); залп — доля горящих клеток зоны выше VOLLEY × её
+// среднего (скользящее за ~2 с) и не меньше VOLLEY_MIN.
+const ARC_MS = 2200;
+const VOLLEY = 2;
+const VOLLEY_MIN = 0.02;
+const ARCS = 80;
+
 interface Props {
   anatomy: Anatomy;
   fluo: Fluorescence;
@@ -188,6 +204,7 @@ export function Microscope({ anatomy, fluo, selected, links, onHover, onSelect, 
   const svg = useRef<SVGSVGElement>(null);
   const [marks, setMarks] = useState<{ key: string; x1: number; y1: number; x2: number; y2: number; link: Link }[]>([]);
   const [selectedBox, setSelectedBox] = useState<{ x: number; y: number } | null>(null);
+  const [arcs, setArcs] = useState<Arc[]>([]);
 
   const point = (index: number): [number, number] | null => {
     const s = sections.current.find((x) => index >= x.area.start && index < x.area.start + x.area.size);
@@ -228,11 +245,21 @@ export function Microscope({ anatomy, fluo, selected, links, onHover, onSelect, 
         const canvas = canvases.current.get(area.name);
         return canvas ? [layout(area, canvas)] : [];
       });
+      owner = new Int16Array(anatomy.neurons).fill(-1);
+      sections.current.forEach((sec, k) => owner.fill(k, sec.area.start, sec.area.start + sec.area.size));
     };
+    // Срез каждой клетки (номер в sections.current, −1 — без среза).
+    let owner = new Int16Array(0);
     rebuild();
     let frame = 0;
     let last = performance.now();
     let lastReport = 0;
+    const mean: Record<string, number> = {};
+    const centre = (s: Section, x: number, y: number): [number, number] => {
+      const origin = slide.current!.getBoundingClientRect();
+      const rect = s.canvas.getBoundingClientRect();
+      return [rect.left - origin.left + x * rect.width, rect.top - origin.top + y * rect.height];
+    };
     const tick = (now: number) => {
       fluo.decay(Math.exp(-(now - last) / 320));
       last = now;
@@ -248,6 +275,47 @@ export function Microscope({ anatomy, fluo, selected, links, onHover, onSelect, 
         const perArea: Record<string, number> = {};
         for (const area of anatomy.areas) perArea[area.name] = fluo.activeIn(area.start, area.start + area.size) / area.size;
         onActivity(perArea);
+        // Где горят клетки каждой зоны: середина горящих (доли ширины и высоты среза).
+        const lit = new Map<Section, [number, number, number]>();
+        for (const i of fluo.activeIndices) {
+          if (fluo.level[i] <= 0.5) continue;
+          const sec = sections.current[owner[i]];
+          if (!sec) continue;
+          const cell = sec.cellOf[i - sec.area.start];
+          const acc = lit.get(sec) ?? [0, 0, 0];
+          lit.set(sec, [acc[0] + ((cell % sec.cols) + 0.5) / sec.cols, acc[1] + (Math.floor(cell / sec.cols) + 0.5) / sec.rows, acc[2] + 1]);
+        }
+        const place = (sec: Section) => {
+          const acc = lit.get(sec);
+          return acc ? centre(sec, acc[0] / acc[2], acc[1] / acc[2]) : centre(sec, 0.5, 0.5);
+        };
+        const fresh: Arc[] = [];
+        for (const area of anatomy.areas) {
+          const frac = perArea[area.name];
+          const before = mean[area.name] ?? frac;
+          mean[area.name] = 0.9 * before + 0.1 * frac;
+          if (!slide.current || frac < VOLLEY_MIN || frac < VOLLEY * before) continue;
+          const from = sections.current.find((x) => x.area === area);
+          if (!from) continue;
+          for (const p of anatomy.pathways) {
+            if (p.src !== area.name || p.dst === p.src) continue;
+            const to = sections.current.find((x) => x.area.name === p.dst);
+            if (!to) continue;
+            const [a, b] = [place(from), place(to)];
+            const bend = Math.hypot(b[0] - a[0], b[1] - a[1]) * 0.25 + 12;
+            fresh.push({
+              key: `${now}-${p.src}-${p.dst}`,
+              d: `M${a[0]},${a[1]} Q${(a[0] + b[0]) / 2},${(a[1] + b[1]) / 2 - bend} ${b[0]},${b[1]}`,
+              born: now,
+              plastic: p.plastic,
+              width: Math.max(1, Math.log10(Math.max(10, p.synapses)) - 3.5),
+            });
+          }
+        }
+        setArcs((list) => {
+          const alive = list.filter((arc) => now - arc.born < ARC_MS);
+          return fresh.length || alive.length !== list.length ? [...alive, ...fresh].slice(-ARCS) : list;
+        });
       }
       frame = requestAnimationFrame(tick);
     };
@@ -310,6 +378,13 @@ export function Microscope({ anatomy, fluo, selected, links, onHover, onSelect, 
           </div>
         </section>
       ))}
+      <svg className="volleys" aria-hidden="true">
+        {arcs.map((arc) => (
+          <g key={arc.key} className={arc.plastic ? "volley volley-plastic" : "volley"}>
+            <path d={arc.d} strokeWidth={arc.width} />
+          </g>
+        ))}
+      </svg>
       <svg className="wiring" ref={svg} aria-hidden="true">
         {marks.map(({ key, x1, y1, x2, y2, link }) => (
           <line key={key} data-from={link.from} x1={x1} y1={y1} x2={x2} y2={y2}

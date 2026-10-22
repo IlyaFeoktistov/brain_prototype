@@ -5,6 +5,7 @@
 
     PYTHONPATH=. python tools/lgn_trace.py brain=проверка-веба.pt ms=1000
     PYTHONPATH=. python tools/lgn_trace.py brain=new     # мозг-минимум с нуля (проводка — нынешняя)
+    PYTHONPATH=. python tools/lgn_trace.py brain=new:small   # размер, под который подобран фон
 
 Человек и примат: ведомая клетка LGN отвечает на стимул в поле в разы чаще
 спонтанной (~10 Гц покоя против десятков Гц на контраст; Usrey, Reppas &
@@ -23,10 +24,11 @@ from brain.mind import Mind
 from brain.session import Session
 
 
-def main(brain: str = "проверка-веба.pt", ms: float = 1000.0, text: str = "мама мыла раму") -> None:
-    if brain == "new":
+def main(brain: str = "проверка-веба.pt", ms: float = 1000.0, text: str = "мама мыла раму", warm: float = 2500.0) -> None:
+    if brain.startswith("new"):
+        # new — мозг-минимум (как в вебе), new:small — размер подбора фона.
         cfg = BrainConfig()
-        cfg.size = str(anatomy.min_size())
+        cfg.size = brain.split(":")[1] if ":" in brain else str(anatomy.min_size())
         mind = Mind(cfg)
     else:
         mind = Mind.load(brain)
@@ -46,6 +48,12 @@ def main(brain: str = "проверка-веба.pt", ms: float = 1000.0, text: 
     for p in b.projections:
         if p.post is lgn.E:
             groups.setdefault(p.name.split(" (")[0] if "триада" not in p.name else "триада", []).append(p)
+
+    # Разгон, как в anatomy_fit: после сборки кора оседает 2–3 с — мерить
+    # покой со словом перед глазами, а не переходный процесс.
+    with b.frozen():
+        for _ in range(int(warm / s.window_ms)):
+            b.observe(s.window_ms, s._view(s.window_ms))
 
     print(f"LGN E {lgn.E.size}, под словом {int(driven.sum())}, рецепторов {size}; входы реле:")
     for name, ps in groups.items():
@@ -84,4 +92,5 @@ def main(brain: str = "проверка-веба.pt", ms: float = 1000.0, text: 
 
 if __name__ == "__main__":
     args = dict(a.split("=", 1) for a in sys.argv[1:])
-    main(args.get("brain", "проверка-веба.pt"), float(args.get("ms", 1000)), args.get("text", "мама мыла раму"))
+    main(args.get("brain", "проверка-веба.pt"), float(args.get("ms", 1000)), args.get("text", "мама мыла раму"),
+         float(args.get("warm", 2500)))

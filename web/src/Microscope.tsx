@@ -1,27 +1,34 @@
-import { type MouseEvent, useCallback, useEffect, useRef, useState } from "react";
-import { neuron } from "./api";
-import type { Anatomy, Area, NeuronCard as Card } from "./brain";
-import { NeuronCard } from "./NeuronCard";
+import { useEffect, useRef, useState } from "react";
+import type { Anatomy, Area, Population } from "./brain";
+import { KIND_TITLE } from "./brain";
 
-// Флуоресценция каждого нейрона: 1 в момент спайка, затем
-// затухает как кальциевый индикатор (~0.3 с реального времени).
+// Флуоресценция каждого нейрона: 1 в момент спайка, затем гаснет, как
+// кальциевый индикатор. Спайки приходят снимками раз в ~50 мс (сервер
+// прореживает показ, сеть его не ждёт).
 export class Fluorescence {
   level: Float32Array;
   private active: number[] = [];
   private isActive: Uint8Array;
+  // Клетки, за которыми следят (выбранная и её соседи): время их спайков.
+  watched = new Map<number, number[]>();
 
   constructor(readonly size: number) {
     this.level = new Float32Array(size);
     this.isActive = new Uint8Array(size);
   }
 
-  spike(indices: number[]) {
+  spike(indices: number[], t: number) {
     for (const i of indices) {
       if (i >= this.size) continue;
       this.level[i] = 1;
       if (!this.isActive[i]) {
         this.isActive[i] = 1;
         this.active.push(i);
+      }
+      const times = this.watched.get(i);
+      if (times) {
+        times.push(t);
+        if (times.length > 400) times.splice(0, times.length - 400);
       }
     }
   }
@@ -52,45 +59,29 @@ export class Fluorescence {
   }
 }
 
-// Цвета окраски H&E: гематоксилин (E), эозин (I) на стекле.
-const GLASS: [number, number, number] = [245, 243, 247];
-const HEMA_REST: [number, number, number] = [222, 216, 236];
-const HEMA_FIRE: [number, number, number] = [44, 30, 120];
-const EOSIN_REST: [number, number, number] = [244, 222, 230];
-const EOSIN_FIRE: [number, number, number] = [205, 40, 98];
+// Окраска: главные — гематоксилин, тормозные по типам — свои красители.
+type RGB = [number, number, number];
+const GLASS: RGB = [245, 243, 247];
+const DYES: Record<string, [RGB, RGB]> = {
+  E: [[222, 216, 236], [44, 30, 120]],
+  PV: [[244, 222, 230], [205, 40, 98]],
+  I: [[244, 222, 230], [205, 40, 98]],
+  SOM: [[226, 236, 222], [40, 120, 60]],
+  VIP: [[244, 234, 214], [190, 120, 20]],
+  LAMP5: [[222, 236, 240], [20, 120, 150]],
+};
 
-function pack([r, g, b]: [number, number, number]): number {
-  return (255 << 24) | (b << 16) | (g << 8) | r; // little-endian RGBA
-}
-
-function mix(a: [number, number, number], b: [number, number, number], t: number): number {
-  return pack([
-    Math.round(a[0] + (b[0] - a[0]) * t),
-    Math.round(a[1] + (b[1] - a[1]) * t),
-    Math.round(a[2] + (b[2] - a[2]) * t),
-  ]);
-}
-
-// Палитры по уровню флуоресценции, чтобы не смешивать цвета в цикле.
+const pack = ([r, g, b]: RGB) => (255 << 24) | (b << 16) | (g << 8) | r;
 const STEPS = 32;
-const HEMA_RAMP = Array.from({ length: STEPS + 1 }, (_, i) => mix(HEMA_REST, HEMA_FIRE, i / STEPS));
-const EOSIN_RAMP = Array.from({ length: STEPS + 1 }, (_, i) => mix(EOSIN_REST, EOSIN_FIRE, i / STEPS));
+const RAMPS: Record<string, number[]> = Object.fromEntries(
+  Object.entries(DYES).map(([kind, [a, b]]) => [
+    kind,
+    Array.from({ length: STEPS + 1 }, (_, i) =>
+      pack([0, 1, 2].map((c) => Math.round(a[c] + ((b[c] - a[c]) * i) / STEPS)) as RGB),
+    ),
+  ]),
+);
 
-interface SectionLayout {
-  area: Area;
-  start: number;
-  count: number;
-  cols: number;
-  rows: number;
-  cellOf: Int32Array; // локальный индекс нейрона -> клетка сетки
-  neuronAt: Int32Array; // клетка сетки -> локальный индекс (-1 — стекло)
-  base: Uint32Array;
-  image: ImageData;
-  pixels: Uint32Array;
-  canvas: HTMLCanvasElement;
-}
-
-// Детерминированно перемешать: I-клетки рассыпаны среди E, как в ткани.
 function scatter(count: number, seed: number): Int32Array {
   const order = new Int32Array(count);
   for (let i = 0; i < count; i++) order[i] = i;
@@ -98,365 +89,260 @@ function scatter(count: number, seed: number): Int32Array {
   for (let i = count - 1; i > 0; i--) {
     state = (state * 1664525 + 1013904223) >>> 0;
     const j = state % (i + 1);
-    const t = order[i];
-    order[i] = order[j];
-    order[j] = t;
+    [order[i], order[j]] = [order[j], order[i]];
   }
   return order;
 }
 
-// Зона-карта: срез ровно в grid столбцов, E-клетка j — точно на своём
-// месте сетки мозга (места слов компактны); тормозные — в оставшиеся
-// клетки нижней полосы.
-function mapCells(area: Area, cols: number, rows: number, index: number): Int32Array {
-  const cellOf = new Int32Array(area.E.size + area.I.size);
-  for (let j = 0; j < area.E.size; j++) cellOf[j] = j;
-  const spare = cols * rows - area.E.size;
-  const order = scatter(spare, 7919 * (index + 1));
-  for (let k = 0; k < area.I.size; k++) cellOf[area.E.size + k] = area.E.size + order[k % spare];
-  return cellOf;
+interface Section {
+  area: Area;
+  cols: number;
+  rows: number;
+  cellOf: Int32Array; // локальный индекс клетки → пиксель
+  neuronAt: Int32Array; // пиксель → локальный индекс (−1 — стекло)
+  ramp: number[][]; // локальный индекс → палитра (по типу)
+  base: Uint32Array;
+  image: ImageData;
+  pixels: Uint32Array;
+  canvas: HTMLCanvasElement;
 }
 
-function layout(area: Area, canvas: HTMLCanvasElement, index: number): SectionLayout {
-  const start = area.E.start;
-  const count = area.E.size + area.I.size;
-  const aspect = canvas.clientWidth / Math.max(1, canvas.clientHeight);
-  const cols = area.grid ? area.grid : Math.max(1, Math.ceil(Math.sqrt(count * aspect)));
-  const rows = Math.max(1, Math.ceil(count / cols));
-  const cellOf = area.grid ? mapCells(area, cols, rows, index) : scatter(cols * rows, 7919 * (index + 1)).subarray(0, count);
+const layerOf = (pop: Population) => (pop.label.includes(".") ? pop.label.split(".")[0] : "L23");
+
+// Колонка — слоями сверху вниз (L2/3, L4, L5, L6), как на срезе коры;
+// внутри слоя главные и тормозные клетки перемешаны. Ядро — одной полосой.
+function layout(area: Area, canvas: HTMLCanvasElement, index: number): Section {
+  const cols = Math.max(1, Math.ceil(Math.sqrt(area.size)));
+  const bands = new Map<string, Population[]>();
+  for (const pop of area.populations) {
+    const key = area.layered ? layerOf(pop) : "core";
+    bands.set(key, [...(bands.get(key) ?? []), pop]);
+  }
+  const order = ["L23", "L4", "L5", "L6", "core"].filter((k) => bands.has(k));
+  const rowsOf = order.map((k) => Math.ceil(bands.get(k)!.reduce((s, p) => s + p.size, 0) / cols));
+  const rows = rowsOf.reduce((s, r) => s + r, 0);
+  const cellOf = new Int32Array(area.size);
+  const neuronAt = new Int32Array(cols * rows).fill(-1);
+  const ramp: number[][] = new Array(area.size);
+  let row0 = 0;
+
+  order.forEach((key, b) => {
+    const pops = bands.get(key)!;
+    const cells = pops.flatMap((p) => Array.from({ length: p.size }, (_, k) => [p.start - area.start + k, p.kind] as const));
+    const place = scatter(rowsOf[b] * cols, 7919 * (index + 1) + b);
+    cells.forEach(([local, kind], k) => {
+      const pixel = row0 * cols + place[k];
+      cellOf[local] = pixel;
+      neuronAt[pixel] = local;
+      ramp[local] = RAMPS[kind] ?? RAMPS.I;
+    });
+    row0 += rowsOf[b];
+  });
 
   const base = new Uint32Array(cols * rows).fill(pack(GLASS));
-  const neuronAt = new Int32Array(cols * rows).fill(-1);
-  for (let j = 0; j < count; j++) {
-    base[cellOf[j]] = j < area.E.size ? HEMA_RAMP[0] : EOSIN_RAMP[0];
-    neuronAt[cellOf[j]] = j;
-  }
-
+  for (let j = 0; j < area.size; j++) base[cellOf[j]] = ramp[j][0];
   canvas.width = cols;
   canvas.height = rows;
   const image = new ImageData(cols, rows);
-
-  return {
-    area,
-    start,
-    count,
-    cols,
-    rows,
-    cellOf,
-    neuronAt,
-    base,
-    image,
-    pixels: new Uint32Array(image.data.buffer),
-    canvas,
-  };
+  return { area, cols, rows, cellOf, neuronAt, ramp, base, image, pixels: new Uint32Array(image.data.buffer), canvas };
 }
 
-function draw(section: SectionLayout, fluo: Fluorescence) {
-  const { pixels, base, start, count, cellOf, area } = section;
+function draw(section: Section, fluo: Fluorescence) {
+  const { pixels, base, cellOf, ramp, area } = section;
   pixels.set(base);
-  const end = start + count;
+  const end = area.start + area.size;
   for (const i of fluo.activeIndices) {
-    if (i < start || i >= end) continue;
-    const j = i - start;
-    const step = Math.min(STEPS, Math.round(fluo.level[i] * STEPS));
-    pixels[cellOf[j]] = (j < area.E.size ? HEMA_RAMP : EOSIN_RAMP)[step];
+    if (i < area.start || i >= end) continue;
+    const j = i - area.start;
+    pixels[cellOf[j]] = ramp[j][Math.min(STEPS, Math.round(fluo.level[i] * STEPS))];
   }
   section.canvas.getContext("2d")!.putImageData(section.image, 0, 0);
+}
+
+export interface Hover {
+  index: number;
+  area: Area;
+  population: Population;
+  x: number;
+  y: number;
+}
+
+// Связь выбранной клетки: вспыхивает, когда стреляет клетка-источник.
+export interface Link {
+  from: number;
+  to: number;
+  inhibitory: boolean;
 }
 
 interface Props {
   anatomy: Anatomy;
   fluo: Fluorescence;
+  selected: number | null;
+  links: Link[];
+  onHover: (hover: Hover | null) => void;
+  onSelect: (index: number) => void;
   onActivity: (perArea: Record<string, number>) => void;
-  // Последний рост синапсов: дуги «место A → место B».
-  growth?: { id: number; links: { path: string; pre: number[]; post: number[] }[] } | null;
 }
 
-interface Arc {
-  key: string;
-  d: string;
-  from: [number, number];
-  to: [number, number];
-  path: string;
+function populationOf(area: Area, index: number): Population {
+  return area.populations.find((p) => index >= p.start && index < p.start + p.size) ?? area.populations[0];
 }
 
-// Сколько дуга роста видна (мс).
-const ARC_MS = 2200;
-
-// Порядок срезов повторяет путь сигнала: слух -> смысл -> память / рот.
-const PLACES: Record<string, string> = {
-  auditory: "auditory",
-  association: "association",
-  prefrontal: "prefrontal",
-  motor: "motor",
-  limbic: "limbic",
-  vta: "vta",
-  lc: "lc",
-  amygdala: "amygdala",
-  category: "category",
-};
-
-interface Hover {
-  index: number;
-  area: string;
-  // Рамка вокруг клетки, в долях канваса.
-  box: { left: number; top: number; width: number; height: number };
-  x: number;
-  y: number;
-}
-
-// Клетка под курсором; клетки — по пикселю, поэтому, если попал в
-// стекло, ищем ближайший нейрон в окрестности 2 клеток.
-function hit(section: SectionLayout, canvas: HTMLCanvasElement, clientX: number, clientY: number) {
-  const rect = canvas.getBoundingClientRect();
-  const col = Math.floor(((clientX - rect.left) / rect.width) * section.cols);
-  const row = Math.floor(((clientY - rect.top) / rect.height) * section.rows);
-  for (let radius = 0; radius <= 2; radius++) {
-    for (let dr = -radius; dr <= radius; dr++) {
-      for (let dc = -radius; dc <= radius; dc++) {
-        const r = row + dr;
-        const c = col + dc;
-        if (r < 0 || c < 0 || r >= section.rows || c >= section.cols) continue;
-        const j = section.neuronAt[r * section.cols + c];
-        if (j >= 0) {
-          return {
-            index: section.start + j,
-            box: {
-              left: c / section.cols,
-              top: r / section.rows,
-              width: 1 / section.cols,
-              height: 1 / section.rows,
-            },
-          };
-        }
-      }
-    }
-  }
-  return null;
-}
-
-// Карточки кэшируются ненадолго: веса меняются, пока мозг учится.
-const CARD_TTL_MS = 3000;
-
-function useNeuronCard(index: number | null) {
-  const cache = useRef(new Map<number, { card: Card; at: number }>());
-  const [card, setCard] = useState<Card | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (index === null) return;
-    const cached = cache.current.get(index);
-    if (cached && performance.now() - cached.at < CARD_TTL_MS) {
-      setCard(cached.card);
-      setError(null);
-      return;
-    }
-    setCard(null);
-    setLoading(true);
-    let cancelled = false;
-    // Не дёргать мозг на каждом пикселе, пока мышь едет.
-    const timer = window.setTimeout(() => {
-      neuron(index)
-        .then((fresh) => {
-          cache.current.set(index, { card: fresh, at: performance.now() });
-          if (!cancelled) {
-            setCard(fresh);
-            setError(null);
-          }
-        })
-        .catch(() => !cancelled && setError("мозг занят — попробуй ещё раз"))
-        .finally(() => !cancelled && setLoading(false));
-    }, 120);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [index]);
-
-  return { card, loading, error };
-}
-
-// Где на срезе клетка: центр её пикселя в координатах слайда.
-function cellPoint(sections: SectionLayout[], index: number, origin: DOMRect): [number, number] | null {
-  const section = sections.find((s) => index >= s.start && index < s.start + s.count);
-  if (!section) return null;
-  const cell = section.cellOf[index - section.start];
-  const rect = section.canvas.getBoundingClientRect();
-  const col = cell % section.cols;
-  const row = Math.floor(cell / section.cols);
-  return [
-    rect.left - origin.left + ((col + 0.5) / section.cols) * rect.width,
-    rect.top - origin.top + ((row + 0.5) / section.rows) * rect.height,
-  ];
-}
-
-function centroid(points: ([number, number] | null)[]): [number, number] | null {
-  const real = points.filter((p): p is [number, number] => p !== null);
-  if (!real.length) return null;
-  return [real.reduce((s, p) => s + p[0], 0) / real.length, real.reduce((s, p) => s + p[1], 0) / real.length];
-}
-
-export function Microscope({ anatomy, fluo, onActivity, growth }: Props) {
-  const canvases = useRef<Map<string, HTMLCanvasElement>>(new Map());
-  const sectionsRef = useRef<SectionLayout[]>([]);
+export function Microscope({ anatomy, fluo, selected, links, onHover, onSelect, onActivity }: Props) {
+  const canvases = useRef(new Map<string, HTMLCanvasElement>());
+  const sections = useRef<Section[]>([]);
   const slide = useRef<HTMLDivElement>(null);
-  const [arcs, setArcs] = useState<Arc[]>([]);
+  const svg = useRef<SVGSVGElement>(null);
+  const [marks, setMarks] = useState<{ key: string; x1: number; y1: number; x2: number; y2: number; link: Link }[]>([]);
+  const [selectedBox, setSelectedBox] = useState<{ x: number; y: number } | null>(null);
 
-  // Рост синапсов: дуга от места-источника к месту-цели, гаснет сама.
-  useEffect(() => {
-    if (!growth || !slide.current) return;
+  const point = (index: number): [number, number] | null => {
+    const s = sections.current.find((x) => index >= x.area.start && index < x.area.start + x.area.size);
+    if (!s || !slide.current) return null;
     const origin = slide.current.getBoundingClientRect();
-    const fresh: Arc[] = [];
-    growth.links.forEach((link, i) => {
-      const from = centroid(link.pre.map((n) => cellPoint(sectionsRef.current, n, origin)));
-      const to = centroid(link.post.map((n) => cellPoint(sectionsRef.current, n, origin)));
-      if (!from || !to) return;
-      const bend = Math.hypot(to[0] - from[0], to[1] - from[1]) * 0.25 + 12;
-      const mx = (from[0] + to[0]) / 2;
-      const my = (from[1] + to[1]) / 2 - bend;
-      fresh.push({ key: `${growth.id}-${i}`, d: `M${from[0]},${from[1]} Q${mx},${my} ${to[0]},${to[1]}`, from, to, path: link.path });
-    });
-    if (!fresh.length) return;
-    setArcs((list) => [...list, ...fresh].slice(-60));
-    // Без отмены: следующий рост не должен оставлять прошлые дуги навсегда.
-    window.setTimeout(() => setArcs((list) => list.filter((arc) => !fresh.includes(arc))), ARC_MS);
-  }, [growth]);
-  const [hover, setHover] = useState<Hover | null>(null);
-  const [pinned, setPinned] = useState<Hover | null>(null);
-  const shown = pinned ?? hover;
-  const { card, loading, error } = useNeuronCard(shown?.index ?? null);
+    const rect = s.canvas.getBoundingClientRect();
+    const cell = s.cellOf[index - s.area.start];
+    return [
+      rect.left - origin.left + ((cell % s.cols) + 0.5) * (rect.width / s.cols),
+      rect.top - origin.top + (Math.floor(cell / s.cols) + 0.5) * (rect.height / s.rows),
+    ];
+  };
 
-  const locate = useCallback((area: Area, event: MouseEvent<HTMLCanvasElement>): Hover | null => {
-    const section = sectionsRef.current.find((s) => s.area.name === area.name);
-    if (!section) return null;
-    const found = hit(section, event.currentTarget, event.clientX, event.clientY);
-    return found && { ...found, area: area.name, x: event.clientX, y: event.clientY };
-  }, []);
+  // Линии связей выбранной клетки (пересчёт при смене выбора и размера).
+  useEffect(() => {
+    const place = () => {
+      setSelectedBox(selected === null ? null : (() => {
+        const p = point(selected);
+        return p && { x: p[0], y: p[1] };
+      })());
+      setMarks(
+        links.flatMap((link, k) => {
+          const a = point(link.from);
+          const b = point(link.to);
+          return a && b ? [{ key: `${k}`, x1: a[0], y1: a[1], x2: b[0], y2: b[1], link }] : [];
+        }),
+      );
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [links, selected, anatomy]);
 
   useEffect(() => {
-    const onKey = (event: KeyboardEvent) => event.key === "Escape" && setPinned(null);
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-  const reduceMotion = useRef(
-    typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-  );
-
-  useEffect(() => {
-    let sections: SectionLayout[] = [];
     const rebuild = () => {
-      sections = anatomy.areas.flatMap((area, index) => {
+      sections.current = anatomy.areas.flatMap((area, i) => {
         const canvas = canvases.current.get(area.name);
-        return canvas ? [layout(area, canvas, index)] : [];
+        return canvas ? [layout(area, canvas, i)] : [];
       });
-      sectionsRef.current = sections;
     };
     rebuild();
-
-    const observer = new ResizeObserver(rebuild);
-    canvases.current.forEach((canvas) => observer.observe(canvas));
-
     let frame = 0;
     let last = performance.now();
     let lastReport = 0;
     const tick = (now: number) => {
-      const elapsed = now - last;
+      fluo.decay(Math.exp(-(now - last) / 320));
       last = now;
-      // Медленнее гаснет при reduced motion: меньше мелькания.
-      const tau = reduceMotion.current ? 900 : 320;
-      fluo.decay(Math.exp(-elapsed / tau));
-      for (const section of sections) draw(section, fluo);
-
-      if (now - lastReport > 120) {
+      for (const s of sections.current) draw(s, fluo);
+      // Связи выбранной клетки горят, пока горит клетка-источник.
+      svg.current?.querySelectorAll<SVGLineElement>("line[data-from]").forEach((line) => {
+        const level = fluo.level[Number(line.dataset.from)] ?? 0;
+        line.style.opacity = String(0.12 + 0.88 * level);
+        line.style.strokeWidth = String(1 + 2.5 * level);
+      });
+      if (now - lastReport > 200) {
         lastReport = now;
         const perArea: Record<string, number> = {};
-        for (const area of anatomy.areas) {
-          perArea[area.name] = fluo.activeIn(area.E.start, area.E.start + area.E.size) / area.E.size;
-        }
+        for (const area of anatomy.areas) perArea[area.name] = fluo.activeIn(area.start, area.start + area.size) / area.size;
         onActivity(perArea);
       }
       frame = requestAnimationFrame(tick);
     };
     frame = requestAnimationFrame(tick);
-
-    return () => {
-      cancelAnimationFrame(frame);
-      observer.disconnect();
-    };
+    return () => cancelAnimationFrame(frame);
   }, [anatomy, fluo, onActivity]);
 
-  const section = (area: Area) => (
-    <figure key={area.name} className={`section section-${PLACES[area.name] ?? "other"}`}>
-      <div className="section-glass">
-        <canvas
-          ref={(node) => {
-            if (node) canvases.current.set(area.name, node);
-            else canvases.current.delete(area.name);
-          }}
-          role="img"
-          aria-label={`${area.title}: активность нейронов; наведи на клетку — что она знает`}
-          onPointerMove={(event) => setHover(locate(area, event))}
-          onPointerLeave={() => setHover(null)}
-          onClick={(event) => setPinned(locate(area, event))}
-        />
-        {[hover, pinned].map(
-          (mark, i) =>
-            mark?.area === area.name && (
-              <span
-                key={i}
-                className={`neuron-mark${i ? " neuron-mark-pinned" : ""}`}
-                style={{
-                  left: `${mark.box.left * 100}%`,
-                  top: `${mark.box.top * 100}%`,
-                  width: `${mark.box.width * 100}%`,
-                  height: `${mark.box.height * 100}%`,
-                }}
-              />
-            ),
-        )}
-      </div>
-      <figcaption>
-        <span className="section-title">{area.title}</span>
-        <span className="section-count">
-          {(area.E.size + area.I.size).toLocaleString("ru")} нейронов
-        </span>
-      </figcaption>
-    </figure>
-  );
-  // Старые зоны — на своих местах сетки; остальные ядра (цель, сон,
-  // базальные ганглии) — своей сеткой ниже, иначе они вставали в неявные
-  // строки, а заданные схлопывались и подписи наезжали друг на друга.
-  const placed = anatomy.areas.filter((area) => PLACES[area.name]);
-  const rest = anatomy.areas.filter((area) => !PLACES[area.name]);
+  const locate = (area: Area, event: React.MouseEvent<HTMLCanvasElement>): Hover | null => {
+    const s = sections.current.find((x) => x.area.name === area.name);
+    if (!s) return null;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const col = Math.floor(((event.clientX - rect.left) / rect.width) * s.cols);
+    const row = Math.floor(((event.clientY - rect.top) / rect.height) * s.rows);
+    for (let r = 0; r <= 2; r++)
+      for (let dr = -r; dr <= r; dr++)
+        for (let dc = -r; dc <= r; dc++) {
+          const y = row + dr;
+          const x = col + dc;
+          if (y < 0 || x < 0 || y >= s.rows || x >= s.cols) continue;
+          const j = s.neuronAt[y * s.cols + x];
+          if (j >= 0) {
+            const index = area.start + j;
+            return { index, area, population: populationOf(area, index), x: event.clientX, y: event.clientY };
+          }
+        }
+    return null;
+  };
+
+  const systems = anatomy.systems.filter((system) => anatomy.areas.some((a) => a.system === system));
 
   return (
     <div className="slide" ref={slide}>
-      <div className="slide-main">{placed.map(section)}</div>
-      {rest.length > 0 && <div className="slide-extra">{rest.map(section)}</div>}
-      {arcs.length > 0 && (
-        <svg className="growth" aria-hidden="true">
-          {arcs.map((arc) => (
-            <g key={arc.key} className={`growth-arc growth-${arc.path.startsWith("prefrontal") ? "context" : arc.path.endsWith("amygdala") ? "value" : "word"}`}>
-              <path d={arc.d} />
-              <circle cx={arc.from[0]} cy={arc.from[1]} r={3} />
-              <circle cx={arc.to[0]} cy={arc.to[1]} r={4} />
-            </g>
-          ))}
-        </svg>
-      )}
-      {shown && (
-        <NeuronCard
-          anatomy={anatomy}
-          card={card}
-          loading={loading}
-          error={error}
-          x={shown.x}
-          y={shown.y}
-          pinned={pinned !== null}
-          onClose={() => setPinned(null)}
-        />
-      )}
+      {systems.map((system) => (
+        <section key={system} className="system">
+          <h3>{system}</h3>
+          <div className="system-areas">
+            {anatomy.areas
+              .filter((a) => a.system === system)
+              .map((area) => (
+                <figure
+                  key={area.name}
+                  className={`section${area.layered ? " section-column" : ""}`}
+                  style={{ width: `${Math.round(Math.max(56, Math.min(220, Math.sqrt(area.size) * 1.4)))}px` }}
+                >
+                  <canvas
+                    ref={(node) => {
+                      if (node) canvases.current.set(area.name, node);
+                      else canvases.current.delete(area.name);
+                    }}
+                    aria-label={`${area.title}: активность клеток`}
+                    onPointerMove={(event) => onHover(locate(area, event))}
+                    onPointerLeave={() => onHover(null)}
+                    onClick={(event) => {
+                      const hit = locate(area, event);
+                      if (hit) onSelect(hit.index);
+                    }}
+                  />
+                  <figcaption title={area.title}>
+                    <span className="section-title">{area.title}</span>
+                    <span className="section-count">{area.size.toLocaleString("ru")}</span>
+                  </figcaption>
+                </figure>
+              ))}
+          </div>
+        </section>
+      ))}
+      <svg className="wiring" ref={svg} aria-hidden="true">
+        {marks.map(({ key, x1, y1, x2, y2, link }) => (
+          <line key={key} data-from={link.from} x1={x1} y1={y1} x2={x2} y2={y2}
+                className={link.inhibitory ? "wire wire-inh" : "wire"} />
+        ))}
+        {selectedBox && <circle cx={selectedBox.x} cy={selectedBox.y} r={6} className="selected-cell" />}
+      </svg>
+    </div>
+  );
+}
+
+export function HoverTip({ hover }: { hover: Hover }) {
+  return (
+    <div className="tip" style={{ left: hover.x + 14, top: hover.y + 14 }}>
+      <strong>{hover.area.title}</strong>
+      <span>
+        {hover.population.label} · {KIND_TITLE[hover.population.kind] ?? hover.population.kind}
+      </span>
+      <span>
+        клетка {hover.index - hover.population.start} из {hover.population.size} · №{hover.index}
+      </span>
+      <em>клик — всё о клетке</em>
     </div>
   );
 }

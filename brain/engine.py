@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 import gc
 import math
+import time
 
 import torch
 
@@ -375,8 +376,13 @@ class SpikingBrain:
 
         self.time_ms = 0.0
         self.plasticity = True
-        # Наблюдатель (веб-интерфейс): нейроны, выстрелившие за CHUNK.
+        # Наблюдатель (веб-интерфейс): on_chunk(выстрелившие, время мозга) —
+        # не чаще раза в watch_seconds реального времени, одним снимком «кто
+        # стрелял с прошлого показа» (накопитель seen считается в самом шаге):
+        # показ отстаёт, но сеть не ждёт его на каждой пачке шагов.
         self.on_chunk = None
+        self.watch_seconds = 0.05
+        self._watched_at = 0.0
 
         self._init_areas()
         self._init_neurons()
@@ -392,31 +398,31 @@ class SpikingBrain:
     # ==============================================================
 
     def _init_areas(self) -> None:
-        cfg = self.cfg
-        total_share = sum(a.share for a in cfg.areas)
+        from brain import anatomy
 
+        cfg = self.cfg
+        # Клеток зоны — по размеру мозга (anatomy.area_sizes): ядра по данным
+        # и долям, остальное — колонкам коры.
+        sizes = anatomy.area_sizes(cfg)
         self.areas: dict[str, Area] = {}
         start = 0
 
         for spec in cfg.areas:
-            n = max(10, int(cfg.total_neurons * spec.share / total_share))
+            n = sizes[spec.name]
 
             if self._has_layers(spec.name):
-                area, start = self._column(spec, max(n, cfg.min_column_neurons), start)
+                area, start = self._column(spec, n, start)
                 self.areas[spec.name] = area
                 continue
 
-            # Ядро: своя доля местных тормозных (0 — только 2 немых места: у
-            # ядра их нет, но зона всегда с E и I).
-            fraction = spec.local_inhibitory
-            n_i = max(2, int(n * fraction))
-            n_e = n - n_i
-
             if spec.cells > 0:
                 # Ядро с заданным числом главных клеток (реле — по рецепторам).
-                n_e = spec.cells
-                n_i = max(2, round(n_e * fraction / (1.0 - fraction))) if fraction < 1 else 2
-                n = n_e + n_i
+                n_e, n_i = anatomy.nucleus_cells(spec)
+            else:
+                # Своя доля местных тормозных (0 — только 2 немых места: у ядра
+                # их нет, но зона всегда с E и I).
+                n_i = max(2, int(n * spec.local_inhibitory))
+                n_e = n - n_i
 
             E = Population(f"{spec.name}.E", start, n_e)
 
@@ -2548,6 +2554,8 @@ class SpikingBrain:
         self.trace_post = z()
         # Счётчик спайков для окна наблюдения.
         self.counts = z()
+        # Кто стрелял с прошлого показа (наблюдатель, on_chunk).
+        self.seen = z()
         # Ток покоя (мВ): расстояние до порога по типу клетки и фон ядер.
         self.bias = z()
         gap = cfg.v_threshold - cfg.v_rest
@@ -2997,6 +3005,7 @@ class SpikingBrain:
         self.ngf_d.add_((1.0 - self.ngf_d) * self.ngf_rec)
         self.ngf_d.sub_(cfg.lamp5_desens_u * self.ngf_d * ngf_spiked)
         self.counts.add_(self.spikes)
+        self.seen.add_(self.spikes)
         self.kick_left.sub_(1.0).clamp_(min=0.0)
 
         if not self._fused():
@@ -3174,18 +3183,17 @@ class SpikingBrain:
             else:
                 self.ear_input.zero_()
 
-            if self.on_chunk is not None:
-                before = self.counts.clone()
-
             if use_graph:
                 self._graphs[key].replay()
             else:
                 self._chunk(self.plasticity)
 
 
-            if self.on_chunk is not None:
-                fired = (self.counts[: self.n] > before[: self.n]).nonzero().squeeze(1)
-                self.on_chunk(fired.cpu(), self.time_ms + (c + 1) * self.CHUNK * self.cfg.dt_ms)
+            if self.on_chunk is not None and time.perf_counter() - self._watched_at >= self.watch_seconds:
+                self._watched_at = time.perf_counter()
+                fired = (self.seen[: self.n] > 0).nonzero().squeeze(1).cpu()
+                self.seen.zero_()
+                self.on_chunk(fired, self.time_ms + (c + 1) * self.CHUNK * self.cfg.dt_ms)
 
         self.time_ms += chunks * self.CHUNK * self.cfg.dt_ms
 

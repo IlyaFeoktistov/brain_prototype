@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import time
 
+import json
+
 import torch
 
 from brain import anatomy
@@ -11,6 +13,26 @@ from brain.engine import SpikingBrain
 
 
 FORMAT_VERSION = 2
+
+
+def meta(path: Path) -> Path:
+    """Файл описания мозга: рядом с файлом мозга, «имя.pt.json»."""
+
+    return Path(path).with_suffix(Path(path).suffix + ".json")
+
+
+def describe_saved(path: Path) -> dict:
+    """Что известно о сохранённом мозге без его загрузки; old — другой формат."""
+
+    path = Path(path)
+    info = {"name": path.name, "megabytes": round(path.stat().st_size / 2**20), "modified": path.stat().st_mtime}
+
+    try:
+        data = json.loads(meta(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {**info, "old": True}
+
+    return {**info, **data, "old": data.get("version") != FORMAT_VERSION}
 
 
 class Mind:
@@ -52,6 +74,11 @@ class Mind:
         # Атомарно: старое сохранение не портится,
         # если процесс упадёт посреди записи.
         tmp.replace(target)
+        # Описание рядом (формат, размер) — список мозгов не читает гигабайты.
+        meta(target).write_text(json.dumps({
+            "version": FORMAT_VERSION, "size": self.cfg.size, "neurons": self.brain.n,
+            "synapses": self.brain.synapse_count(), "timeMs": self.brain.time_ms, "saved": time.time(),
+        }, ensure_ascii=False), encoding="utf-8")
 
         return target
 
@@ -80,11 +107,3 @@ class Mind:
 
         return mind
 
-    @classmethod
-    def open(cls, cfg: BrainConfig) -> tuple["Mind", bool]:
-        """Загрузить сохранённый мозг, если он есть, иначе создать новый."""
-
-        if brain_path(cfg.save_path).exists():
-            return cls.load(cfg.save_path, device=cfg.device), True
-
-        return cls(cfg), False

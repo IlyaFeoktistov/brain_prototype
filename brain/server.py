@@ -1,67 +1,89 @@
 """
-Веб-интерфейс мозга: живые спайки всех зон + чат.
+Веб-интерфейс анатомического мозга — главный ввод: разговор, уроки и
+наблюдение.
 
     python -m brain.server            # http://localhost:8000
 
-Мозг живёт в одном рабочем потоке (GPU). Браузер получает
-по WebSocket анатомию, спайки (раз в ~30 мс пачкой),
-каждое услышанное слово с ожиданием и dopamine, и ответы.
+Мозг не загружается сам: в интерфейсе сначала выбирают сохранённый или
+создают новый (размер — число нейронов, клетки делятся между зонами сами,
+anatomy.area_sizes).
+
+Разговор — через мир, как в мессенджере (brain/session.py): реплика
+человека появляется на экране мира, мозг читает её глазом и печатает ответ
+рукой; «верно» / «неверно» — вкус-награда. Уроки — учитель мира
+(brain/teacher.py). Мозг живёт в одном рабочем потоке (видеокарта).
+
+Наблюдение не тормозит сеть: спайки забираются раз в ~50 мс реального
+времени одним снимком (engine.on_chunk), карточки клеток и синапсов
+читаются рядом с потоком мозга, только по запросу.
 """
 
 from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from concurrent.futures import Future
 from pathlib import Path
 import os
-from collections import deque
-from concurrent.futures import Future
 import queue
 import threading
 import time
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
-from brain.commands import Session, report_line
-from brain.language import ReadReport
-from brain.config import FEATURES, BrainConfig
-from brain.language import Reply, Step
-from brain.mind import Mind
-from brain.api import build_router
-from brain.live import Liveliness
+from brain import anatomy, neuron
+from brain.config import BRAINS, BrainConfig, brain_path
+from brain.engine import KINDS
+from brain.mind import Mind, describe_saved
+from brain.session import Session
+from brain.teacher import Teacher
+from brain.view import Sight
+from brain.world import ROWS
 
 
 WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
-SPIKE_FLUSH_SECONDS = 0.03
+STATUS_SECONDS = 0.5
+# Глаз и рука (brain/view.py) — снимок раз в столько секунд (~5 Гц).
+VIEW_SECONDS = 0.2
+# Жизнь в тишине (флаг в интерфейсе): мозг живёт окнами по столько мс.
+LIVE_WINDOW_MS = 100.0
+
+# Системы мозга для показа (порядок срезов в микроскопе); зона без системы —
+# «прочее».
+SYSTEMS = (
+    ("Кора", ("visual", "letters", "auditory", "association", "prefrontal", "goal", "category", "limbic",
+              "motor", "premotor", "hand")),
+    ("Таламус", ("lgn", "mgn", "md", "thalamus", "vl_cb", "trn", "trn_mgn", "trn_md", "trn_motor")),
+    ("Слуховой ствол", ("cn", "vnll", "ic")),
+    ("Взгляд", ("colliculus",)),
+    ("Базальные ганглии", ("striatum_d1", "striatum_d2", "fsi", "gpe", "stn", "gpi")),
+    ("Гиппокамп", ("entorhinal", "dentate", "ca3", "ca1")),
+    ("Мозжечок", ("granule", "purkinje", "dcn", "io")),
+    ("Миндалина и награда", ("amygdala", "cea", "vta", "lhb")),
+    ("Модуляторы и сон", ("lc", "raphe", "nbm", "orexin", "vlpo", "scn", "dmh")),
+)
 
 
 class BrainHost:
-    """Мозг в отдельном потоке + рассылка событий всем вкладкам."""
+    """Мозг в своём потоке и рассылка событий всем вкладкам."""
 
     def __init__(self):
         self.loop: asyncio.AbstractEventLoop | None = None
         self.clients: set[asyncio.Queue] = set()
         self.jobs: queue.Queue = queue.Queue()
-        self.ready = threading.Event()
-        self.busy = False
-        # Спит во время тишины (между порциями сна тоже).
-        self.dozing = False
-        # Сколько проигрываний осталось в текущем сне.
-        self.sleep_left = 0
-        # Очередь фонового чтения: мозг читает порциями между сообщениями.
-        self.reading: deque = deque()
-        # Когда мозг последний раз заговорил сам и думал в тишине.
-        self.live = Liveliness()
-
+        self.busy: str | None = None
+        self.live = False
         self.mind: Mind | None = None
         self.session: Session | None = None
-
-        self._chunks: list[list[int]] = []
-        self._chunks_time = 0.0
-        self._last_flush = 0.0
-        self._lock = threading.Lock()
+        self.teacher: Teacher | None = None
+        self.sight: Sight | None = None
+        self._last_status = 0.0
+        self._last_view = 0.0
+        # Пик дофамина с начала фиксации (лента фиксаций).
+        self._dopamine = 0.0
 
     # ==============================================================
     # РАССЫЛКА
@@ -73,81 +95,82 @@ class BrainHost:
 
         def put():
             for client in list(self.clients):
-                if client.qsize() < 2000:
+                if client.qsize() < 500:
                     client.put_nowait(message)
 
         self.loop.call_soon_threadsafe(put)
 
+    def info(self, text: str) -> None:
+        self.emit({"type": "info", "text": text})
+
     def _on_chunk(self, fired, time_ms: float) -> None:
-        with self._lock:
-            self._chunks.append(fired.tolist())
-            self._chunks_time = time_ms
+        # Снимок «кто стрелял» уже прорежен движком (watch_seconds).
+        self.emit({"type": "spikes", "t": time_ms, "chunks": [fired.tolist()]})
+        self._dopamine = max(self._dopamine, self.mind.brain.occupancy("dopamine"))
 
-        if time.perf_counter() - self._last_flush > SPIKE_FLUSH_SECONDS:
-            self.flush_spikes()
+        if self.sight is not None:
+            self.sight.add(fired)
 
-    def flush_spikes(self) -> None:
-        with self._lock:
-            chunks, self._chunks = self._chunks, []
+            if time.perf_counter() - self._last_view > VIEW_SECONDS:
+                self._last_view = time.perf_counter()
+                self.emit(self.sight.snapshot())
 
-        self._last_flush = time.perf_counter()
+        if time.perf_counter() - self._last_status > STATUS_SECONDS:
+            self.emit(self.status())
 
-        if chunks:
-            self.emit({"type": "spikes", "t": self._chunks_time, "chunks": chunks})
+    def _fixation(self, gaze: float, typed: str | None = None) -> None:
+        """
+        Лента фиксаций: слово под взглядом (или напечатанная буква) и пик
+        дофамина за фиксацию — насколько выше занятости в покое.
+        """
 
-    def _on_step(self, step: Step, learn: bool) -> None:
-        self.flush_spikes()
-        self.emit(
-            {
-                "type": "step",
-                "token": step.token,
-                "expected": step.expected,
-                "error": step.error,
-                "dopamine": step.dopamine,
-                "learn": learn,
-                "dream": self.mind.language.sleeping,
-                "musing": self.mind.language.musing,
-            }
-        )
-        self._emit_emotion()
+        s = self.session
+        brain = self.mind.brain
+        word, letter = typed or "", 0
 
-    def _emit_emotion(self) -> None:
-        if self.mind.cfg.emotions_enabled:
-            self.emit({"type": "emotion", **self.mind.language.emotions.state()})
+        if typed is None:
+            # Слово, на которое пришлась точка взгляда (px от начала строки).
+            start = 0
 
-    def _out(self, text: str, kind: str) -> None:
-        if kind == "face":
-            self._emit_emotion()
-            return
+            for part in s.line.split(" "):
+                end = start + len(part)
 
-        if kind == "thought":
-            thought, verdict, score = text.split("\t")
-            self.emit({"type": "thought", "thought": thought, "verdict": verdict, "score": float(score)})
-            return
+                if part and s.screen.width(s.line[:end]) >= gaze:
+                    word = part
+                    letter = next(i for i in range(len(part)) if s.screen.width(s.line[:start + i + 1]) >= gaze)
+                    break
+                start = end + 1
 
-        if kind == "token":
-            token, _, sure = text.partition("\t")
-            self.flush_spikes()
-            self.emit({"type": "speak", "token": token, "confidence": float(sure or 0)})
-        else:
-            self.emit({"type": "out", "kind": kind, "text": text})
+        self.emit({"type": "fixation", "t": brain.time_ms, "word": word, "letter": letter, "typed": typed is not None,
+                   "dopamine": self._dopamine - (self._rest("dopamine") or 0.0)})
+        self._dopamine = brain.occupancy("dopamine")
 
-    def _on_reply(self, reply: Reply) -> None:
-        report = reply.report
-        self.emit(
-            {
-                "type": "reply",
-                "text": reply.text,
-                "promptTokens": report.tokens,
-                "promptSeconds": reply.prompt_seconds,
-                "generated": reply.generated,
-                "generateSeconds": reply.generate_seconds,
-                "hits": report.hits,
-                "predicted": len(report.errors),
-                "dopamine": report.dopamine,
-                "confidence": reply.confidence,
-            }
-        )
+    def _typed(self, char: str) -> None:
+        """Нажатие руки: символ, из чего выбирала (топ-4 клавиши по доле клеток) и в ответ ли."""
+
+        s = self.session
+        shares = s.shares.cpu()
+        top = shares.topk(min(4, len(shares)))
+        choices = [[s.keyboard.type(int(k)), round(float(v), 3)] for v, k in zip(top.values, top.indices)]
+        self.emit({"type": "typed", "char": char})
+        self.emit({"type": "press", "t": self.mind.brain.time_ms, "char": char, "reply": s.replying, "choices": choices})
+        self._fixation(s.gaze, typed=char)
+        self.screen()
+
+    def _saccade(self, before: float, gaze: float) -> None:
+        self._fixation(before)
+        self.screen()
+
+    def watch(self) -> None:
+        """Спайки забираются только для открытых вкладок."""
+
+        if self.mind is not None:
+            self.mind.brain.on_chunk = self._on_chunk if self.clients else None
+
+    def screen(self) -> None:
+        if self.session is not None:
+            s = self.session
+            self.emit({"type": "screen", "line": s.line, "gaze": s.gaze, "pointer": s.pointer})
 
     # ==============================================================
     # СОСТОЯНИЕ ДЛЯ ИНТЕРФЕЙСА
@@ -155,105 +178,96 @@ class BrainHost:
 
     def anatomy(self) -> dict:
         brain = self.mind.brain
+        system = {name: title for title, names in SYSTEMS for name in names}
+        order = {name: i for i, (_, names) in enumerate(SYSTEMS) for name in names}
 
-        def pop(p):
-            return {"start": p.start, "size": p.size}
+        def area(a) -> dict:
+            cells = a.cells
+            return {
+                "name": a.name,
+                "title": a.title,
+                "system": system.get(a.name, "Прочее"),
+                "layered": a.layers is not None,
+                "start": cells.start,
+                "size": cells.stop - cells.start,
+                # Популяции зоны (слои колонки или главные и тормозные ядра).
+                "populations": [
+                    {"label": label, "start": p.start, "size": p.size,
+                     "kind": "PV" if label.split(".")[-1] == "I" and a.layers is not None else label.split(".")[-1]}
+                    for label, p in a.populations
+                ],
+            }
 
-        language = self.mind.language
-        grids = {}
+        areas = sorted(brain.areas.values(), key=lambda a: (order.get(a.name, 99), a.name))
+        sizes: dict[str, int] = {}
 
-        if self.mind.cfg.concepts_enabled:
-            grids["association"] = language.concepts.cols
-
-        if self.mind.cfg.memory_places:
-            grids["prefrontal"] = language.memory.cols
+        for p in brain.projections:
+            sizes[p.name] = sizes.get(p.name, 0) + (getattr(p, "n_synapses", None) or p.weight.numel())
 
         return {
             "type": "anatomy",
             "device": str(brain.device),
             "neurons": brain.n,
             "synapses": brain.synapse_count(),
-            "areas": [
-                {
-                    "name": a.name,
-                    "title": a.title,
-                    "kind": a.kind,
-                    "E": pop(a.E),
-                    "I": pop(a.I),
-                    "SOM": pop(a.SOM) if a.SOM is not None else None,
-                    "VIP": pop(a.VIP) if a.VIP is not None else None,
-                    # Зона-карта (места слов): E лежат сеткой в столько столбцов.
-                    "grid": grids.get(a.name),
-                }
-                for a in brain.areas.values()
-            ],
-            # Путь берётся из мозга: «слух -> смысл» при понятиях учится.
+            "systems": [title for title, _ in SYSTEMS] + ["Прочее"],
+            # Клавиатура мира по рядам (порядок клавиш — как у руки).
+            "keyboard": list(ROWS),
+            "areas": [area(a) for a in areas],
             "pathways": [
-                {
-                    "src": p.src,
-                    "dst": p.dst,
-                    "plastic": q.plastic if q else p.plastic,
-                    "synapses": (getattr(q, "n_synapses", None) or q.weight.numel()) if q else 0,
-                }
+                {"src": p.src, "dst": p.dst, "plastic": p.plastic, "modulator": p.modulator if p.plastic else None,
+                 "synapses": sizes.get(p.name or f"{p.src} -> {p.dst}", 0)}
                 for p in self.mind.cfg.pathways
-                for q in [next((q for q in brain.projections if q.name == f"{p.src} -> {p.dst}"), None)]
-            ],
-        }
-
-    def brains(self) -> dict:
-        current = Path(self.mind.cfg.save_path).expanduser().resolve()
-
-        return {
-            "type": "brains",
-            "current": current.name,
-            "items": [
-                {
-                    "name": path.name,
-                    "megabytes": round(path.stat().st_size / 2**20),
-                    "modified": path.stat().st_mtime,
-                }
-                for path in self.session.brain_files()
             ],
         }
 
     def status(self) -> dict:
+        self._last_status = time.perf_counter()
+
+        if self.mind is None:
+            return {"type": "status", "loaded": False, "busy": self.busy, "live": self.live}
+
         brain = self.mind.brain
-        language = self.mind.language
 
         return {
             "type": "status",
+            "loaded": True,
             "busy": self.busy,
-            "words": len(language.semantic),
-            "tokens": language.experienced_tokens,
-            "dialogTurns": language.dialog_turns,
+            "live": self.live,
+            "brain": Path(self.mind.cfg.save_path).name,
             "timeMs": brain.time_ms,
-            "grown": brain.synapses_grown,
-            "emotionsEnabled": self.mind.cfg.emotions_enabled,
-            "sleeping": language.sleeping or self.dozing,
-            "thinking": self.mind.cfg.thinking_enabled,
-            "initiative": self.mind.cfg.initiative_enabled,
-            "live": self.mind.cfg.live_mode,
-            "features": [
-                {"name": name, "title": FEATURES[name][0], "help": FEATURES[name][2], "enabled": enabled}
-                for name, enabled in self.mind.features().items()
-            ],
-            "reading": [
-                {"name": item["name"], "done": item["done"], "total": len(item["sentences"])}
-                for item in self.reading
-            ],
-            "sleepPressure": language.sleep_pressure,
-            "episodes": len(language.hippocampus),
-            "emotion": language.emotions.state(),
-            "plastic": [
-                {
-                    "name": p.name,
-                    "synapses": p.weight.numel(),
-                    "learned": int((p.weight > p.innate_max).sum()),
-                    "mean": float(p.weight.mean()),
-                }
-                for p in brain.plastic
+            "hour": brain.hour(),
+            # Спит, когда выброс VLPO (галанин) больше норадреналина LC.
+            "asleep": brain.level("galanin") > brain.level("noradrenaline"),
+            "chemistry": [
+                {"name": name, "level": brain.level(name), "occupancy": brain.occupancy(name), "rest": self._rest(name)}
+                for name in brain.chemistry_names
             ],
         }
+
+    def _rest(self, name: str) -> float | None:
+        """
+        Занятость рецепторов наяву в покое: ядро стреляет со своей частотой
+        записи (anatomy.RATES_HZ), уровень — спайков на клетку за τ. С ней
+        лицо сравнивает текущую: выше покоя — выброс, ниже — провал.
+        Аденозина в покое нет — он копится весь день.
+        """
+
+        nucleus = self.mind.brain.MODULATORS.get(name)
+        cfg = self.mind.cfg
+        if nucleus is None or nucleus not in anatomy.RATES_HZ:
+            return None
+        level = anatomy.RATES_HZ[nucleus] * getattr(cfg, f"{name}_tau_ms") / 1000.0
+
+        return level / (level + getattr(cfg, f"{name}_half"))
+
+    def brains(self) -> dict:
+        files = sorted(BRAINS.glob("*.pt"), key=lambda p: p.stat().st_mtime, reverse=True) if BRAINS.exists() else []
+        current = Path(self.mind.cfg.save_path).name if self.mind is not None else None
+
+        # Только мозги нового формата (старые этим кодом не открываются).
+        items = [d for d in (describe_saved(p) for p in files) if not d["old"]]
+        return {"type": "brains", "current": current, "items": items,
+                "minNeurons": anatomy.min_size()}
 
     # ==============================================================
     # РАБОЧИЙ ПОТОК
@@ -263,282 +277,157 @@ class BrainHost:
         self.thread = threading.Thread(target=self._run, name="brain", daemon=True)
         self.thread.start()
 
-    def _run(self) -> None:
-        cfg = BrainConfig()
-        self.mind, restored = Mind.open(cfg)
-        self._attach()
-        self.ready.set()
+    def _attach(self) -> None:
+        self.session = Session(self.mind)
+        self.session.on_typed = self._typed
+        self.session.on_saccade = self._saccade
+        self.sight = Sight(self.session)
+        self.teacher = Teacher(self.session, report=self.info)
+        self.watch()
         self.emit(self.anatomy())
-        self.emit(self.status())
-        self.emit(self.brains())
-        self._out(
-            ("Загружен сохранённый мозг: " if restored else "Новый мозг: ")
-            + cfg.save_path,
-            "info",
-        )
+        self.screen()
 
-        last_activity = time.time()
-
+    def _run(self) -> None:
         while True:
             try:
-                # Пока есть что читать — не ждать: читать порцию.
-                job = self.jobs.get(timeout=0.0 if self.reading else 1.0)
+                job = self.jobs.get(timeout=0.0 if self.live and self.mind else 1.0)
             except queue.Empty:
-                if self.reading and not self.dozing:
-                    # Устал читать — уснуть (порциями, будится сообщением),
-                    # выспаться и читать дальше. Внутри порции не спит,
-                    # иначе чат ждал бы минуты сна.
-                    language = self.mind.language
-                    cfg = self.mind.cfg
-
-                    if cfg.nap_while_reading and language.drowsy:
-                        self.sleep_left = language.sleep_pressure * cfg.replays_per_episode
-                        self._out(
-                            f"Хочу спать (аденозин): новых впечатлений {language.sleep_pressure}, "
-                            f"посплю ({self.sleep_left} проигрываний) и продолжу",
-                            "info",
-                        )
-                        self._doze(True)
-                    else:
-                        self._execute(lambda session: self._read_portion(session), Future(), None, quiet=True)
-                        continue
-
-                # В тишине мозг живёт: время идёт, вещества убывают,
-                # эмоции успокаиваются.
-                self.mind.language.pass_time(1.0)
-
-                # Живой режим: заговорить первым (повод — эмоция)
-                # или подумать про себя.
-                if self._should_speak_up(last_activity):
-                    self._speak_up()
-                elif self._should_wander(last_activity):
-                    self._wander()
-
-                # Устал и тихо — засыпает надолго: длительность сна задаётся
-                # при засыпании (N проигрываний на каждое новое впечатление).
-                if not self.dozing and self._should_fall_asleep(last_activity):
-                    language = self.mind.language
-                    self.sleep_left = language.sleep_pressure * self.mind.cfg.replays_per_episode
-                    self._out(
-                        f"Засыпаю: новых впечатлений {language.sleep_pressure}, "
-                        f"сон на {self.sleep_left} проигрываний",
-                        "info",
-                    )
-                    self._doze(True)
-
-                # «Остановить» во сне: проснуться и бросить чтение.
-                if self.dozing and self.session.stop.is_set():
-                    self.session.stop.clear()
-                    self.sleep_left = 0
-                    self._doze(False)
-                    if self.reading:
-                        self.reading.clear()
-                        self._out("Проснулся (разбудили), чтение остановлено", "info")
-                    else:
-                        self._out("Проснулся (разбудили)", "info")
+                if self.mind is None:
                     continue
 
-                # Спит порциями, чтобы сообщение будило за секунду-две.
-                if self.dozing:
-                    portion = min(self.mind.cfg.sleep_batch, self.sleep_left)
-                    self._execute(
-                        lambda session: session.language.sleep(portion),
-                        Future(),
-                        None,
-                        quiet=True,
-                    )
-                    self.sleep_left -= portion
-                    # Между порциями мозг остаётся спящим.
-                    self.mind.language.emotions.sleeping = True
-
-                    if self.sleep_left <= 0:
-                        self._doze(False)
-                        self.mind.language.emotions.sleepy = False
-                        self._out("Выспался: новые впечатления закреплены", "info")
-                        self.session.autosave(force=True)
+                if self.live:
+                    # Жизнь в тишине: мозг смотрит на экран и живёт.
+                    self.session.live(LIVE_WINDOW_MS)
+                else:
+                    # Без симуляции время всё равно идёт: часы, вещества.
+                    self.mind.brain.pass_time(1.0)
+                    self.emit(self.status())
                 continue
 
             if job is None:
                 break
 
-            # Сообщение будит мозг; недоспанное останется давлением сна.
-            if self.dozing:
-                self._doze(False)
-                self.sleep_left = 0
-                self._out("Проснулся (разбудили)", "info")
-            last_activity = time.time()
             self._execute(*job)
 
-    # ==============================================================
-    # ФОНОВОЕ ЧТЕНИЕ
-    # ==============================================================
-
-    def enqueue_read(self, name: str, text: str) -> int:
-        """Поставить текст в очередь: мозг читает порциями между сообщениями."""
-
-        sentences = [
-            sentence for sentence in self.mind.language.sentences(text)
-            if self.mind.language.tokenize(sentence)
-        ]
-
-        if sentences:
-            self.reading.append(
-                {"name": name, "sentences": sentences, "done": 0,
-                 "report": ReadReport(), "start": time.time()}
-            )
-            self.emit(self.status())
-
-        return len(sentences)
-
-    def fall_asleep(self) -> str:
-        """
-        /sleep в вебе: заснуть так же, как сам в тишине, — порциями,
-        чтобы сообщение или «Разбудить» будили за секунду-две.
-        """
-
-        if self.dozing:
-            return "Уже сплю."
-
-        language = self.mind.language
-        cfg = self.mind.cfg
-        self.sleep_left = max(cfg.sleep_batch, language.sleep_pressure * cfg.replays_per_episode)
-        self._doze(True)
-
-        return (
-            f"Засыпаю: новых впечатлений {language.sleep_pressure}, "
-            f"сон на {self.sleep_left} проигрываний (разбудить — сообщением или кнопкой)"
-        )
-
-    def _read_portion(self, session) -> None:
-        if session.stop.is_set():
-            self.reading.clear()
-            session.stop.clear()
-            self._out("Чтение остановлено. Прочитанное уже в синапсах.", "info")
-            return
-
-        item = self.reading[0]
-        size = self.mind.cfg.read_portion_sentences
-        portion = item["sentences"][item["done"]: item["done"] + size]
-        item["report"].merge(session.language.read_text("\n".join(portion), nap=False))
-        item["done"] += len(portion)
-
-        elapsed = time.time() - item["start"]
-        self._out(f"{item['name']}: {report_line(item['report'], elapsed)}", "progress")
-
-        if item["done"] >= len(item["sentences"]):
-            self.reading.popleft()
-            self._out(f"Прочитал «{item['name']}»: {report_line(item['report'], elapsed)}", "info")
-            session.autosave(force=not self.reading)
-
-    def _doze(self, asleep: bool) -> None:
-        if self.dozing == asleep:
-            return
-
-        self.dozing = asleep
-        self.mind.language.emotions.sleeping = asleep
-        self.emit(self.status())
-        self._emit_emotion()
-
-    def _should_wander(self, last_activity: float) -> bool:
-        busy = bool(self.reading) or self.dozing
-        return self.live.should_wander(self.mind, last_activity, busy)
-
-    def _wander(self) -> None:
-        self.live.wandered_at = time.time()
-        future: Future = Future()
-
-        def run(session):
-            session.language.on_think = lambda step: self._out(
-                f"{step['thought']}\t{step['verdict']}\t{step['score']}", "thought"
-            )
-            try:
-                return session.language.wander()
-            finally:
-                session.language.on_think = None
-
-        self._execute(run, future, None, quiet=True)
-        result = future.result() if future.done() and not future.exception() else None
-
-        if result:
-            self.emit({"type": "musing", "text": result[0]})
-
-    def _should_speak_up(self, last_activity: float) -> bool:
-        busy = bool(self.reading) or self.dozing
-        return self.live.should_speak_up(self.mind, last_activity, bool(self.clients), busy)
-
-    def _speak_up(self) -> None:
-        self.live.spoke_up_at = time.time()
-        future: Future = Future()
-        self._execute(lambda session: session.language.initiative(), future, None, quiet=True)
-        said = future.result() if future.done() and not future.exception() else None
-
-        if said:
-            reason, text = said
-            self.emit({"type": "initiative", "reason": reason, "text": text})
-            self.mind.language.dialog.append({"who": "мозг", "text": text, "initiative": reason})
-            self._emit_emotion()
-
-    def _should_fall_asleep(self, last_activity: float) -> bool:
-        return self.live.should_fall_asleep(self.mind, last_activity, bool(self.reading))
-
-    def submit(self, fn, sink=None) -> Future:
-        """
-        Выполнить fn(session) в потоке мозга. sink(text, kind) получает
-        всё, что сессия говорит (ответ, служебные строки, слова стрима).
-        """
+    def submit(self, fn, label: str) -> Future:
+        """Выполнить fn() в потоке мозга."""
 
         future: Future = Future()
-        self.jobs.put((fn, future, sink))
-
+        self.jobs.put((fn, future, label))
         return future
 
-    def _execute(self, fn, future: Future, sink, quiet: bool = False) -> None:
-        # Сон во время тишины не занимает мозг для интерфейса.
-        self.busy = not quiet
+    def _execute(self, fn, future: Future, label: str) -> None:
+        self.busy = label
         self.emit(self.status())
 
-        if sink is not None:
-            self.session.out = lambda text, kind: (sink(text, kind), self._out(text, kind))
-
         try:
-            mind = self.session.mind
-            future.set_result(fn(self.session))
+            mind = self.mind
+            future.set_result(fn())
 
-            if self.session.mind is not mind:
-                # /load или /new — другой мозг, новая анатомия.
-                self.mind = self.session.mind
+            if self.mind is not mind:
                 self._attach()
-                self.emit(self.anatomy())
         except Exception as error:  # noqa: BLE001 — вернуть вызывающему, мозг жив
-            self._out(f"Ошибка: {error}", "info")
+            self.info(f"Ошибка: {error}")
             future.set_exception(error)
         finally:
-            self.session.out = self._out
-            self.flush_spikes()
-            self.busy = False
+            self.busy = None
             self.emit(self.status())
             self.emit(self.brains())
 
-    def _attach(self) -> None:
-        self.mind.brain.on_chunk = self._on_chunk
-        self.mind.language.on_step = self._on_step
-        self.mind.language.on_grow = lambda links: self.emit(
-            {"type": "grow", "links": [{"path": n, "pre": pre, "post": post} for n, pre, post in links]}
-        )
-        self.mind.language.on_choice = lambda token, chances: self.emit(
-            {"type": "choice", "token": token, "candidates": [[w, round(p, 3)] for w, p in chances]}
-        )
-        self.session = Session(self.mind, self._out, self._on_reply)
-        # /read в вебе не блокирует мозг: текст встаёт в очередь.
-        self.session.background_read = self.enqueue_read
-        self.session.fall_asleep = self.fall_asleep
-        self.reading.clear()
+    def need(self) -> Mind:
+        if self.mind is None:
+            raise RuntimeError("мозг не выбран")
+        return self.mind
+
+    # ==============================================================
+    # ДЕЙСТВИЯ (в потоке мозга)
+    # ==============================================================
+
+    def say(self, text: str) -> str:
+        """Реплика человека — на экран мира; ответ — что напечатала рука."""
+
+        self.need()
+        s = self.session
+        s.line, s.gaze = text + " ", 0.0
+        self.screen()
+        answer = s.reply(text)
+        self.screen()
+        return answer
+
+    def lesson(self, kind: str, n: int, text: str, first: int, last: int) -> str:
+        self.need()
+        t, s = self.teacher, self.session
+        s.halt = False
+
+        if kind == "letters":
+            t.letters(n)
+        elif kind == "babble":
+            t.babble(n)
+        elif kind == "copy":
+            t.copy(n)
+        elif kind == "course":
+            t.course(n, first, last)
+        elif kind == "read":
+            t.read(text)
+        else:
+            raise ValueError(f"нет урока {kind}")
+
+        self.screen()
+        return f"урок «{kind}» окончен"
+
+    def health(self, ms: float) -> dict:
+        """Частоты ядер и слоёв колонок в покое против записей у бодрствующих."""
+
+        brain = self.need().brain
+
+        with brain.frozen():
+            rates = brain.observe(ms)
+
+        targets = {layer: dict(zip(KINDS, v)) for layer, *v in self.mind.cfg.column_target_hz}
+        nuclei, columns = [], []
+
+        for name, area in brain.areas.items():
+            if area.layers is None:
+                nuclei.append({"name": name, "title": area.title, "hz": float(rates[area.E.slice].mean()),
+                               "target": anatomy.RATES_HZ.get(name)})
+            else:
+                columns.append({"name": name, "title": area.title, "layers": [
+                    {"layer": layer, "kind": kind, "hz": float(rates[pop.slice].mean()),
+                     "target": targets.get(layer, {}).get(kind)}
+                    for layer, group in area.layers.items() for kind, pop in group.items()
+                ]})
+
+        return {"ms": ms, "nuclei": nuclei, "columns": columns}
+
+    def load(self, name: str) -> str:
+        if self.mind is not None and self.mind.cfg.autosave:
+            self.mind.save()
+
+        self.mind = Mind.load(name)
+        return self.mind.cfg.save_path
+
+    def new(self, name: str, neurons: int) -> str:
+        if self.mind is not None and self.mind.cfg.autosave:
+            self.mind.save()
+
+        cfg = BrainConfig()
+        cfg.size = str(int(neurons))
+        cfg.save_path = str(brain_path(name if name.endswith(".pt") else name + ".pt"))
+
+        if Path(cfg.save_path).exists():
+            raise ValueError(f"мозг {Path(cfg.save_path).name} уже есть")
+
+        self.mind = Mind(cfg)
+        self.mind.save()
+        return cfg.save_path
+
+    def save(self) -> str:
+        return str(self.need().save())
 
     def shutdown(self) -> None:
-        # Дождаться потока мозга: иначе он ещё спит или читает порцию на
-        # видеокарте, пока здесь сохраняется мозг (и пока в том же процессе
-        # запускается другой — тесты: запись CUDA Graph ломалась).
-        self.session and self.session.stop.set()
+        if self.session is not None:
+            self.session.halt = True
+
         self.jobs.put(None)
         self.thread.join(timeout=60)
 
@@ -560,16 +449,150 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
+class Say(BaseModel):
+    text: str
+
+
+class Praise(BaseModel):
+    good: bool
+
+
+class Flag(BaseModel):
+    enabled: bool
+
+
+class Load(BaseModel):
+    name: str
+
+
+class New(BaseModel):
+    name: str
+    neurons: int
+
+
+class Lesson(BaseModel):
+    kind: str
+    n: int = 50
+    text: str = ""
+    first: int = 1
+    last: int = 99
+
+
+async def _run(fn, label: str):
+    future = host.submit(fn, label)
+
+    try:
+        return await asyncio.wrap_future(future)
+    except Exception as error:  # noqa: BLE001
+        raise HTTPException(400, str(error)) from error
+
+
+async def _read(fn):
+    """Чтение мозга рядом с его потоком (карточки): сеть не ждёт."""
+
+    if host.mind is None:
+        raise HTTPException(400, "мозг не выбран")
+
+    try:
+        return await asyncio.to_thread(fn, host.mind.brain)
+    except IndexError as error:
+        raise HTTPException(404, str(error)) from error
+
+
+@app.post("/api/say")
+async def say(body: Say) -> dict:
+    text = body.text.strip()
+
+    if not text:
+        raise HTTPException(400, "пустая реплика")
+
+    return {"text": await _run(lambda: host.say(text), "отвечает")}
+
+
+@app.post("/api/praise")
+async def praise(body: Praise) -> dict:
+    await _run(lambda: host.need() and host.session.praise(body.good), "вкус")
+    return {"ok": True}
+
+
+@app.post("/api/lesson")
+async def lesson(body: Lesson) -> dict:
+    text = await _run(lambda: host.lesson(body.kind, body.n, body.text, body.first, body.last), f"урок: {body.kind}")
+    return {"text": text}
+
+
+@app.post("/api/stop")
+async def stop() -> dict:
+    if host.session is not None:
+        host.session.halt = True
+    return {"ok": True}
+
+
+@app.post("/api/live")
+async def live(body: Flag) -> dict:
+    host.live = body.enabled
+    host.emit(host.status())
+    return {"live": host.live}
+
+
+@app.get("/api/health")
+async def health(ms: float = 500.0) -> dict:
+    return await _run(lambda: host.health(ms), "здоровье")
+
+
+@app.get("/api/summary")
+async def summary() -> dict:
+    return await _read(neuron.summary)
+
+
+@app.get("/api/neuron/{index}")
+async def neuron_card(index: int) -> dict:
+    return await _read(lambda brain: neuron.describe(brain, index))
+
+
+@app.get("/api/synapse/{sid}")
+async def synapse_card(sid: int) -> dict:
+    return await _read(lambda brain: neuron.synapse(brain, sid))
+
+
+@app.get("/api/sizes")
+async def sizes(neurons: int) -> dict:
+    total = anatomy.total_for(max(1, neurons))
+    return {"neurons": neurons, "total": total, "min": anatomy.min_size()}
+
+
+@app.post("/api/load")
+async def load(body: Load) -> dict:
+    return {"brain": await _run(lambda: host.load(body.name), "загрузка")}
+
+
+@app.post("/api/new")
+async def new(body: New) -> dict:
+    name = body.name.strip()
+
+    if not name:
+        raise HTTPException(400, "нужно имя")
+
+    return {"brain": await _run(lambda: host.new(name, body.neurons), "новый мозг")}
+
+
+@app.post("/api/save")
+async def save() -> dict:
+    return {"brain": await _run(host.save, "сохранение")}
+
+
 @app.websocket("/ws")
 async def socket(ws: WebSocket) -> None:
     await ws.accept()
     outbox: asyncio.Queue = asyncio.Queue()
     host.clients.add(outbox)
+    host.watch()
+    await ws.send_json(host.brains())
+    await ws.send_json(host.status())
 
-    if host.ready.is_set():
+    if host.mind is not None:
         await ws.send_json(host.anatomy())
-        await ws.send_json(host.status())
-        await ws.send_json(host.brains())
+        host.screen()
 
     async def sender():
         while True:
@@ -579,24 +602,13 @@ async def socket(ws: WebSocket) -> None:
 
     try:
         while True:
-            message = await ws.receive_json()
-            kind = message.get("type")
-
-            # Действия идут через HTTP API (brain/api.py); здесь
-            # оставлено для совместимости и остановки чтения.
-            if kind == "line":
-                text = str(message.get("text", ""))
-                host.submit(lambda session: session.handle(text))
-            elif kind == "stop" and host.session is not None:
-                host.session.stop.set()
+            await ws.receive_text()
     except WebSocketDisconnect:
         pass
     finally:
         task.cancel()
         host.clients.discard(outbox)
-
-
-app.include_router(build_router(host))
+        host.watch()
 
 
 if WEB_DIST.exists():
@@ -604,19 +616,13 @@ if WEB_DIST.exists():
 else:
     @app.get("/")
     def index() -> HTMLResponse:
-        return HTMLResponse(
-            "<p>Интерфейс не собран: <code>cd web && npm install && npm run build</code></p>"
-        )
+        return HTMLResponse("<p>Интерфейс не собран: <code>cd web && npm install && npm run build</code></p>")
 
 
 def main() -> None:
     import uvicorn
 
-    uvicorn.run(
-        app,
-        host=os.environ.get("BRAIN_HOST", "127.0.0.1"),
-        port=int(os.environ.get("BRAIN_PORT", "8000")),
-    )
+    uvicorn.run(app, host=os.environ.get("BRAIN_HOST", "127.0.0.1"), port=int(os.environ.get("BRAIN_PORT", "8000")))
 
 
 if __name__ == "__main__":

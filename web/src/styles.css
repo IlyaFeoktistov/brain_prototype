@@ -1,4 +1,4 @@
-/* Предметное стекло, окраска H&E, дофамин — коричневый DAB. */
+/* Предметное стекло: окраска клеток по типам, бумага и чернила. */
 :root {
   --glass: #f5f3f7;
   --paper: #fbfafc;
@@ -6,1351 +6,266 @@
   --ink-soft: #5d5675;
   --rule: #ddd7e7;
   --hema: #2c1e78;
-  --hema-soft: #ded8ec;
   --eosin: #cd2862;
-  --eosin-soft: #f4dee6;
-  --dab: #8a5a2b;
-  --dab-soft: #ead9c6;
-
+  --som: #28783c;
+  --vip: #be7814;
+  --lamp5: #147896;
+  --ok: #2f7d4a;
+  --warn: #b35a00;
   --serif: "Spectral", Georgia, serif;
   --sans: "Atkinson Hyperlegible", system-ui, sans-serif;
-
   color-scheme: light;
 }
 
-* {
-  box-sizing: border-box;
-}
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body { background: var(--glass); color: var(--ink); font: 14px/1.45 var(--sans); }
+button, input, textarea, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--hema); outline-offset: 2px; }
+h1, h2, h3 { font-family: var(--serif); font-weight: 600; margin: 0; }
+h4 { margin: 14px 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-soft); }
+.muted { color: var(--ink-soft); }
 
-html,
-body,
-#root {
-  height: 100%;
-  margin: 0;
+button {
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
 }
+button:hover:not(:disabled) { border-color: var(--hema); }
+button:disabled { opacity: 0.5; cursor: default; }
+button.link { border: none; background: none; padding: 0; color: var(--hema); text-decoration: underline; }
+button.close { border: none; background: none; font-size: 20px; line-height: 1; padding: 0 4px; }
+input, textarea { border: 1px solid var(--rule); border-radius: 6px; padding: 4px 8px; background: #fff; }
+input[type="number"] { width: 7em; }
 
-body {
-  background: var(--glass);
-  color: var(--ink);
-  font: 15px/1.5 var(--sans);
-}
+/* ---- запуск и выбор мозга ---- */
 
-button,
-textarea {
-  font: inherit;
-  color: inherit;
-}
-
-:focus-visible {
-  outline: 2px solid var(--hema);
-  outline-offset: 2px;
-}
-
-.app {
+.boot { display: grid; place-items: center; min-height: 100%; padding: 24px; gap: 12px; align-content: center; }
+.boot-log { max-width: 640px; }
+.chooser {
+  position: relative;
+  width: min(720px, 100%);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 20px 24px;
   display: grid;
-  grid-template-rows: auto 1fr;
-  height: 100%;
+  gap: 16px;
 }
+.chooser .close { position: absolute; top: 12px; right: 12px; }
+.chooser section { display: grid; gap: 8px; }
+.chooser form { display: grid; gap: 8px; }
+.chooser label { display: flex; gap: 8px; align-items: center; }
+.brains { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 40vh; overflow: auto; }
+.brains button { width: 100%; text-align: left; display: grid; gap: 2px; }
+.brains span { color: var(--ink-soft); font-size: 12px; }
 
 /* ---- шапка ---- */
 
-.masthead {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 8px 28px;
-  padding: 14px 24px 10px;
-  border-bottom: 1px solid var(--rule);
-}
+.app { display: grid; grid-template-rows: auto 1fr; height: 100%; }
+.masthead { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: baseline; padding: 8px 16px; border-bottom: 1px solid var(--rule); background: var(--paper); }
+.masthead h1 { font-size: 20px; }
+.vitals { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0; color: var(--ink-soft); }
+.vitals .busy { color: var(--warn); }
 
-.masthead h1 {
-  margin: 0;
-  font: 600 26px/1.1 var(--serif);
-  letter-spacing: -0.01em;
-}
+/* ---- рабочее место: микроскоп | панель ---- */
 
-.brain-picker {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 8px;
-  color: var(--ink-soft);
-}
+.bench { display: grid; grid-template-columns: 1fr auto var(--side); min-height: 0; }
+.stage { overflow: auto; padding: 12px 16px 24px; min-width: 0; }
+.side { display: grid; grid-template-rows: auto 1fr; grid-template-columns: minmax(0, 1fr); min-height: 0; border-left: 1px solid var(--rule); background: var(--paper); }
+.panel { overflow: auto; padding: 12px 14px 24px; min-height: 0; }
 
-.brain-picker label {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
+.tabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid var(--rule); }
+.tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 6px 10px; color: var(--ink-soft); }
+.tabs button.on { border-bottom-color: var(--hema); color: var(--ink); }
 
-.new-brain-form {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px;
-}
+/* ---- микроскоп ---- */
 
-.brain-picker button,
-.brain-picker input,
-.brain-picker select {
-  padding: 3px 6px;
-  border: 1px solid var(--rule);
-  border-radius: 6px;
-  background: var(--paper);
-  color: var(--ink);
-  font: inherit;
-}
+.slide { position: relative; display: grid; gap: 14px; }
+.system h3 { font-size: 15px; margin-bottom: 6px; }
+.system-areas { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
+.section { margin: 0; display: grid; gap: 3px; }
+.section canvas { width: 100%; aspect-ratio: 1; image-rendering: pixelated; background: var(--glass); border: 1px solid var(--rule); border-radius: 4px; cursor: crosshair; }
+.section-column canvas { aspect-ratio: auto; }
+.section figcaption { display: flex; justify-content: space-between; gap: 4px; font-size: 11px; line-height: 1.2; }
+.section-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.section-count { color: var(--ink-soft); }
+.wiring { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.wire { stroke: var(--hema); opacity: 0.15; }
+.wire-inh { stroke: var(--eosin); }
+.selected-cell { fill: none; stroke: #000; stroke-width: 2; }
 
-.vitals {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 18px;
-  margin: 0;
-  color: var(--ink-soft);
-  font-variant-numeric: tabular-nums;
-}
-
-.vitals .device {
-  color: var(--hema);
-}
-
-/* ---- рабочий стол: срез + чат ---- */
-
-.bench {
-  display: grid;
-  /* --chat-width: граница чата тянется мышью (Splitter). */
-  grid-template-columns: minmax(0, 1fr) auto var(--chat-width, 380px);
-  min-height: 0;
-}
-
-/* Колонка: срез, схема, лента слов, справка — каждый своей высоты, ничто
-   не сжимается в остаток экрана (сетка строк сжимала срез, и схема
-   ложилась поверх зон); не влезло — прокрутка. */
-.stage {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 18px 24px;
-  min-height: 0;
-  overflow: auto;
-}
-
-.stage > * {
-  flex-shrink: 0;
-}
-
-.slide {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-/* Строки фиксированной высоты: с долями (fr) при низком окне родитель
-   отводил сетке только её min-height, и нижние зоны налезали на ядра ниже. */
-.slide-main,
-.slide-placeholder {
-  display: grid;
-  grid-template-columns: 1fr 1.7fr 1fr;
-  grid-template-rows: 150px 150px 120px 96px 96px;
-  gap: 14px;
-}
-
-/* Остальные ядра — ровной сеткой под основными зонами. */
-.slide-extra {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-  grid-auto-rows: 110px;
-  gap: 14px;
-}
-
-.section {
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
-  margin: 0;
-  min-height: 0;
-  /* Длинная подпись («супрахиазматическое») не распирает ячейку. */
-  min-width: 0;
-}
-
-.section-auditory {
-  grid-column: 1;
-  grid-row: 1 / 4;
-}
-
-.section-association {
-  grid-column: 2;
-  grid-row: 1 / 6;
-}
-
-/* Ядра нейромедиаторов — крохотные, под слухом и под чувствами. */
-.section-vta {
-  grid-column: 1;
-  grid-row: 4;
-}
-
-.section-lc {
-  grid-column: 3;
-  grid-row: 4;
-}
-
-.section-amygdala {
-  grid-column: 1;
-  grid-row: 5;
-}
-
-.section-category {
-  grid-column: 3;
-  grid-row: 5;
-}
-
-.section-limbic {
-  grid-column: 3;
-  grid-row: 3;
-}
-
-.section-prefrontal {
-  grid-column: 3;
-  grid-row: 1;
-}
-
-.section-motor {
-  grid-column: 3;
-  grid-row: 2;
-}
-
-.section-glass {
-  position: relative;
-  min-height: 0;
-}
-
-/* Холст не задаёт высоту сам (иначе большая зона растягивает строку по
-   своим пропорциям и налезает на соседей) — её задаёт сетка. */
-.section canvas {
-  position: absolute;
-  inset: 0;
-  display: block;
-  cursor: crosshair;
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  border-radius: 46% 54% 50% 50% / 8% 8% 10% 10%;
-  background: var(--paper);
-  box-shadow: inset 0 0 0 1px var(--rule);
-  image-rendering: pixelated;
-}
-
-.section figcaption {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 8px;
-  padding-top: 6px;
-}
-
-.section-title {
-  font: italic 500 14px/1.3 var(--serif);
-  overflow-wrap: anywhere;
-}
-
-.section-count {
-  color: var(--ink-soft);
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-/* ---- схема путей и легенда ---- */
-
-.legend {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 28px;
-}
-
-.pathways {
-  width: min(100%, 640px);
-  height: auto;
-}
-
-.path {
-  fill: none;
-  stroke: var(--ink-soft);
-  stroke-width: 1.5;
-  opacity: 0.55;
-}
-
-.path-plastic {
-  stroke: var(--dab);
-  stroke-dasharray: 5 3;
-  opacity: 0.9;
-}
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 16px 0 0; font-size: 12px; color: var(--ink-soft); }
+.legend div { display: flex; gap: 6px; align-items: center; }
+.legend dd { margin: 0; }
+.swatch { width: 12px; height: 12px; border-radius: 3px; }
+.swatch-E { background: var(--hema); }
+.swatch-PV { background: var(--eosin); }
+.swatch-SOM { background: var(--som); }
+.swatch-VIP { background: var(--vip); }
+.swatch-LAMP5 { background: var(--lamp5); }
 
 .tip {
-  fill: var(--ink-soft);
-}
-
-.tip-plastic {
-  fill: var(--dab);
-}
-
-.node {
-  fill: var(--hema-soft);
-  stroke: var(--hema);
-  stroke-width: 1.5;
-}
-
-.node-memory {
-  fill: var(--paper);
-  stroke-dasharray: 2 2;
-}
-
-.node-plastic {
-  fill: none;
-  stroke: var(--dab);
-  stroke-width: 1;
-  stroke-dasharray: 3 2;
-}
-
-.node-halo {
-  fill: var(--hema);
-  opacity: 0;
-  transition: opacity 120ms linear, r 120ms linear;
-}
-
-.node-label.node-label-side {
-  text-anchor: start;
-}
-
-.node-label,
-.endpoint {
-  font: 12px var(--sans);
-  fill: var(--ink);
-  text-anchor: middle;
-}
-
-.endpoint {
-  font-style: italic;
-  fill: var(--ink-soft);
-}
-
-.key {
-  display: grid;
-  gap: 4px;
-  margin: 0;
-  font-size: 13px;
-  color: var(--ink-soft);
-}
-
-.key div {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.key dd {
-  margin: 0;
-}
-
-.swatch {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-}
-
-.swatch-e {
-  background: var(--hema);
-}
-
-.swatch-i {
-  background: var(--eosin);
-}
-
-.swatch-dopamine {
-  border-radius: 1px;
-  background: var(--dab);
-}
-
-.node-limbic {
-  fill: var(--dab-soft);
-  stroke: var(--dab);
-  stroke-dasharray: 2 2;
-}
-
-.node-off {
-  opacity: 0.4;
-}
-
-.path-limbic {
-  stroke: var(--dab);
-  stroke-dasharray: 1 3;
-}
-
-/* ---- лицо ---- */
-
-.mood {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 18px;
-  border-bottom: 1px solid var(--rule);
-}
-
-.face {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 0;
-}
-
-.face svg {
-  width: 56px;
-  height: 56px;
-}
-
-.face figcaption {
-  font: italic 500 16px/1.2 var(--serif);
-}
-
-.drives {
-  display: grid;
-  gap: 1px;
-  margin: 4px 0 0;
-  font: 11px/1.3 var(--sans);
-  color: var(--ink-soft);
-}
-
-.drives div {
-  display: grid;
-  grid-template-columns: 9.5em 56px;
-  align-items: center;
-}
-
-.drives dd {
-  margin: 0;
-}
-
-.drive-track {
-  display: block;
-  height: 6px;
-  border-radius: 3px;
-  background: var(--rule);
-  overflow: hidden;
-}
-
-.drive-fill {
-  display: block;
-  height: 100%;
-  background: var(--hema);
-  transition: width 300ms ease-out;
-}
-
-.drive-frustration {
-  background: var(--eosin);
-}
-
-.drive-urge {
-  background: var(--dab);
-}
-
-.drives-awaiting {
-  font-style: italic;
-  color: var(--dab);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .drive-fill {
-    transition: none;
-  }
-}
-
-.face-head {
-  fill: var(--paper);
-  stroke: var(--ink);
-  stroke-width: 2.5;
-}
-
-.face-eye {
-  fill: var(--ink);
-}
-
-.face-line {
-  fill: none;
-  stroke: var(--ink);
-  stroke-width: 3;
-  stroke-linecap: round;
-}
-
-.zzz {
-  display: flex;
-  align-items: flex-end;
-  gap: 2px;
-  margin-left: -6px;
-  color: var(--hema);
-  font: italic 600 13px/1 var(--serif);
-}
-
-.zzz span {
-  animation: drift 2.4s ease-in-out infinite;
-}
-
-.zzz span:nth-child(2) {
-  font-size: 16px;
-  animation-delay: 0.4s;
-}
-
-.zzz span:nth-child(3) {
-  font-size: 20px;
-  animation-delay: 0.8s;
-}
-
-@keyframes drift {
-  0%,
-  100% {
-    transform: translateY(0);
-    opacity: 0.35;
-  }
-  50% {
-    transform: translateY(-6px);
-    opacity: 1;
-  }
-}
-
-.toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--ink-soft);
-  font-size: 14px;
-  cursor: pointer;
-}
-
-/* ---- функции мозга (выпадающий список в шапке) ---- */
-
-.features {
-  position: relative;
-  font-size: 14px;
-  color: var(--ink-soft);
-}
-
-.features summary {
-  cursor: pointer;
-}
-
-.features-list {
-  position: absolute;
-  z-index: 10;
-  top: calc(100% + 6px);
-  left: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  width: min(440px, calc(100vw - 32px));
-  max-height: 70vh;
-  overflow-y: auto;
-  padding: 10px 12px;
-  background: var(--paper, #fff);
-  border: 1px solid var(--rule);
-  border-radius: 6px;
-}
-
-.feature-help {
-  margin: 2px 0 0 22px;
-  font-size: 13px;
-  line-height: 1.4;
-  color: var(--ink-soft);
-}
-
-/* ---- лента слов ---- */
-
-.timeline {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 4px;
-  margin: 0;
-  padding: 10px 0 0;
-  list-style: none;
-  border-top: 1px solid var(--rule);
-}
-
-.timeline-empty {
-  margin: 0;
-  padding-top: 10px;
-  border-top: 1px solid var(--rule);
-  color: var(--ink-soft);
-}
-
-.word {
-  display: grid;
-  grid-template-rows: auto 18px;
-  justify-items: center;
-  padding: 0 3px;
-}
-
-.word-text {
-  font-size: 14px;
-}
-
-.word-guessed .word-text {
-  text-decoration: underline 2px var(--hema);
-  text-underline-offset: 3px;
-}
-
-.word-own .word-text {
-  color: var(--ink-soft);
-  font-style: italic;
-}
-
-.word-dream .word-text {
-  color: var(--dab);
-  font-style: italic;
-  opacity: 0.75;
-}
-
-.word-musing .word-text {
-  color: var(--hema);
-  font-style: italic;
-  opacity: 0.6;
-}
-
-.word-dopamine {
-  align-self: start;
-  width: 6px;
-  height: 18px;
-  background: var(--dab);
-  transform-origin: top;
-}
-
-/* ---- как читать карту ---- */
-
-.guide {
-  border-top: 1px solid var(--rule);
-  padding-top: 10px;
-}
-
-.guide summary {
-  cursor: pointer;
-  font: italic 500 15px/1.4 var(--serif);
-  color: var(--hema);
-}
-
-.guide-body {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 8px 28px;
-  padding-top: 8px;
-  color: var(--ink-soft);
-  font-size: 14px;
-}
-
-.guide h2 {
-  margin: 8px 0 4px;
-  font: 600 15px/1.3 var(--serif);
-  color: var(--ink);
-}
-
-.guide p,
-.guide ul,
-.guide dl {
-  margin: 0 0 8px;
-  max-width: 62ch;
-}
-
-.guide ul {
-  padding-left: 18px;
-}
-
-.guide dt {
-  color: var(--ink);
-}
-
-.guide dd {
-  margin: 0 0 4px;
-}
-
-/* ---- чат ---- */
-
-.chat {
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
-  min-height: 0;
-  background: var(--paper);
-}
-
-.chat-log {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 18px 18px 8px;
-  overflow-y: auto;
-}
-
-.chat-empty {
-  margin: 0;
-  color: var(--ink-soft);
-  max-width: 34ch;
-}
-
-.line p {
-  margin: 0;
-}
-
-.line small {
-  display: block;
-  margin-top: 2px;
-  color: var(--ink-soft);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-
-.line-you {
-  align-self: flex-end;
-  max-width: 85%;
-  padding: 6px 10px;
-  border-radius: 12px 12px 2px 12px;
-  background: var(--hema-soft);
-}
-
-.line-brain {
-  max-width: 90%;
-  font: 500 17px/1.4 var(--serif);
-}
-
-.line-brain small {
-  font-family: var(--sans);
-}
-
-.caret {
-  display: inline-block;
-  width: 0.5em;
-  height: 1em;
-  margin-left: 3px;
-  vertical-align: -0.1em;
-  background: var(--hema);
-  animation: blink 0.9s steps(2) infinite;
-}
-
-@keyframes blink {
-  50% {
-    opacity: 0;
-  }
-}
-
-.line-info pre {
-  margin: 0;
-  white-space: pre-wrap;
-  font: 13px/1.45 var(--sans);
-  color: var(--ink-soft);
-}
-
-.line-progress {
-  margin: 0;
-  color: var(--dab);
-  font-size: 13px;
-}
-
-.feedback {
-  display: flex;
-  gap: 6px;
-  margin-top: 6px;
-}
-
-.feedback button,
-.chat-actions button {
-  padding: 4px 10px;
-  border: 1px solid var(--rule);
-  border-radius: 6px;
-  background: var(--paper);
-  cursor: pointer;
-  font-size: 13px;
-}
-
-.feedback button:hover,
-.chat-actions button:hover:not(:disabled) {
-  border-color: var(--hema);
-}
-
-.chat-input {
-  display: grid;
-  gap: 8px;
-  padding: 12px 18px 16px;
-  border-top: 1px solid var(--rule);
-}
-
-.chat-input textarea {
-  width: 100%;
-  resize: vertical;
-  padding: 8px 10px;
-  border: 1px solid var(--rule);
-  border-radius: 8px;
-  background: #fff;
-}
-
-.chat-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.chat-actions button[type="submit"] {
-  background: var(--hema);
-  border-color: var(--hema);
-  color: #fff;
-}
-
-.chat-actions button:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
-.chat-actions .stop {
-  border-color: var(--dab);
-  color: var(--dab);
-}
-
-/* ---- узкий экран ---- */
-
-@media (max-width: 900px) {
-  .app {
-    height: auto;
-  }
-
-  .bench {
-    grid-template-columns: 1fr;
-  }
-
-  .splitter-x {
-    display: none;
-  }
-
-  .stage {
-    overflow: visible;
-  }
-
-  .section-glass {
-    height: 150px;
-  }
-
-  .chat {
-    border-left: 0;
-    border-top: 1px solid var(--rule);
-    min-height: 60vh;
-  }
-
-  .masthead,
-  .stage {
-    padding-left: 16px;
-    padding-right: 16px;
-  }
-
-  .slide-main,
-  .slide-placeholder {
-    grid-template-columns: 1fr 1fr;
-    grid-template-rows: repeat(5, auto);
-    min-height: 0;
-  }
-
-  .slide-extra {
-    grid-template-columns: 1fr 1fr;
-    grid-auto-rows: auto;
-  }
-
-  .section-title {
-    font-size: 13px;
-  }
-
-  .section-auditory {
-    grid-column: 1;
-    grid-row: 1;
-  }
-
-  .section-association {
-    grid-column: 1 / 3;
-    grid-row: 2;
-  }
-
-  .section-prefrontal {
-    grid-column: 2;
-    grid-row: 1;
-  }
-
-  .section-motor {
-    grid-column: 1;
-    grid-row: 3;
-  }
-
-  .section-limbic {
-    grid-column: 2;
-    grid-row: 3;
-  }
-
-  .section-vta {
-    grid-column: 1;
-    grid-row: 4;
-  }
-
-  .section-lc {
-    grid-column: 2;
-    grid-row: 4;
-  }
-
-  .section-amygdala {
-    grid-column: 1;
-    grid-row: 5;
-  }
-
-  .section-category {
-    grid-column: 2;
-    grid-row: 5;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .node-halo {
-    transition: none;
-  }
-
-  .caret,
-  .zzz span {
-    animation: none;
-  }
-}
-
-/* ---- карточка нейрона ---- */
-
-.neuron-mark {
-  position: absolute;
-  box-sizing: content-box;
-  min-width: 4px;
-  min-height: 4px;
-  margin: -3px 0 0 -3px;
-  border: 2px solid var(--dab);
-  border-radius: 50%;
-  pointer-events: none;
-}
-
-.neuron-mark-pinned {
-  border-color: var(--eosin);
-}
-
-.neuron-card {
   position: fixed;
   z-index: 20;
-  width: min(340px, calc(100vw - 16px));
-  max-height: calc(100vh - 16px);
-  overflow-y: auto;
-  padding: 12px 14px;
+  pointer-events: none;
+  display: grid;
+  gap: 2px;
+  max-width: 320px;
+  padding: 6px 10px;
   background: var(--paper);
   border: 1px solid var(--rule);
-  border-radius: 8px;
-  box-shadow: 0 8px 28px rgb(36 29 61 / 18%);
-  font-size: 13px;
-  pointer-events: none;
-}
-
-.neuron-card-pinned {
-  pointer-events: auto;
-  border-color: var(--eosin);
-}
-
-.neuron-head {
-  position: relative;
-  padding-right: 20px;
-}
-
-.neuron-head strong {
-  font: 600 15px/1.3 var(--serif);
-}
-
-.neuron-type {
-  margin-left: 8px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  font-size: 11px;
-}
-
-.neuron-type-E {
-  background: var(--hema-soft);
-  color: var(--hema);
-}
-
-.neuron-type-I {
-  background: var(--eosin-soft);
-  color: var(--eosin);
-}
-
-.neuron-sub,
-.neuron-hint,
-.neuron-empty {
-  color: var(--ink-soft);
-}
-
-.neuron-hint {
-  margin: 8px 0 0;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgb(36 29 61 / 0.15);
   font-size: 12px;
 }
+.tip em { color: var(--ink-soft); }
 
-.neuron-empty {
-  margin: 2px 0;
-  font-style: italic;
+/* ---- карточки ---- */
+
+.card { display: grid; gap: 6px; padding-bottom: 12px; border-bottom: 1px solid var(--rule); margin-bottom: 12px; }
+.card header { display: flex; justify-content: space-between; gap: 8px; align-items: start; }
+.card h3 { font-size: 16px; }
+dl { margin: 0; }
+.kv { display: grid; grid-template-columns: 13em 1fr; gap: 8px; padding: 1px 0; }
+.kv dt { color: var(--ink-soft); }
+.kv dd { margin: 0; }
+table.grid { border-collapse: collapse; width: 100%; font-size: 12px; }
+table.grid th, table.grid td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+table.grid th { color: var(--ink-soft); font-weight: 400; }
+.bar { display: inline-block; width: 80px; height: 8px; background: var(--glass); border-radius: 4px; vertical-align: middle; overflow: hidden; }
+.bar span { display: block; height: 100%; background: var(--hema); }
+.raster { width: 100%; height: 22px; background: var(--glass); border-radius: 4px; }
+.raster line { stroke: var(--hema); stroke-width: 6; }
+
+/* ---- разговор ---- */
+
+.conversation { display: grid; grid-template-rows: auto auto 1fr auto auto; grid-template-columns: minmax(0, 1fr); gap: 10px; overflow: hidden; }
+.world { background: #fff; border: 1px solid var(--rule); border-radius: 6px; padding: 8px 10px 4px; font-family: ui-monospace, monospace; }
+.world-line { white-space: pre; overflow: hidden; }
+.world-marks { position: relative; height: 16px; }
+.world-marks span { position: absolute; top: 0; font-size: 11px; transform: translateX(-50%); }
+.gaze { color: var(--hema); }
+.pointer { color: var(--eosin); }
+.log { overflow: auto; display: grid; align-content: start; gap: 4px; }
+.line { margin: 0; padding: 4px 8px; border-radius: 6px; white-space: pre-wrap; }
+.line-you { background: #ece8f5; justify-self: end; }
+.line-brain { background: #fff; border: 1px solid var(--rule); justify-self: start; }
+.line-info { color: var(--ink-soft); font-size: 12px; }
+.typing { opacity: 0.7; }
+.say { display: flex; gap: 6px; }
+.say input { flex: 1; }
+
+/* ---- меню ---- */
+
+.menu-group { border-bottom: 1px solid var(--rule); padding-bottom: 10px; display: grid; gap: 8px; }
+.buttons { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.inline { display: inline-flex; gap: 6px; align-items: center; }
+.menu textarea { width: 100%; }
+.file { position: relative; overflow: hidden; border: 1px dashed var(--rule); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+.file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.toggle { display: flex; gap: 6px; align-items: center; }
+
+.chip { display: inline-block; margin: 1px 3px; padding: 0 5px; border-radius: 4px; background: var(--glass); }
+.health-мало { color: var(--warn); }
+.health-много { color: var(--eosin); }
+.health-ок { color: var(--ok); }
+.state { margin-bottom: 8px; }
+
+/* ---- разделитель ---- */
+
+.splitter { width: 6px; cursor: col-resize; background: transparent; }
+.splitter:hover, .splitter-active { background: var(--rule); }
+
+/* ---- лицо из химии ---- */
+
+.face { display: flex; align-items: center; gap: 10px; margin: 0; }
+.face svg { width: 64px; height: 64px; flex: none; }
+.face figcaption { display: grid; gap: 1px; font-size: 12px; color: var(--ink-soft); }
+.face figcaption span { cursor: help; }
+.face-head { fill: var(--paper); stroke: var(--ink); stroke-width: 2.5; }
+.face-white { fill: #fff; stroke: var(--ink); stroke-width: 1.5; }
+.face-eye { fill: var(--ink); }
+.face-line { fill: none; stroke: var(--ink); stroke-width: 3; stroke-linecap: round; }
+.zzz { display: flex; align-items: flex-end; gap: 2px; color: var(--ink-soft); font: italic 13px var(--serif); }
+.zzz span { animation: drift 2.4s ease-in-out infinite; }
+.zzz span:nth-child(2) { font-size: 16px; animation-delay: 0.4s; }
+.zzz span:nth-child(3) { font-size: 20px; animation-delay: 0.8s; }
+@keyframes drift { 50% { transform: translateY(-4px); opacity: 0.5; } }
+@media (prefers-reduced-motion: reduce) { .zzz span { animation: none; } }
+
+/* ---- пояснения ---- */
+
+.hint { text-decoration: underline dotted var(--ink-soft); text-underline-offset: 3px; cursor: help; }
+.explain { display: grid; gap: 6px; margin-top: 14px; font-size: 12px; }
+.explain dt { font-weight: 600; }
+.explain dd { margin: 0; color: var(--ink-soft); }
+.guide section { margin-bottom: 16px; }
+.guide h3 { font-size: 16px; margin-bottom: 6px; }
+.guide p, .guide ul, .guide ol { margin: 0 0 8px; }
+.guide li { margin-bottom: 4px; }
+
+/* ---- лента фиксаций ---- */
+
+.strip { list-style: none; display: flex; gap: 2px; margin: 18px 0 0; padding: 0 0 4px; overflow-x: auto; }
+.strip-empty { margin: 18px 0 0; font-size: 12px; }
+.fix { display: grid; grid-template-rows: auto 36px; justify-items: center; min-width: 22px; padding: 0 3px; cursor: help; }
+.fix-word { font: 14px var(--serif); white-space: pre; }
+.fix-word mark { background: none; color: var(--hema); text-decoration: underline 2px; text-underline-offset: 3px; }
+.fix-typed .fix-word { font-style: italic; color: var(--eosin); }
+/* Середина столбика — покой; вверх — выброс, вниз — провал. */
+.fix-dopamine { position: relative; width: 8px; height: 100%; border-top: 1px solid transparent; }
+.fix-dopamine::before { content: ""; position: absolute; left: -3px; right: -3px; top: 50%; border-top: 1px solid var(--rule); }
+.fix-dopamine span { position: absolute; left: 0; right: 0; border-radius: 2px; }
+.fix-dopamine .up { bottom: 50%; background: var(--vip); }
+.fix-dopamine .down { top: 50%; background: var(--lamp5); }
+
+/* ---- схема путей ---- */
+
+.pathways-figure { margin: 18px 0 0; display: grid; gap: 6px; }
+.pathways-figure figcaption { font-size: 12px; }
+.pathways { width: 100%; max-width: 960px; background: var(--paper); border: 1px solid var(--rule); border-radius: 8px; }
+.path { fill: none; stroke: #b7b0c6; opacity: 0.7; }
+.path:hover { opacity: 1; stroke: var(--ink); }
+.path-plastic { stroke: var(--vip); }
+.path-organ { stroke: var(--ink-soft); stroke-dasharray: 4 3; stroke-width: 1.2; }
+.arrow { fill: #b7b0c6; }
+.arrow-plastic { fill: var(--vip); }
+.node { fill: var(--paper); stroke: var(--ink-soft); stroke-width: 1.5; }
+.node-cortex { stroke: var(--hema); stroke-width: 2; }
+.node-plastic { fill: none; stroke: var(--vip); stroke-width: 1.2; stroke-dasharray: 2 2; }
+.node-halo { fill: var(--eosin); }
+.node-label { font-size: 10px; fill: var(--ink); text-anchor: middle; paint-order: stroke; stroke: var(--paper); stroke-width: 3px; }
+.endpoint { font: italic 12px var(--serif); fill: var(--ink-soft); }
+
+/* ---- мысли ---- */
+
+.thoughts-box summary { cursor: pointer; color: var(--ink-soft); font-size: 12px; }
+.thoughts { display: grid; gap: 6px; margin-top: 6px; }
+.thoughts-log { max-height: 160px; overflow: auto; display: grid; gap: 4px; align-content: start; }
+.chain { margin: 0; display: flex; flex-wrap: wrap; gap: 2px; align-items: center; }
+.chain-label { font-size: 11px; color: var(--ink-soft); margin-right: 4px; }
+.chain-silent .press { font-style: italic; }
+.press { padding: 0 5px; min-width: 20px; font-family: ui-monospace, monospace; }
+.press.on { border-color: var(--hema); background: #ece8f5; }
+.choices { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; }
+.choice-best { color: var(--hema); font-weight: 600; }
+
+/* ---- глаз и рука ---- */
+
+.sight h4:first-child { margin-top: 0; }
+.sight p { margin: 0 0 6px; font-size: 12px; }
+.picture { position: relative; max-width: 100%; }
+.picture canvas { width: 100%; height: 100%; image-rendering: pixelated; border: 1px solid var(--rule); border-radius: 3px; }
+.fovea-frame { position: absolute; top: 0; bottom: 0; border: 2px solid var(--hema); border-radius: 2px; pointer-events: none; }
+.keyboard { display: grid; gap: 3px; }
+.keys { display: flex; gap: 3px; }
+/* Заливка клавиши — доля клеток её движения. */
+.key {
+  min-width: 24px; padding: 2px 4px; text-align: center; font-family: ui-monospace, monospace; cursor: help;
+  border: 1px solid var(--rule); border-radius: 4px;
+  background: linear-gradient(to top, rgb(44 30 120 / 0.35) calc(var(--share) * 100%), #fff calc(var(--share) * 100%));
 }
-
-.neuron-close {
-  position: absolute;
-  top: -4px;
-  right: -6px;
-  border: 0;
-  background: none;
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.neuron-feeling {
-  margin: 6px 0 0;
-}
-
-.neuron-state {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 4px;
-  margin: 8px 0;
-}
-
-.neuron-state dt {
-  color: var(--ink-soft);
-  font-size: 11px;
-}
-
-.neuron-state dd {
-  margin: 0;
-  font-variant-numeric: tabular-nums;
-}
-
-.neuron-card section {
-  margin-top: 8px;
-}
-
-.neuron-card h4 {
-  margin: 0 0 4px;
-  font: italic 500 13px/1.3 var(--serif);
-}
-
-.neuron-card h4 span {
-  color: var(--ink-soft);
-  font-style: normal;
-  font-size: 12px;
-}
-
-.neuron-bars {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.neuron-bars li {
-  display: grid;
-  grid-template-columns: 7.5em 1fr 3em;
-  align-items: center;
-  gap: 6px;
-}
-
-.neuron-word {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.neuron-bar {
-  height: 6px;
-  border-radius: 3px;
-  background: var(--hema);
-  opacity: 0.75;
-}
-
-.neuron-value {
-  color: var(--ink-soft);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-}
-
-.neuron-table {
-  width: 100%;
-  margin-top: 8px;
-  border-collapse: collapse;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-
-.neuron-table caption {
-  text-align: left;
-  font: italic 500 13px/1.3 var(--serif);
-  padding-bottom: 2px;
-}
-
-.neuron-table th {
-  color: var(--ink-soft);
-  font-weight: 400;
-  text-align: right;
-}
-
-.neuron-table th:first-child,
-.neuron-table td:first-child {
-  text-align: left;
-}
-
-.neuron-table td {
-  text-align: right;
-  border-top: 1px solid var(--rule);
-}
-
-/* ---- границы, которые тянутся ---- */
-
-.splitter {
-  position: relative;
-  background: var(--rule);
-  touch-action: none;
-}
-
-.splitter::after {
-  /* Зона захвата шире видимой линии. */
-  content: "";
-  position: absolute;
-}
-
-.splitter-x {
-  z-index: 2;
-  width: 1px;
-  cursor: col-resize;
-}
-
-.splitter-x::after {
-  inset: 0 -5px;
-}
-
-.splitter-y {
-  height: 1px;
-  cursor: row-resize;
-}
-
-.splitter-y::after {
-  inset: -5px 0;
-}
-
-.splitter:hover,
-.splitter:focus-visible,
-.splitter-active {
-  background: var(--hema);
-  outline: none;
-  box-shadow: 0 0 0 1px var(--hema);
-}
-
-body.resizing-x {
-  cursor: col-resize;
-  user-select: none;
-}
-
-body.resizing-y {
-  cursor: row-resize;
-  user-select: none;
-}
-
-/* ---- окошко «Мысли» ---- */
-
-.thoughts {
-  border-bottom: 1px solid var(--rule);
-}
-
-.thoughts-closed {
-  border-bottom: 1px solid var(--rule);
-}
-
-.thoughts-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 4px 12px;
-}
-
-.thoughts-toggle,
-.thoughts-clear {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border: 0;
-  background: none;
-  padding: 2px 4px;
-  cursor: pointer;
-}
-
-.thoughts-toggle {
-  font: italic 500 14px/1.3 var(--serif);
-}
-
-.thoughts-clear {
-  color: var(--ink-soft);
-  font-size: 12px;
-}
-
-.thoughts-count {
-  padding: 0 6px;
-  border-radius: 999px;
-  background: var(--hema-soft);
-  color: var(--hema);
-  font: 11px/1.6 var(--sans);
-  font-variant-numeric: tabular-nums;
-}
-
-.thoughts-live {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--dab);
-}
-
-.thoughts-body {
-  min-height: 0;
-  background: var(--glass);
-}
-
-.thoughts-log {
-  height: 100%;
-  overflow-y: auto;
-  padding: 8px 14px;
-  font-size: 13px;
-}
-
-.thoughts-empty {
-  margin: 0;
-  color: var(--ink-soft);
-  font-style: italic;
-}
-
-.thought-chain {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 6px 0;
-  border-bottom: 1px dashed var(--rule);
-}
-
-.thought {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 3px;
-  padding: 0 6px;
-  border-radius: 4px;
-  background: var(--paper);
-  box-shadow: inset 0 0 0 1px var(--rule);
-}
-
-.thought-mark {
-  font-size: 11px;
-}
-
-.thought-ok .thought-mark {
-  color: var(--hema);
-}
-
-.thought-no {
-  color: var(--ink-soft);
-  text-decoration: line-through;
-}
-
-.thought-no .thought-mark {
-  color: var(--eosin);
-}
-
-.thought-stop .thought-mark {
-  color: var(--dab);
-}
-
-.thought-result {
-  flex-basis: 100%;
-  margin: 2px 0 0;
-  color: var(--hema);
-  font: italic 14px/1.4 var(--serif);
-}
-
-/* ---- рост синапсов: дуги «место A → место B» ---- */
-
-.growth {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-  pointer-events: none;
-}
-
-.growth-arc {
-  animation: growth-fade 2.2s ease-out forwards;
-}
-
-.growth-arc path {
-  fill: none;
-  stroke: var(--dab);
-  stroke-width: 1.5;
-}
-
-.growth-arc circle {
-  fill: var(--dab);
-}
-
-.growth-context path {
-  stroke: var(--hema);
-  stroke-dasharray: 4 3;
-}
-
-.growth-context circle {
-  fill: var(--hema);
-}
-
-.growth-value path,
-.growth-value circle {
-  stroke: var(--eosin);
-  fill: none;
-}
-
-.growth-value circle {
-  fill: var(--eosin);
-}
-
-@keyframes growth-fade {
-  from {
-    opacity: 0.95;
-  }
-  to {
-    opacity: 0;
-  }
-}
-
-.thought-choice {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2px 8px;
-  flex-basis: 100%;
-  margin: 2px 0;
-  color: var(--ink-soft);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-
-.thought-choice strong {
-  color: var(--ink);
-  font-weight: 600;
-}
-
-.choice-best {
-  color: var(--hema);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .growth-arc {
-    animation-duration: 4s;
-  }
-}
+.key.held { border-color: var(--eosin); box-shadow: 0 0 0 2px var(--eosin); }

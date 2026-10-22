@@ -898,6 +898,68 @@ def use_fit(cfg, name: str) -> None:
     cfg.column_gain_external_pop = tuple(tuple(p) for p in data["pop"])
 
 
+def nucleus_cells(spec) -> tuple[int, int]:
+    """Главных и местных тормозных клеток ядра с числом клеток по данным (AreaSpec.cells)."""
+
+    fraction = spec.local_inhibitory
+    return spec.cells, (max(2, round(spec.cells * fraction / (1.0 - fraction))) if fraction < 1 else 2)
+
+
+def area_sizes(cfg) -> dict[str, int]:
+    """
+    Клеток в каждой зоне при размере мозга cfg.total_neurons. Ядра с числом
+    клеток по данным (реле — по рецепторам органа, гиппокамп — по
+    разреженности связей) — столько; прочие ядра — своей долей от размера
+    мозга; всё остальное — колонкам коры по их долям, но колонка не меньше
+    min_column_neurons (в малой зоне почти весь вход — ток недостающих
+    соседей). Доли (AreaSpec.share) — из прежней схемы [сверить: площади зон
+    коры человека, напр. HCP-MMP — Glasser et al. 2016,
+    https://doi.org/10.1038/nature18933].
+    """
+
+    total = cfg.total_neurons
+    every = sum(a.share for a in cfg.areas) or 1.0
+    out = {}
+
+    for a in cfg.areas:
+        if a.name in cfg.layered_areas:
+            continue
+
+        out[a.name] = sum(nucleus_cells(a)) if a.cells > 0 else max(10, int(total * a.share / every))
+
+    cortex = [a for a in cfg.areas if a.name in cfg.layered_areas]
+    budget = max(0, total - sum(out.values()))
+    shares = sum(a.share for a in cortex) or 1.0
+
+    for a in cortex:
+        out[a.name] = max(cfg.min_column_neurons, int(budget * a.share / shares))
+
+    return out
+
+
+def total_for(size: int, cfg=None) -> int:
+    """Сколько клеток получится у мозга размера size (колонки не меньше min_column_neurons)."""
+
+    from dataclasses import replace as _replace
+
+    from brain.config import BrainConfig
+
+    probe = _replace(cfg or BrainConfig(), size=str(int(size)))
+    if not probe.areas:
+        apply(probe)
+    return sum(area_sizes(probe).values())
+
+
+def min_size(cfg=None) -> int:
+    """
+    Наименьший мозг: ядра по данным и каждая колонка коры на нижней границе.
+    Меньший размер даёт тот же мозг; больший — колонкам коры по долям (итог
+    чуть больше размера, пока мелкие колонки на нижней границе).
+    """
+
+    return total_for(1, cfg)
+
+
 def apply(cfg) -> None:
     """Собрать анатомический мозг: зоны, пути, вещества и рецепторы, согласованный фон."""
 

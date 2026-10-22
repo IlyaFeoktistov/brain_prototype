@@ -1,52 +1,45 @@
-import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { connect, type GrowEvent, type Anatomy, type Brains, type EmotionState, type Connection, type ServerMessage, type Status, type StepEvent } from "./brain";
-import { Chat, type ChatActions, type ChatEntry } from "./Chat";
+import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "./api";
-import { Fluorescence, Microscope } from "./Microscope";
-import { Guide } from "./Guide";
+import type { Anatomy, Brains, Fixation, NeuronInfo, Press, ServerMessage, Status, SynapseInfo, View } from "./brain";
+import { bioTime, connect, hourText } from "./brain";
 import { Face } from "./Face";
+import { Guide } from "./Guide";
+import { NeuronCard, SynapseCard } from "./Inspector";
+import { Fluorescence, type Hover, HoverTip, type Link, Microscope } from "./Microscope";
+import { Chemistry, Chooser, Conversation, type Entry, Menu, type WorldScreen } from "./Panels";
 import { Pathways } from "./Pathways";
-import { Timeline } from "./Timeline";
+import { Sight } from "./Sight";
 import { Splitter, useStoredSize } from "./Splitter";
-import { Thoughts, type ThoughtEntry } from "./Thoughts";
+import { Strip } from "./Strip";
+import { Thoughts } from "./Thoughts";
 
-const TIMELINE_LENGTH = 60;
-const THOUGHTS_LENGTH = 400;
-// Чат: не уже 300 px и не шире 70% окна — срезу мозга нужно место.
-const CHAT_MIN = 300;
-const chatMax = () => Math.max(CHAT_MIN, window.innerWidth * 0.7);
-
-// Размеры нового мозга (config.PRESETS): память видеокарты — DESIGN.
-const SIZES = [
-  { value: "tiny", label: "tiny · 2 тыс. — проверить, что работает" },
-  { value: "small", label: "small · 20 тыс. — опыты, минуты на урок" },
-  { value: "medium", label: "medium · 100 тыс. — больше помнит, 1.4 ГБ" },
-  { value: "large", label: "large · 500 тыс. — не влезает в 6 ГБ" },
-];
-
-function bioTime(ms: number): string {
-  const s = ms / 1000;
-  return s < 120 ? `${s.toFixed(1)} с` : `${(s / 60).toFixed(1)} мин`;
-}
+type Tab = "talk" | "sight" | "cell" | "chemistry" | "menu" | "report" | "guide";
+const SIDE_MIN = 340;
+// Сколько последних фиксаций и нажатий держать.
+const FIXATIONS = 80;
+const PRESSES = 300;
 
 export function App() {
-  const [anatomy, setAnatomy] = useState<Anatomy | null>(null);
-  const [status, setStatus] = useState<Status | null>(null);
-  const [steps, setSteps] = useState<StepEvent[]>([]);
-  const [entries, setEntries] = useState<ChatEntry[]>([]);
-  const [progress, setProgress] = useState<string | null>(null);
-  const [activity, setActivity] = useState<Record<string, number>>({});
   const [connected, setConnected] = useState(false);
+  const [status, setStatus] = useState<Status | null>(null);
+  const [anatomy, setAnatomy] = useState<Anatomy | null>(null);
   const [brains, setBrains] = useState<Brains | null>(null);
-  const [emotion, setEmotion] = useState<EmotionState | null>(null);
-  const [thoughts, setThoughts] = useState<ThoughtEntry[]>([]);
-  // Последний рост синапсов — микроскоп рисует дуги.
-  const [growth, setGrowth] = useState<{ id: number; links: GrowEvent["links"] } | null>(null);
-  const [chatWidth, setChatWidth] = useStoredSize("brain.chatWidth", 380);
-  // Форма «Новый мозг»: null — закрыта.
-  const [draft, setDraft] = useState<{ name: string; size: string } | null>(null);
-
-  const connection = useRef<Connection | null>(null);
+  const [entries, setEntries] = useState<Entry[]>([]);
+  const [screen, setScreen] = useState<WorldScreen>({ line: "", gaze: 0, pointer: null });
+  const [typing, setTyping] = useState("");
+  const [tab, setTab] = useState<Tab>("talk");
+  const [hover, setHover] = useState<Hover | null>(null);
+  const [selected, setSelected] = useState<number | null>(null);
+  const [synapse, setSynapse] = useState<SynapseInfo | null>(null);
+  const [links, setLinks] = useState<Link[]>([]);
+  const [report, setReport] = useState<{ title: string; node: ReactNode } | null>(null);
+  const [choosing, setChoosing] = useState(false);
+  const [now, setNow] = useState(0);
+  const [activity, setActivity] = useState<Record<string, number>>({});
+  const [fixations, setFixations] = useState<Fixation[]>([]);
+  const [presses, setPresses] = useState<Press[]>([]);
+  const [view, setView] = useState<View | null>(null);
+  const [side, setSide] = useStoredSize("brain.side", 460);
   const nextId = useRef(1);
   const fluoRef = useRef<Fluorescence | null>(null);
 
@@ -56,339 +49,191 @@ export function App() {
     return created;
   }, [anatomy]);
 
-  const addThought = useCallback((entry: Omit<ThoughtEntry, "id">) => {
-    setThoughts((list) => [...list, { ...entry, id: nextId.current++ }].slice(-THOUGHTS_LENGTH));
+  const add = useCallback((who: Entry["who"], text: string) => {
+    setEntries((list) => [...list, { id: nextId.current++, who, text }].slice(-400));
   }, []);
 
-  const addEntry = useCallback((entry: Omit<ChatEntry, "id">) => {
-    setEntries((list) => [...list, { ...entry, id: nextId.current++ }].slice(-300));
+  useEffect(
+    () =>
+      connect((message: ServerMessage) => {
+        switch (message.type) {
+          case "status":
+            setStatus(message);
+            break;
+          case "anatomy":
+            setAnatomy(message);
+            setSelected(null);
+            setChoosing(false);
+            setFixations([]);
+            setPresses([]);
+            setView(null);
+            break;
+          case "brains":
+            setBrains(message);
+            break;
+          case "spikes":
+            for (const chunk of message.chunks) fluoRef.current?.spike(chunk, message.t);
+            setNow(message.t);
+            break;
+          case "screen":
+            setScreen(message);
+            break;
+          case "typed":
+            setTyping((text) => text + message.char);
+            break;
+          case "info":
+            add("info", message.text);
+            break;
+          case "fixation":
+            setFixations((list) => [...list, message].slice(-FIXATIONS));
+            break;
+          case "press":
+            setPresses((list) => [...list, message].slice(-PRESSES));
+            break;
+          case "view":
+            setView(message);
+            break;
+        }
+      }, setConnected),
+    [add],
+  );
+
+  const say = useCallback(
+    (text: string) => {
+      add("you", text);
+      setTyping("");
+      api
+        .say(text)
+        .then((r) => {
+          add("brain", r.text || "(молчит)");
+          setTyping("");
+        })
+        .catch((e) => add("info", `Ошибка: ${(e as Error).message}`));
+    },
+    [add],
+  );
+
+  const select = useCallback((index: number) => {
+    setSelected(index);
+    setSynapse(null);
+    setTab("cell");
   }, []);
 
-  useEffect(() => {
-    const handle = (message: ServerMessage) => {
-      switch (message.type) {
-        case "anatomy":
-          setAnatomy(message);
-          break;
-        case "status":
-          setStatus(message);
-          setEmotion(message.emotionsEnabled ? message.emotion : null);
-          if (!message.busy) setProgress(null);
-          break;
-        case "spikes":
-          for (const chunk of message.chunks) fluoRef.current?.spike(chunk);
-          break;
-        case "step":
-          setSteps((list) => [...list, message].slice(-TIMELINE_LENGTH));
-          break;
-        case "out":
-          // Чат живёт на HTTP API; по WebSocket — только прогресс чтения.
-          if (message.kind === "progress") setProgress(message.text);
-          break;
-        case "brains":
-          setBrains(message);
-          break;
-        case "emotion":
-          setEmotion(message);
-          break;
-        case "initiative":
-          addEntry({ who: "brain", text: message.text, initiative: message.reason });
-          break;
-        case "musing":
-          addThought({ kind: "musing", text: message.text });
-          break;
-        case "choice":
-          addThought({ kind: "choice", text: message.token, candidates: message.candidates });
-          break;
-        case "grow":
-          setGrowth({ id: nextId.current++, links: message.links });
-          break;
-        case "thought":
-          addThought({ kind: "step", text: message.thought, verdict: message.verdict, score: message.score });
-          break;
-      }
-    };
-    connection.current = connect(handle, setConnected);
-    return () => connection.current?.close();
-  }, [addEntry, addThought]);
+  // Карточка пришла: следить за клеткой и её самыми сильными связями.
+  const onLoaded = useCallback((info: NeuronInfo) => {
+    const f = fluoRef.current;
+    if (!f) return;
+    const partners = [...info.topIncoming.map((s) => s.pre), ...info.topOutgoing.map((s) => s.post), info.index];
+    for (const key of [...f.watched.keys()]) if (!partners.includes(key)) f.watched.delete(key);
+    for (const p of partners) if (!f.watched.has(p)) f.watched.set(p, []);
+    setLinks((old) => {
+      const fresh = [
+        ...info.topIncoming.map((s) => ({ from: s.pre, to: s.post, inhibitory: s.psp < 0 })),
+        ...info.topOutgoing.map((s) => ({ from: s.pre, to: s.post, inhibitory: s.psp < 0 })),
+      ];
+      const same = old.length === fresh.length && old.every((l, i) => l.from === fresh[i].from && l.to === fresh[i].to);
+      return same ? old : fresh;
+    });
+  }, []);
 
-  const report = useCallback(
-    (error: unknown) => addEntry({ who: "info", text: `Ошибка: ${(error as Error).message}` }),
-    [addEntry],
-  );
+  if (!status || !brains) {
+    return <div className="boot">{connected ? "Связь есть, жду мозг…" : "Запусти: python -m brain.server"}</div>;
+  }
 
-  const actions: ChatActions = useMemo<ChatActions>(
-    (): ChatActions => ({
-      say: (text) => {
-        addEntry({ who: "you", text });
-        const id = nextId.current++;
-        setEntries((list) => [...list, { id, who: "brain", text: "", streaming: true, words: [] }]);
-        const update = (patch: (entry: ChatEntry) => ChatEntry) =>
-          setEntries((list) => list.map((entry) => (entry.id === id ? patch(entry) : entry)));
-        api
-          .chat(text, (token, confidence) =>
-            update((entry) => ({
-              ...entry,
-              text: `${entry.text} ${token}`.trim(),
-              words: [...(entry.words ?? []), { token, confidence }],
-            })),
-          )
-          .then(({ text: final, reply }) => {
-            update((entry) => ({ ...entry, text: final, streaming: false, reply }));
-            // Обдумывал ответ (/think on) — цепочку мыслей закрывает сам ответ.
-            setThoughts((list) =>
-              list.length && list[list.length - 1].kind !== "musing"
-                ? [...list, { id: nextId.current++, kind: "musing", text: final }]
-                : list,
-            );
-          })
-          .catch((error) => {
-            update((entry) => ({ ...entry, text: "…", streaming: false }));
-            report(error);
-          });
-      },
-      command: (text) => {
-        addEntry({ who: "you", text });
-        api
-          .command(text)
-          .then(({ output }) =>
-            output.forEach((line) => addEntry({ who: line.kind === "brain" ? "brain" : "info", text: line.text })),
-          )
-          .catch(report);
-      },
-      upload: (name, text, size) => {
-        addEntry({ who: "you", text: `Загружаю «${name}» (${(size / 1024).toFixed(0)} КБ)` });
-        api
-          .read(name, text)
-          .then((r) =>
-            addEntry({ who: "info", text: `Читаю «${name}» в фоне: ${r.sentences} фраз. Можно разговаривать.` }),
-          )
-          .catch(report);
-      },
-      feedback: (reward) => {
-        setEntries((list) => list.map((entry) => (entry.who === "brain" ? { ...entry, rated: true } : entry)));
-        addEntry({ who: "you", text: reward > 0 ? "Верно" : "Неверно" });
-        api.feedback(reward).then(({ text }) => addEntry({ who: "info", text })).catch(report);
-      },
-      stop: () => {
-        api.stop().catch(report);
-      },
-      sleep: () => actions.command("/sleep"),
-    }),
-    [addEntry, report],
-  );
-
-  const thinking = Boolean(status?.thinking);
-  const live = Boolean(status?.live);
+  if (!status.loaded || !anatomy || choosing) {
+    return (
+      <div className="boot">
+        <Chooser brains={brains} info={(text) => add("info", text)} onClose={status.loaded ? () => setChoosing(false) : undefined} />
+        <div className="boot-log">{entries.slice(-6).map((e) => <p key={e.id} className="muted">{e.text}</p>)}</div>
+      </div>
+    );
+  }
 
   return (
     <div className="app">
       <header className="masthead">
         <h1>Срез мозга</h1>
-        {brains && (
-          <div className="brain-picker">
-            {brains.items.length > 0 && (
-              <label>
-                <span>Мозг</span>
-                <select
-                  value={brains.current}
-                  disabled={!connected || status?.busy}
-                  onChange={(event) => {
-                    const name = event.target.value;
-                    addEntry({ who: "you", text: `Переключаюсь на ${name}` });
-                    api
-                      .load(name)
-                      .then((r) => addEntry({ who: "info", text: `Загружено: ${r.brain} — ${r.neurons.toLocaleString("ru")} нейронов` }))
-                      .catch(report);
-                  }}
-                >
-                  {brains.items.map((brain) => (
-                    <option key={brain.name} value={brain.name}>
-                      {brain.name} · {brain.megabytes} МБ
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-            {draft === null ? (
-              <button
-                type="button"
-                className="new-brain"
-                disabled={!connected || status?.busy}
-                onClick={() => setDraft({ name: "", size: "small" })}
-              >
-                Новый мозг
-              </button>
-            ) : (
-              <form
-                className="new-brain-form"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  const name = draft.name.trim();
-                  if (!name) return;
-                  setDraft(null);
-                  addEntry({ who: "you", text: `Новый мозг ${name} (${draft.size})` });
-                  api
-                    .newBrain(name, draft.size)
-                    .then((r) => addEntry({ who: "info", text: r.text }))
-                    .catch(report);
-                }}
-              >
-                <input
-                  autoFocus
-                  placeholder="имя"
-                  value={draft.name}
-                  onChange={(event) => setDraft({ ...draft, name: event.target.value })}
-                />
-                <select value={draft.size} onChange={(event) => setDraft({ ...draft, size: event.target.value })}>
-                  {SIZES.map((size) => (
-                    <option key={size.value} value={size.value}>
-                      {size.label}
-                    </option>
-                  ))}
-                </select>
-                <button type="submit" disabled={!draft.name.trim()}>
-                  Создать
-                </button>
-                <button type="button" onClick={() => setDraft(null)}>
-                  Отмена
-                </button>
-              </form>
-            )}
-          </div>
-        )}
-        {status?.features && (
-          <details className="features">
-            <summary>Функции</summary>
-            <div className="features-list">
-              {status.features.map((feature) => (
-                <div key={feature.name} className="feature">
-                  <label className="toggle" title={feature.name}>
-                    <input
-                      type="checkbox"
-                      checked={feature.enabled}
-                      disabled={!connected}
-                      onChange={(event) => api.setFeature(feature.name, event.target.checked).catch(report)}
-                    />
-                    {feature.title}
-                  </label>
-                  <p className="feature-help">{feature.help}</p>
-                </div>
-              ))}
-            </div>
-          </details>
-        )}
-        {anatomy ? (
-          <p className="vitals">
-            <span>{anatomy.neurons.toLocaleString("ru")} нейронов</span>
-            <span>{anatomy.synapses.toLocaleString("ru")} синапсов</span>
-            {status && (
-              <>
-                <span>{status.words.toLocaleString("ru")} слов знает</span>
-                <span>{status.tokens.toLocaleString("ru")} прожито</span>
-                <span>{bioTime(status.timeMs)} жизни</span>
-                <span>{status.grown.toLocaleString("ru")} новых синапсов выросло</span>
-                {status.reading.length > 0 && (
-                  <span>
-                    читает «{status.reading[0].name}» {status.reading[0].done}/{status.reading[0].total}
-                    {status.reading.length > 1 ? ` и ещё ${status.reading.length - 1}` : ""}
-                  </span>
-                )}
-                <span>
-                  {status.sleeping
-                    ? "спит"
-                    : `${status.sleepPressure.toLocaleString("ru")} новых впечатлений`}
-                </span>
-              </>
-            )}
-            <span className="device">{anatomy.device === "cpu" ? "процессор" : "видеокарта"}</span>
-          </p>
-        ) : (
-          <p className="vitals">{connected ? "Мозг просыпается…" : "Запусти python -m brain.server"}</p>
-        )}
+        <p className="vitals">
+          <span>{status.brain}</span>
+          <span>{anatomy.neurons.toLocaleString("ru")} нейронов</span>
+          <span>{anatomy.synapses.toLocaleString("ru")} синапсов</span>
+          <span>{status.asleep ? "спит" : "бодрствует"}</span>
+          <span>{hourText(status.hour ?? 0)}</span>
+          <span>прожито {bioTime(status.timeMs ?? 0)}</span>
+          {status.busy && <span className="busy">{status.busy}…</span>}
+          {status.live && <span>живёт в тишине</span>}
+          <span className="device">{anatomy.device === "cpu" ? "процессор" : "видеокарта"}</span>
+          {!connected && <span className="busy">нет связи</span>}
+        </p>
       </header>
 
-      <main className="bench" style={{ "--chat-width": `${chatWidth}px` } as CSSProperties}>
+      <main className="bench" style={{ "--side": `${side}px` } as CSSProperties}>
         <div className="stage">
-          {anatomy ? (
-            <>
-              <Microscope anatomy={anatomy} fluo={fluo} onActivity={setActivity} growth={growth} />
-              <div className="legend">
-                <Pathways anatomy={anatomy} status={status} activity={activity} emotion={emotion} />
-                <dl className="key">
-                  <div>
-                    <dt className="swatch swatch-e" />
-                    <dd>возбуждающий нейрон</dd>
-                  </div>
-                  <div>
-                    <dt className="swatch swatch-i" />
-                    <dd>тормозный нейрон</dd>
-                  </div>
-                  <div>
-                    <dt className="swatch swatch-dopamine" />
-                    <dd>путь учится от дофамина</dd>
-                  </div>
-                </dl>
-              </div>
-              <Timeline steps={steps} />
-              <Guide />
-            </>
-          ) : (
-            <div className="slide-placeholder" />
-          )}
+          <Microscope
+            anatomy={anatomy}
+            fluo={fluo}
+            selected={selected}
+            links={selected === null ? [] : links}
+            onHover={setHover}
+            onSelect={select}
+            onActivity={setActivity}
+          />
+          <dl className="legend">
+            <div><dt className="swatch swatch-E" /><dd>главная клетка</dd></div>
+            <div><dt className="swatch swatch-PV" /><dd>PV / местная тормозная</dd></div>
+            <div><dt className="swatch swatch-SOM" /><dd>SOM</dd></div>
+            <div><dt className="swatch swatch-VIP" /><dd>VIP</dd></div>
+            <div><dt className="swatch swatch-LAMP5" /><dd>LAMP5</dd></div>
+            <div><dd>колонки — слоями сверху вниз: L2/3, L4, L5, L6; яркость — спайк (показ с задержкой ~50 мс)</dd></div>
+          </dl>
+          <Strip fixations={fixations} />
+          <Pathways anatomy={anatomy} activity={activity} />
         </div>
 
-        <Splitter
-          axis="x"
-          size={chatWidth}
-          min={CHAT_MIN}
-          max={chatMax}
-          direction={-1}
-          onResize={setChatWidth}
-          label="Ширина чата"
-        />
+        <Splitter axis="x" size={side} min={SIDE_MIN} max={() => Math.max(SIDE_MIN, window.innerWidth * 0.7)} direction={-1} onResize={setSide} label="Ширина панели" />
 
-        <Chat
-          thoughts={{
-            count: thoughts.filter((t) => t.kind === "musing").length,
-            active: live || thinking,
-            node: <Thoughts entries={thoughts} live={live} thinking={thinking} />,
-            clear: () => setThoughts([]),
-          }}
-          header={
-            <div className="mood">
-              <Face emotion={emotion} />
-              <label className="toggle" title="Думает в тишине, иногда заговаривает сам">
-                <input
-                  type="checkbox"
-                  checked={status?.live ?? false}
-                  disabled={!connected}
-                  onChange={(event) => {
-                    api.setLive(event.target.checked).catch(report);
-                  }}
-                />
-                Живой режим
-              </label>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={status?.emotionsEnabled ?? true}
-                  disabled={!connected}
-                  onChange={(event) => api.setEmotions(event.target.checked).catch(report)}
-                />
-                Эмоции
-              </label>
+        <aside className="side">
+          <nav className="tabs">
+            {([["talk", "Разговор"], ["sight", "Глаз и рука"], ["cell", "Клетка"], ["chemistry", "Химия"], ["menu", "Меню"], ["report", "Отчёт"], ["guide", "Справка"]] as [Tab, string][]).map(([key, title]) => (
+              <button key={key} type="button" className={tab === key ? "on" : ""} onClick={() => setTab(key)}>{title}</button>
+            ))}
+          </nav>
+          {tab === "talk" && (
+            <Conversation face={<Face status={status} />} entries={entries} screen={screen} typing={typing} busy={status.busy} onSay={say}
+                          thoughts={<Thoughts presses={presses} live={status.live} />} />
+          )}
+          {tab === "sight" && <Sight view={view} keyboard={anatomy.keyboard} />}
+          {tab === "cell" && (
+            <div className="panel">
+              {synapse && <SynapseCard synapse={synapse} onNeuron={select} onClose={() => setSynapse(null)} />}
+              {selected !== null ? (
+                <NeuronCard index={selected} fluo={fluo} now={now} onNeuron={select} onSynapse={setSynapse}
+                            onClose={() => { setSelected(null); setLinks([]); }} onLoaded={onLoaded} />
+              ) : (
+                <p className="muted">Кликни клетку в микроскопе: её модель, состояние, вещества, ветки дендрита и все синапсы.</p>
+              )}
             </div>
-          }
-          entries={entries}
-          progress={progress}
-          busy={status?.busy ?? false}
-          reading={(status?.reading.length ?? 0) > 0}
-          sleeping={status?.sleeping ?? false}
-          connected={connected}
-          actions={actions}
-        />
+          )}
+          {tab === "chemistry" && <Chemistry status={status} />}
+          {tab === "menu" && (
+            <Menu
+              status={status}
+              actions={{
+                info: (text) => add("info", text),
+                report: (title, node) => { setReport({ title, node }); setTab("report"); },
+                choose: () => setChoosing(true),
+              }}
+            />
+          )}
+          {tab === "guide" && <Guide />}
+          {tab === "report" && (
+            <div className="panel">
+              {report ? <><h3>{report.title}</h3>{report.node}</> : <p className="muted">Сводка и «Здоровье» из меню появятся здесь.</p>}
+            </div>
+          )}
+        </aside>
       </main>
+      {hover && <HoverTip hover={hover} />}
     </div>
   );
 }

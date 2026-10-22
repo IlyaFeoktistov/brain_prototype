@@ -55,11 +55,22 @@ class Session:
         self.pointer: float | None = None
         self.saccades: list[float] = []
         self._held = None
+        # Доля выстреливших клеток движения каждой клавиши за последнее
+        # окно (наблюдатель: рука и «из чего выбирал»).
+        self.shares = torch.zeros(len(self.keyboard))
+        # Идёт ответ собеседнику (reply), а не жизнь в тишине.
+        self.replying = False
         # Вкус (награда учителя): участок рецепторов и сколько ещё мс он
         # чувствуется.
         self.taste = {s.name: (o, s.size) for s, o in zip(self.brain.sensors, self.brain.sensor_offsets)
                       if s.name in ("sweet", "bitter")}
         self._tasting: tuple[str, float] | None = None
+        # Наблюдатели (веб): напечатанный символ и саккада (откуда, куда).
+        # Мозгу не нужны.
+        self.on_typed = None
+        self.on_saccade = None
+        # Собеседник прервал ответ (веб, «Стоп»): reply заканчивается.
+        self.halt = False
 
     def _picture(self, screen: Screen, centre: float) -> torch.Tensor:
         """Строка с указкой, сдвинутая так, что точка взгляда — в centre."""
@@ -122,17 +133,25 @@ class Session:
             if float(fired.float().mean()) >= self.cfg.saccade_share:
                 # Саккада: средний вектор выстреливших клеток двухолмия.
                 step = float(self.sc_target[fired].mean())
+                before = self.gaze
                 self.gaze = max(0.0, min(self.gaze + step, self.screen.width(self.line) + 4))
                 self.saccades.append(step)
+
+                if self.on_saccade is not None:
+                    self.on_saccade(before, self.gaze)
                 self.brain.run(self.cfg.saccade_ms, self._blank(self.cfg.saccade_ms))
                 t += self.cfg.saccade_ms
 
+            self.shares = self.hand.shares(rates[self.H.slice])
             key = self.hand.pressed(rates[self.H.slice])
 
             if key is not None and key != self._held:
                 char = self.keyboard.type(key)
                 self.line += char
                 typed += char
+
+                if self.on_typed is not None:
+                    self.on_typed(char)
 
             self._held = key
 
@@ -147,11 +166,16 @@ class Session:
 
         self.line, self.gaze, self.saccades = text + " ", 0.0, []
         answer, quiet, t = "", 0.0, 0.0
+        self.halt = False
+        self.replying = True
 
-        while t < max_ms and not (answer and quiet >= silence_ms):
-            typed = self.live(self.window_ms * 10)
-            t += self.window_ms * 10
-            answer += typed
-            quiet = 0.0 if typed else quiet + self.window_ms * 10
+        try:
+            while t < max_ms and not (answer and quiet >= silence_ms) and not self.halt:
+                typed = self.live(self.window_ms * 10)
+                t += self.window_ms * 10
+                answer += typed
+                quiet = 0.0 if typed else quiet + self.window_ms * 10
+        finally:
+            self.replying = False
 
         return answer

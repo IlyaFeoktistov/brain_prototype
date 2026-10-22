@@ -1,92 +1,62 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { Press } from "./brain";
 
-// Окошко «Мысли» в чате: ход размышления виден по шагам.
-// Шаг — слово-кандидат и вердикт проверяющего; «мысль» — итог
-// блуждания в тишине (живой режим) или ответа с /think on.
+// «Мысли»: что рука печатала — в ответ собеседнику и сама, в тишине.
+// Нажатия идут цепочками: новая цепочка — после паузы или когда ответ
+// сменился тишиной. У каждого нажатия видно, из чего рука выбирала: доля
+// выстреливших клеток движения у четырёх лучших клавиш (нажата та, у
+// которой больше и не меньше половины, brain/body.Hand).
 
-export interface ThoughtEntry {
-  id: number;
-  kind: "step" | "musing" | "choice";
-  text: string;
-  verdict?: "ok" | "no" | "stop";
-  score?: number;
-  // Выбор слова: кандидаты с вероятностями.
-  candidates?: [string, number][];
-}
+// Пауза (мс жизни мозга), после которой нажатия — новая цепочка.
+const GAP_MS = 1000;
 
-const VERDICT: Record<string, { mark: string; title: string }> = {
-  ok: { mark: "✓", title: "проверяющий принял" },
-  no: { mark: "✗", title: "проверяющий отверг" },
-  stop: { mark: "■", title: "не уверен — остановился" },
-};
-
-interface Props {
-  entries: ThoughtEntry[];
-  live: boolean;
-  thinking: boolean;
-}
-
-export function Thoughts({ entries, live, thinking }: Props) {
+export function Thoughts({ presses, live }: { presses: Press[]; live: boolean }) {
   const log = useRef<HTMLDivElement>(null);
+  const [picked, setPicked] = useState<Press | null>(null);
 
   useEffect(() => {
     log.current?.scrollTo({ top: log.current.scrollHeight });
-  }, [entries]);
+  }, [presses]);
 
-  // Шаги между итогами — одна цепочка мысли.
-  const chains: { steps: ThoughtEntry[]; result?: ThoughtEntry; choices?: ThoughtEntry[] }[] = [];
-  let current: ThoughtEntry[] = [];
-  let choices: ThoughtEntry[] = [];
-  for (const entry of entries) {
-    if (entry.kind === "step") current.push(entry);
-    else if (entry.kind === "choice") choices.push(entry);
-    else {
-      chains.push({ steps: current, result: entry, choices });
-      current = [];
-      choices = [];
-    }
+  const chains: Press[][] = [];
+  for (const p of presses) {
+    const chain = chains[chains.length - 1];
+    const last = chain?.[chain.length - 1];
+    if (last && last.reply === p.reply && p.t - last.t < GAP_MS) chain.push(p);
+    else chains.push([p]);
   }
-  if (current.length || choices.length) chains.push({ steps: current, choices });
+  const shown = picked && presses.includes(picked) ? picked : presses[presses.length - 1];
 
   return (
-    <div className="thoughts-log" ref={log} aria-live="polite" aria-label="Ход мыслей">
-      {chains.length === 0 ? (
-        <p className="thoughts-empty">
-          {live || thinking
-            ? "Пока не думал."
-            : "Здесь виден ход мыслей и выбор каждого слова ответа. Живой режим — думает в тишине, /think on — обдумывает ответ."}
+    <div className="thoughts">
+      <div className="thoughts-log" ref={log} aria-live="polite" aria-label="Нажатия руки">
+        {chains.length === 0 ? (
+          <p className="muted">
+            {live ? "Пока рука ничего не нажала." : "Здесь видно, что печатает рука — в ответ и сама, в тишине (флаг «жить в тишине» в меню)."}
+          </p>
+        ) : (
+          chains.map((chain) => (
+            <p key={chain[0].t} className={chain[0].reply ? "chain" : "chain chain-silent"}>
+              <span className="chain-label">{chain[0].reply ? "в ответ" : "в тишине"}</span>
+              {chain.map((p, i) => (
+                <button key={i} type="button" className={p === shown ? "press on" : "press"} onClick={() => setPicked(p)}
+                        title={p.choices.map(([c, v]) => `«${c}» ${Math.round(v * 100)}%`).join(", ")}>
+                  {p.char === " " ? "␣" : p.char}
+                </button>
+              ))}
+            </p>
+          ))
+        )}
+      </div>
+      {shown && (
+        <p className="choices" title="доля выстреливших клеток движения клавиши">
+          <strong>«{shown.char === " " ? "␣" : shown.char}» выбрано из:</strong>
+          {shown.choices.map(([c, v], i) => (
+            <span key={i} className={c === shown.char ? "choice-best" : ""}>
+              {c === " " ? "␣" : c} {Math.round(v * 100)}%
+            </span>
+          ))}
         </p>
-      ) : (
-        chains.map((chain, i) => (
-          <div key={chain.result?.id ?? `open-${i}`} className="thought-chain">
-            {chain.steps.map((step) => {
-              const verdict = VERDICT[step.verdict ?? "ok"];
-              return (
-                <span
-                  key={step.id}
-                  className={`thought thought-${step.verdict}`}
-                  title={`${verdict.title}, оценка ${step.score?.toFixed(2)}`}
-                >
-                  {step.text}
-                  <span className="thought-mark" aria-label={verdict.title}>
-                    {verdict.mark}
-                  </span>
-                </span>
-              );
-            })}
-            {chain.choices?.map((choice) => (
-              <p key={choice.id} className="thought-choice" title="из чего выбирал слово (вероятности)">
-                <strong>{choice.text}</strong>
-                {choice.candidates!.map(([word, chance], i) => (
-                  <span key={word} className={i === 0 ? "choice-best" : ""}>
-                    {word} {Math.round(chance * 100)}%
-                  </span>
-                ))}
-              </p>
-            ))}
-            {chain.result && <p className="thought-result">→ {chain.result.text || "ничего не придумал"}</p>}
-          </div>
-        ))
       )}
     </div>
   );

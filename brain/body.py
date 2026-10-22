@@ -108,10 +108,15 @@ class Hand:
     def code(self, key: int) -> torch.Tensor:
         return torch.arange(key * self.cells, (key + 1) * self.cells)
 
+    def shares(self, fired: torch.Tensor) -> torch.Tensor:
+        """Доля выстреливших клеток движения каждой клавиши [keys]."""
+
+        return (fired[: self.keys * self.cells] > 0).float().view(self.keys, self.cells).mean(1)
+
     def pressed(self, fired: torch.Tensor, share: float = 0.5) -> int | None:
         """fired — спайки клеток руки за окно; номер нажатой клавиши или None."""
 
-        blocks = (fired[: self.keys * self.cells] > 0).float().view(self.keys, self.cells).mean(1)
+        blocks = self.shares(fired)
         key = int(blocks.argmax())
         return key if float(blocks[key]) >= share else None
 

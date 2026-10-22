@@ -6,10 +6,10 @@ win мс — частота каждой ступени против покоя:
 задержкой (первое окно, где частота выше покоя на 3 σ окон покоя) и где
 пропал. Отладка идёт по этой таблице сверху вниз.
 
-    PYTHONPATH=. .venv/bin/python tools/chain_bench.py [word=мама] [ms=300] [win=20] [warm=2500] [load=МОЗГ] [trn_scale=1]
+    PYTHONPATH=. .venv/bin/python tools/chain_bench.py [word=мама] [ms=300] [win=20] [warm=2500] [load=МОЗГ] [trn_scale=1] [tc_depression=1]
 
 trn_scale — проводимость TRN → реле LGN ×k (анализ чувствительности, не число
-мозга); прочие ключи — поля BrainConfig (relay_v_t_mv=-59, seed=2).
+мозга); tc_depression=0 — без депрессии синапсов LGN → кора (причинный тест); прочие ключи — поля BrainConfig (relay_v_t_mv=-59, seed=2).
 """
 
 import sys
@@ -21,7 +21,7 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 from brain.world import Keyboard, Screen
 
-opts = {"word": "мама", "ms": "300", "win": "20", "rest": "1000", "warm": "2500", "load": "", "trn_scale": "1"}
+opts = {"word": "мама", "ms": "300", "win": "20", "rest": "1000", "warm": "2500", "load": "", "trn_scale": "1", "tc_depression": "1"}
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
 cfg.autosave = False
@@ -92,6 +92,15 @@ share = on[(tc.pre.long() - lgn.start)].float().mean(1)
 cells = torch.arange(l4.start, l4.stop, device=brain.device)
 rows += [("V1 L4: поле на слове", cells[share > 0.5]), ("V1 L4: остальные", cells[share <= 0.5])]
 print(f"клеток V1 L4 с полем на слове: {int((share > 0.5).sum())} из {l4.size}")
+field = cells[share > 0.5]
+seeing = torch.arange(lgn.start, lgn.stop, device=brain.device)[on]
+
+if opts["tc_depression"] == "0":
+    brain.stp_u_cell[lgn.slice] = 0.0
+# Состояние в конце окна: ресурс синапсов зрячих LGN (депрессия; 1 — отдохнул)
+# и средний V клеток поля V1 L4.
+state = lambda: torch.stack([brain.stp_x[seeing].mean(), brain.v[field].mean()])
+extra = []
 win = float(opts["win"])
 blank = screen.picture("")
 # Разгон: после сборки кора оседает ~2–3 с (как в anatomy_fit) — покой
@@ -126,6 +135,7 @@ for w in range(windows):
     part = raster[w * steps:(w + 1) * steps]
     rates = brain.observe(win, part)
     trace.append(torch.stack([retina(part)] + [rates[s].mean() for _, s in rows]))
+    extra.append(state())
     key = hand.pressed(rates[brain.areas["hand"].output.slice])
 
     if key is not None and (not keys or keys[-1][1] != key):
@@ -142,4 +152,7 @@ for j, (name, _) in enumerate([("сетчатка", None)] + rows):
     cells = " ".join(f"{float(v):5.1f}" for v in trace[:, j])
     print(f"{name:16s} {m:6.1f} ±{s:4.1f} {float(trace[:, j].max()):7.1f} {lag:>9s}   {cells}")
 
+extra = torch.stack(extra)
+print(f"{'ресурс LGN слова':16s} {'':>12s} {'':>7s} {'':>9s}   " + " ".join(f"{float(v):5.2f}" for v in extra[:, 0]))
+print(f"{'V поля L4, мВ':16s} {'':>12s} {'':>7s} {'':>9s}   " + " ".join(f"{float(v):5.1f}" for v in extra[:, 1]))
 print("\nклавиши: " + (" ".join(f"{t:g} мс {keyboard.type(k)!r}" for t, k in keys) if keys else "не нажаты"))

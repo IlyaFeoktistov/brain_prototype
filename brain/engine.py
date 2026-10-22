@@ -142,7 +142,9 @@ class Projection:
     ):
         self.name = name
         self.source = source
-        self.pre = pre
+        # Номера входов — int32 (клеток меньше 2³¹), как в общем массиве
+        # синапсов (_pack): int64 до упаковки — лишние ~1.3 ГБ на мозг 388 тыс.
+        self.pre = pre.to(torch.int32) if pre.dtype == torch.int64 else pre
         self.post = post
         self.weight = weight
         self.plastic = plastic
@@ -185,17 +187,49 @@ class EventTable:
     """
 
     HUB_FACTOR = 4
+    # Синапсов в куске устойчивой сортировки (_stable_order).
+    CHUNK = 1 << 23
 
     def __init__(self, keys: torch.Tensor, n_slots: int, pad: int, dummies: int):
         device = keys.device
         counts = torch.bincount(keys, minlength=n_slots)
         ptr = torch.zeros(n_slots + 1, dtype=torch.int32, device=device)
         ptr[1:] = torch.cumsum(counts, 0).to(torch.int32)
-        perm = torch.argsort(keys, stable=True).to(torch.int32)
+        perm = self._stable_order(keys, ptr, n_slots)
         # Хотя бы одна ячейка: на пустую таблицу тоже смотрят индексы.
         perm = perm if len(perm) else torch.full((1,), pad, dtype=torch.int32, device=device)
         self.ptr = ptr
         self._setup(ptr[:-1], counts.to(torch.int32), perm, pad, dummies)
+
+    @classmethod
+    def _stable_order(cls, keys: torch.Tensor, ptr: torch.Tensor, n_slots: int) -> torch.Tensor:
+        """
+        То же, что argsort(keys, stable=True), но кусками: синапсы куска
+        встают в строки своих нейронов вслед за синапсами прежних кусков.
+        [замер] argsort разом по 327 млн ключей (мозг 388 тыс.) — пик ~10 ГБ
+        видеопамяти при карте 6 ГБ: индексы int64 и буферы сортировки
+        уходили в ОЗУ и своп. Кусками по 8 млн — ~0.5 ГБ сверх мозга (к этому
+        моменту он уже занимает почти всю карту), порядок тот же.
+        """
+
+        device = keys.device
+        perm = torch.empty(len(keys), dtype=torch.int32, device=device)
+        fill = ptr[:-1].long().clone()
+
+        for c0 in range(0, len(keys), cls.CHUNK):
+            k = keys[c0: c0 + cls.CHUNK].long()
+            order = torch.argsort(k, stable=True)
+            sk = k[order]
+            del k
+            cnt = torch.bincount(sk, minlength=n_slots)
+            # Место синапса в строке: сколько синапсов того же нейрона в
+            # куске перед ним (порядок в куске устойчивый).
+            first = torch.cumsum(cnt, 0) - cnt
+            rank = torch.arange(len(sk), device=device) - first[sk]
+            perm[fill[sk] + rank] = (order + c0).to(torch.int32)
+            fill += cnt
+
+        return perm
 
     def _setup(self, start, count, perm, pad: int, dummies: int) -> None:
         device = perm.device
@@ -2173,41 +2207,45 @@ class SpikingBrain:
         )
         self.plastic = [p for p in net if p.plastic]
 
-        def flatten(group, dummy: bool):
-            pre = [p.pre.flatten() for p in group]
-            post = [
-                torch.arange(p.post.start, p.post.stop, device=self.device)[:, None]
-                .expand_as(p.pre).flatten()
-                for p in group
-            ]
-            weight = [p.weight.flatten() for p in group]
-
-            if dummy:
-                # Фиктивные синапсы: фиктивный нейрон -> фиктивный нейрон, вес 0.
-                ids = self.n + torch.arange(
-                    self.DUMMY_SYNAPSES, device=self.device
-                ) % self.DUMMY_NEURONS
-                pre.append(ids)
-                post.append(ids)
-                weight.append(torch.zeros(self.DUMMY_SYNAPSES, device=self.device))
-
-            pre = torch.cat(pre).to(torch.int32)
-            post = torch.cat(post).to(torch.int32)
-            weight = torch.cat(weight)
-
+        def flatten(group, dummy: bool, posts: bool = True):
+            # Плоские массивы заводятся сразу, пути копируются в них по
+            # одному, и прежний тензор пути тут же освобождается. [замер]
+            # склейка списков (cat из int64 и копий expand) держала три
+            # копии всех синапсов — пик ~10 ГБ видеопамяти на мозге 388 тыс.
+            total = sum(p.weight.numel() for p in group) + (self.DUMMY_SYNAPSES if dummy else 0)
+            pre = torch.empty(total, dtype=torch.int32, device=self.device)
+            post = torch.empty(total, dtype=torch.int32, device=self.device) if posts else None
+            weight = torch.empty(total, dtype=torch.float32, device=self.device)
             offset = 0
 
             for p in group:
                 n = p.weight.numel()
                 shape = p.weight.shape
+                pre[offset: offset + n].view(shape).copy_(p.pre)
+                if posts:
+                    cells = torch.arange(p.post.start, p.post.stop, dtype=torch.int32, device=self.device)
+                    post[offset: offset + n].view(shape).copy_(cells[:, None].expand(shape))
+                weight[offset: offset + n].view(shape).copy_(p.weight)
                 p.pre = pre[offset: offset + n].view(shape)
                 p.weight = weight[offset: offset + n].view(shape)
                 p.offset = offset
                 offset += n
 
+            if dummy:
+                # Фиктивные синапсы: фиктивный нейрон -> фиктивный нейрон, вес 0.
+                ids = self.n + torch.arange(self.DUMMY_SYNAPSES, device=self.device) % self.DUMMY_NEURONS
+                pre[offset:] = ids
+                if posts:
+                    post[offset:] = ids
+                weight[offset:] = 0.0
+
             return pre, post, weight
 
-        self.net_pre, self.net_post, self.net_weight = flatten(net, dummy=True)
+        # Получатель синапса на видеокарте считает ядро доставки по пути
+        # (path_post, path_fanin) — массив получателей там не нужен (1.3 ГБ на
+        # 327 млн синапсов); шагу на PyTorch его соберёт _posts.
+        gpu = self.device.type == "cuda" and _kernels.deliver is not None
+        self.net_pre, self.net_post, self.net_weight = flatten(net, dummy=True, posts=not gpu)
         # Ветка дендрита каждого синапса (имеет смысл для синапсов памяти и
         # цели в смысловую кору): врождённые — случайно; свой генератор,
         # чтобы не сдвигать остальную проводку.
@@ -3526,6 +3564,14 @@ class SpikingBrain:
 
         for proj in self.plastic:
             proj.innate_mean = synapses["innate_mean"][proj.name]
+
+        # Прежние таблицы (по проводке при рождении) — освободить до
+        # перестройки: иначе обе живут разом, +1.9 ГБ видеопамяти сверх мозга.
+        self.out_all = self.out_plastic = self.in_plastic = None
+        self._graphs = {}
+
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
 
         self._build_tables()
 

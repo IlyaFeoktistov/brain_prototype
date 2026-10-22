@@ -85,10 +85,13 @@ class Mind:
     @classmethod
     def load(cls, path: str, device: str | None = None) -> "Mind":
         path = brain_path(path)
+        # mmap: массивы читаются с диска по мере копирования в мозг, а не
+        # целиком в ОЗУ (файл 3.4 ГБ на мозг 388 тыс. — лишняя копия и своп).
         state = torch.load(
             path,
             map_location="cpu",
             weights_only=False,
+            mmap=True,
         )
 
         if state.get("version") != FORMAT_VERSION:

@@ -83,7 +83,7 @@ def main(opts: dict) -> None:
 
         s.line, s.gaze = line, gaze
         seen = s.eye.rates(s._picture(s.screen, cfg.fovea_col)) >= 5.0
-        return seen[driver]
+        return seen.to(driver.device)[driver]
 
     def gazes(line: str) -> list[float]:
         # Ширина знака — по ширине строки; фиксации каждые step знаков.

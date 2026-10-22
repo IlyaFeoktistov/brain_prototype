@@ -18,7 +18,11 @@ contribution — доля спайков получателя, которым п
 Мозг считается по шагу (кусок в 1 шаг, 0.5 мс); спонтанные спайки
 сетчатки (20 Гц) — во входном растре стенда, чтобы знать их время.
 
-    PYTHONPATH=. python tools/relay_pairs.py [seconds=20] [seed=42]
+    PYTHONPATH=. python tools/relay_pairs.py [seconds=20] [seed=42] [off=noise,t,trn,cortex,triad,local]
+
+off= — выключить источники возбуждения и торможения клеток LGN (откуда
+спайки реле не от своего водителя): noise — случайный фон ядра, t — T-ток,
+trn — TRN → LGN, cortex — V1 → LGN, triad — триада, local — местные тормозные.
 """
 
 from __future__ import annotations
@@ -32,7 +36,7 @@ from brain.mind import Mind
 from brain.session import Session
 
 
-def main(seconds: float, seed: int, text: str) -> None:
+def main(seconds: float, seed: int, text: str, off: list[str]) -> None:
     cfg = BrainConfig()
     cfg.size = "small"
     cfg.seed = seed
@@ -40,6 +44,18 @@ def main(seconds: float, seed: int, text: str) -> None:
     mind = Mind(cfg)
     b = mind.brain
     b.plasticity = False
+    lgn = b.areas["lgn"].E
+
+    if "noise" in off:
+        b.noise_gain[lgn.slice] = 0.0
+    if "t" in off:
+        b.t_mask[lgn.slice] = False
+    names = {"trn": "trn -> lgn", "cortex": "visual -> lgn", "triad": "(триада)", "local": "lgn: I->E"}
+    for key, name in names.items():
+        if key in off:
+            for p in b.projections:
+                if p.post is lgn and name in p.name:
+                    p.weight.zero_()
     b.run(2500.0)
     b.CHUNK, b._graphs = 1, {}
     s = Session(mind)
@@ -151,4 +167,5 @@ def main(seconds: float, seed: int, text: str) -> None:
 
 if __name__ == "__main__":
     opts = dict(kv.split("=", 1) for kv in sys.argv[1:])
-    main(float(opts.get("seconds", 20)), int(opts.get("seed", 42)), opts.get("text", "мама мыла раму"))
+    main(float(opts.get("seconds", 20)), int(opts.get("seed", 42)), opts.get("text", "мама мыла раму"),
+         list(filter(None, opts.get("off", "").split(","))))

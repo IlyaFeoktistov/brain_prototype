@@ -2978,10 +2978,12 @@ class SpikingBrain:
             + synaptic + self.bias + modulated + self.clock_mv
             + self.kick_current * (self.kick_left > 0) + t_current
         ) * self.decay_m
-        # Ворота h: ниже V_h восстанавливаются (τ+), выше — закрываются (τ−).
+        # Ворота h: ниже V_h восстанавливаются (τ+) до равновесия h∞(V), выше —
+        # закрываются (τ−).
+        h_inf = torch.sigmoid((cfg.t_h_half_mv - self.v) / cfg.t_h_slope_mv)
         self.t_h.copy_(torch.where(
             self.t_mask,
-            torch.where(self.v < cfg.t_vh_mv, self.t_h + (1.0 - self.t_h) * (cfg.dt_ms / cfg.t_tau_rec_ms),
+            torch.where(self.v < cfg.t_vh_mv, self.t_h + (h_inf - self.t_h) * (cfg.dt_ms / cfg.t_tau_rec_ms),
                         self.t_h - self.t_h * (cfg.dt_ms / cfg.t_tau_inact_ms)),
             0.0,
         ))

@@ -158,6 +158,7 @@ table.grid th { color: var(--ink-soft); font-weight: 400; }
 .typing { opacity: 0.7; }
 .say { display: flex; gap: 6px; }
 .say input { flex: 1; }
+.say .stop { border-color: var(--warn); color: var(--warn); }
 
 /* ---- меню ---- */
 

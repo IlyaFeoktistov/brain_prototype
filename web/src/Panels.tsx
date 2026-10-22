@@ -100,6 +100,8 @@ export function Conversation({ face, entries, screen, typing, busy, onSay, thoug
       >
         <input value={text} onChange={(e) => setText(e.target.value)} placeholder={busy ? `мозг занят: ${busy}` : "реплика"} />
         <button type="submit" disabled={!text.trim()}>Сказать</button>
+        {/* Прервать ответ или урок: мозг дочитывает текущее окно (~0.1 с жизни мозга) и останавливается. */}
+        {busy && <button type="button" className="stop" onClick={() => api.stop()} title="прервать ответ или урок">Стоп</button>}
       </form>
     </div>
   );

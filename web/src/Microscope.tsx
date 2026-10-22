@@ -294,11 +294,7 @@ export function Microscope({ anatomy, fluo, selected, links, onHover, onSelect, 
             {anatomy.areas
               .filter((a) => a.system === system)
               .map((area) => (
-                <figure
-                  key={area.name}
-                  className={`section${area.layered ? " section-column" : ""}`}
-                  style={{ width: `${Math.round(Math.max(56, Math.min(220, Math.sqrt(area.size) * 1.4)))}px` }}
-                >
+                <figure key={area.name} className="section">
                   <canvas
                     ref={(node) => {
                       if (node) canvases.current.set(area.name, node);

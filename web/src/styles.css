@@ -86,11 +86,10 @@ input[type="number"] { width: 7em; }
 .slide { position: relative; display: grid; gap: 14px; }
 .system h3 { font-size: 15px; margin-bottom: 6px; }
 .system-areas { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
-/* Колонка grid — не уже ширины среза: иначе её держит собственная ширина
+/* Все срезы одного размера (квадрат), клеток в нём — сколько в зоне. Колонка grid — не уже ширины среза: иначе её держит собственная ширина
    canvas (столько пикселей, сколько клеток в ряду), и срез налезает на соседей. */
-.section { margin: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 3px; }
+.section { margin: 0; width: 150px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 3px; }
 .section canvas { width: 100%; min-width: 0; aspect-ratio: 1; image-rendering: pixelated; background: var(--glass); border: 1px solid var(--rule); border-radius: 4px; cursor: crosshair; }
-.section-column canvas { aspect-ratio: auto; }
 .section figcaption { display: flex; justify-content: space-between; gap: 4px; font-size: 11px; line-height: 1.2; }
 .section-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .section-count { color: var(--ink-soft); }

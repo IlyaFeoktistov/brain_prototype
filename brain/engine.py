@@ -892,10 +892,8 @@ class SpikingBrain:
     def _thalamic_path(self, path, pre: Population, post: Population, inhibitory: bool) -> tuple[int, float]:
         """
         Таламус → колонка по данным: ~85 таламических клеток на клетку L4
-        (Bruno & Sakmann 2006), единичный ВПСП у взрослых in vivo 1.0 ± 0.2 мВ
-        (Schoonover et al. 2014, n 11; у молодых — ~0.6, Bruno & Sakmann).
-        Синапс депрессирует (PPR 0.67 при 10–20 Гц, там же) — пока без
-        кратковременной пластичности [долг: τ восстановления]; на тормозные
+        (Bruno & Sakmann 2006), ВПСП отдохнувшего синапса cfg.thalamic_psp_mv,
+        депрессия — cfg.nucleus_stp (Lee & Sherman 2008); на тормозные
         L4 — ~56 входов (Potjans: 0.062 × 902), синапс на быстрые тормозные в
         2–3 раза сильнее (Cruikshank, Lewis & Connors 2007) — ×2. Моторный
         таламус — в L1 и L3 одной дозой (anatomy._motor_thalamic). Масштаб —
@@ -922,7 +920,7 @@ class SpikingBrain:
             k_data /= sum(1 for p in cfg.pathways if p.dst == path.dst and p.direction in motor)
 
         self.modeled_inputs[post.name] = self.modeled_inputs.get(post.name, 0.0) + k_data
-        psp = 2.0 if inhibitory else 1.0
+        psp = cfg.thalamic_psp_mv * (cfg.thalamic_pv_ratio if inhibitory else 1.0)
         k = max(1, min(round(k_data), pre.size))
         weight = psp / self._psp_peak(post)
         root = math.sqrt(max(1.0, k_data / k))
@@ -1816,9 +1814,9 @@ class SpikingBrain:
                 if relay is not None:
                     # Таламус → L4 по данным, как у остальных путей таламус →
                     # кора (_thalamic_path): на E —
-                    # 85 таламических клеток по 1.0 мВ, на PV — 56 по 2.0
-                    # (Bruno & Sakmann 2006; Schoonover et al. 2014;
-                    # Cruikshank et al. 2007). Синапсы таламуса только
+                    # 85 таламических клеток, на PV — 56, ВПСП отдохнувшего
+                    # синапса cfg.thalamic_psp_mv (депрессия — nucleus_stp;
+                    # Bruno & Sakmann 2006; Cruikshank et al. 2007). Синапсы таламуса только
                     # возбуждают: у ориентированного поля — лишь «+» подполя
                     # (форма поля Хьюбела — Визеля), «толкай» дают PV L4 со
                     # своим входом таламуса, а не отрицательные веса (прежнее
@@ -1828,7 +1826,7 @@ class SpikingBrain:
                     if sensor.wiring == "oriented" and pop is excitatory:
                         pre = pre[:, weight[0] > 0]
                     k_data = 56.0 if pop is inhibitory else 85.0
-                    psp = 2.0 if pop is inhibitory else 1.0
+                    psp = cfg.thalamic_psp_mv * (cfg.thalamic_pv_ratio if pop is inhibitory else 1.0)
                     built = pre.shape[1]
                     w = psp / self._psp_peak(pop)
 

@@ -1,0 +1,143 @@
+"""
+Чтение с саккадами против неподвижного взгляда: передаётся ли смена
+картинки по цепи сетчатка → LGN → V1 L4 → L2/3 → зона букв.
+
+Синапс таламус → кора при спонтанной LGN ~10 Гц уже у предела депрессии
+(docs/DESIGN.md «Разложение возбуждения поля L4»): L4 отвечает на смену
+входа ~80–100 мс. При чтении взгляд меняется саккадами (фиксации ~200–250 мс
+— Rayner 1998, https://doi.org/10.1037/0033-2909.124.3.372).
+
+Режимы (одно зерно, один фон — оба в одном мозге по очереди):
+    неподвижно  взгляд на начале строки всё предъявление;
+    чтение      фиксации fix мс, между ними саккада (cfg.saccade_ms пустого
+                входа — подавление на время скачка) на step знаков вперёд.
+Саккады — по расписанию стенда (зрительная цепь отдельно от двухолмия).
+
+Порядок: пусто, A, пусто, B, пусто, A (каждый режим). По фиксации (окно
+после начала фиксации, ms): LGN — частота клеток, чей водитель видит штрих
+этой фиксации, и их ресурс синапсов; V1 L4 E — поле фиксации (больше
+половины входов LGN — зрячие этой фиксации) и вне поля всей строки (ни
+одного зрячего входа); V1 L2/3 E, зона букв L4 и L2/3 E. Различение: вектор
+частот зоны букв L2/3 E по фиксациям, сходство (корреляция) A с повтором A
+против A с B — повтор должен быть ближе.
+
+    PYTHONPATH=. python tools/reading_bench.py [a=мама мыла раму] [b=папа пила чай] [fix=225]
+        [step=5] [seed=1] [fit=lgn-a] [homeo=имя] [relay_v_t_mv=-59] [relay_rest_mv=-48] [trn_scale=0.5]
+"""
+
+from __future__ import annotations
+
+import sys
+
+import torch
+
+from brain import anatomy
+from brain.config import BRAIN_HOME, BrainConfig
+from brain.mind import Mind
+from brain.session import Session
+
+WIN = 10.0
+
+
+def build(opts: dict):
+    cfg = BrainConfig()
+    cfg.size = "small"
+    cfg.seed = int(opts.get("seed", 1))
+    cfg.autosave = False
+    for k in ("relay_v_t_mv", "relay_rest_mv"):
+        if k in opts:
+            setattr(cfg, k, float(opts[k]))
+    if opts.get("fit"):
+        anatomy.use_fit(cfg, opts["fit"])
+    mind = Mind(cfg)
+    b = mind.brain
+    b.plasticity = False
+    for p in b.projections:
+        if p.name == "trn -> lgn":
+            p.weight.mul_(float(opts.get("trn_scale", 1.0)))
+    if opts.get("homeo"):
+        # Сдвиги гомеостаза после развития (tools/develop.py) — заморожены.
+        b.bias[: b.n] += torch.load(BRAIN_HOME / "fits" / f"{opts['homeo']}-homeo.pt").to(b.device)
+    return mind, b
+
+
+def main(opts: dict) -> None:
+    mind, b = build(opts)
+    cfg = b.cfg
+    s = Session(mind, window_ms=WIN)
+    lgn = b.areas["lgn"].E
+    vis, let = b.areas["visual"].layers, b.areas["letters"].layers
+    l4 = vis["L4"]["E"]
+    eye_i = [x.name for x in b.sensors].index("eye")
+    off = b.sensor_offsets[eye_i]
+    driver = (next(p for p in b.projections if p.name == "eye -> " + lgn.name).pre[:, 0].long() - off)
+    tc = next(p for p in b.projections if p.name == f"lgn -> {l4.name}")
+    tc_pre = tc.pre.long() - lgn.start
+    a_text, b_text = opts.get("a", "мама мыла раму"), opts.get("b", "папа пила чай")
+    fix, step = float(opts.get("fix", 225)), float(opts.get("step", 5))
+    s.line, s.gaze = "", 0.0
+    b.run(2500.0)
+
+    def ink(line: str, gaze: float) -> torch.Tensor:
+        """Клетки реле, чей водитель видит штрих при этом взгляде."""
+
+        s.line, s.gaze = line, gaze
+        seen = s.eye.rates(s._picture(s.screen, cfg.fovea_col)) >= 5.0
+        return seen[driver]
+
+    def gazes(line: str) -> list[float]:
+        # Ширина знака — по ширине строки; фиксации каждые step знаков.
+        width = s.screen.width(line) / max(1, len(line))
+        n = max(1, int((len(line) + step - 1) // step))
+        return [i * step * width for i in range(n)]
+
+    names = ("LGN зрячие, Гц", "ресурс зрячих", "L4 поле, Гц", "L4 вне строки", "V1 L2/3 E", "буквы L4 E", "буквы L2/3 E")
+
+    for mode in ("неподвижно", "чтение"):
+        vectors = {}
+        for label, text in (("A", a_text), ("B", b_text), ("A2", a_text)):
+            s.line = ""
+            b.observe(500.0, s._view(500.0))      # пустой экран между фразами
+            letters_vec = []
+            rows = []
+            line = text + " "
+            points = gazes(line)
+            any_ink = torch.zeros(lgn.size, dtype=torch.bool, device=b.device)
+            for g in points:
+                any_ink |= ink(line, g)
+            outside = (~any_ink[tc_pre]).all(1)
+            for i, g in enumerate(points):
+                if mode == "чтение" and i:
+                    s.line, s.gaze = line, g
+                    b.run(cfg.saccade_ms, s._blank(cfg.saccade_ms))
+                gaze = g if mode == "чтение" else points[0]
+                seeing = ink(line, gaze)
+                field = seeing[tc_pre].float().mean(1) > 0.5
+                trace, lv = [], 0
+                for _ in range(int(fix // WIN)):
+                    r = b.observe(WIN, s._view(WIN))
+                    pick = lambda m: r[lgn.slice][m].mean() if m.any() else r.new_tensor(0.0)
+                    trace.append(torch.stack([
+                        pick(seeing), b.stp_x[lgn.slice][seeing].mean() if seeing.any() else r.new_tensor(0.0),
+                        r[l4.slice][field].mean() if field.any() else r.new_tensor(0.0),
+                        r[l4.slice][outside].mean() if outside.any() else r.new_tensor(0.0),
+                        r[vis["L23"]["E"].slice].mean(), r[let["L4"]["E"].slice].mean(), r[let["L23"]["E"].slice].mean(),
+                    ]).cpu())
+                    lv = lv + r[let["L23"]["E"].slice].cpu()
+                letters_vec.append(lv)
+                rows.append((g, torch.stack(trace), int(field.sum()), int(outside.sum())))
+            vectors[label] = torch.cat(letters_vec)
+            print(f"\n=== {mode}: «{text}» ({label}), фиксаций {len(points)}, {fix:g} мс, окна {WIN:g} мс")
+            for g, tr, nf, no in rows:
+                print(f"  взгляд {g:5.1f}: клеток поля L4 {nf}, вне строки {no}")
+                for j, name in enumerate(names):
+                    fmt = "{:5.2f}" if j == 1 else "{:5.1f}"
+                    print(f"    {name:16s} " + " ".join(fmt.format(float(v)) for v in tr[:, j]))
+        n = min(len(v) for v in vectors.values())
+        c = lambda x, y: float(torch.corrcoef(torch.stack([x[:n], y[:n]]))[0, 1])
+        print(f"\n{mode}: зона букв L2/3 — сходство A с повтором A {c(vectors['A'], vectors['A2']):.3f}, "
+              f"A с B {c(vectors['A'], vectors['B']):.3f} (повтор должен быть ближе)", flush=True)
+
+
+if __name__ == "__main__":
+    main(dict(kv.split("=", 1) for kv in sys.argv[1:]))

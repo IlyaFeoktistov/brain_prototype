@@ -2469,27 +2469,6 @@ class SpikingBrain:
 
         return c / (c + k)
 
-    def pass_time(self, seconds: float) -> None:
-        """
-        Время без симуляции (тишина): мозг живёт — часы идут, свежее
-        забывается, вещества убывают к уровню покоя (нейроны в тишине
-        молчат — остаётся обмен веществ покоя).
-        """
-
-        if seconds <= 0:
-            return
-
-        self.time_ms += seconds * 1000.0
-        asleep = bool(self.chemistry[self.galanin_i] > self.chemistry[self.noradrenaline_i])
-        tau, release, basal = self._chemistry_rates(asleep)
-        dt = self.cfg.dt_ms
-
-        for i in range(len(tau)):
-            fade = math.exp(-seconds * 1000.0 / tau[i])
-            # Постоянный выброс за шаг в равновесии: basal / (1 − decay).
-            rest = basal[i] / (1.0 - math.exp(-dt / tau[i]))
-            self.chemistry[i] = self.chemistry[i] * fade + rest * (1.0 - fade)
-
     def _build_tables(self, refill: bool = False) -> None:
         P, S = self.n_plastic, self.n_synapses
         table = lambda keys, pad: EventTable(keys, self.n_slots, pad, self.DUMMY_SYNAPSES)

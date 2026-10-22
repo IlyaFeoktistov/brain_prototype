@@ -292,16 +292,11 @@ class BrainHost:
             try:
                 job = self.jobs.get(timeout=0.0 if self.live and self.mind else 1.0)
             except queue.Empty:
-                if self.mind is None:
-                    continue
-
-                if self.live:
-                    # Жизнь в тишине: мозг смотрит на экран и живёт.
+                if self.mind is not None and self.live:
+                    # Жизнь в тишине: мозг смотрит на экран и живёт. Без неё
+                    # мозг стоит — время мозга идёт, только пока считаются
+                    # нейроны (ответ, урок, жизнь в тишине).
                     self.session.live(LIVE_WINDOW_MS)
-                else:
-                    # Без симуляции время всё равно идёт: часы, вещества.
-                    self.mind.brain.pass_time(1.0)
-                    self.emit(self.status())
                 continue
 
             if job is None:

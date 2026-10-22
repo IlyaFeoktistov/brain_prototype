@@ -169,7 +169,8 @@ class PathwaySpec:
     # колонками (engine._cortical_path).
     psp_mv: float | None = None
     # Направление по слоям (BrainConfig.pathway_directions): "ff", "fb",
-    # "lateral", "thalamic", "ct" (из L6 коры); "" — из таблицы.
+    # "lateral", "thalamic", "thalamic_l1" / "thalamic_l3" (моторный таламус
+    # в L1 / L3), "ct" (из L6 коры); "" — из таблицы.
     direction: str = ""
     # Обучаемый путь между колонками: входов и PSP — по данным, веса учатся.
     learned: bool = False
@@ -400,12 +401,10 @@ class BrainConfig:
     # (García-Cabezas & Barbas 2014), у мыши M1 — тонкая зона 0.05 толщины
     # коры на границе L3/L5A с входом таламуса и выходом в L2/3, как у L4
     # сенсорной коры (Yamawaki et al. 2014). Доля клеток слоя — его доля
-    # толщины (плотность как у соседних слоёв [сверить]). Таламус → L4 M1:
-    # 12.1% возбуждающих синапсов слоя против 17.2% в S1 и ни одного на
-    # тормозные клетки (Bopp et al. 2017; мышь, у человека не измерено).
+    # толщины (плотность как у соседних слоёв [сверить]). Вход моторного
+    # таламуса — в L1 и L3 (anatomy._motor_thalamic), не в этот слой.
     thin_l4_areas: tuple[str, ...] = ("motor", "hand")
     thin_l4_share: float = 0.05
-    thin_l4_thalamic_ratio: float = 12.1 / 17.2
     # Потолок обучаемого пути между колонками, в средних PSP пути: сильнейшие
     # связи коры ~в 10 раз сильнее средней (логнормальное распределение ВПСП,
     # Song et al. 2005; Lefort et al. 2009).
@@ -580,7 +579,6 @@ class BrainConfig:
         ("association", "prefrontal", "ff"), ("association", "category", "ff"),
         ("prefrontal", "association", "fb"), ("goal", "association", "fb"),
         ("category", "association", "fb"), ("association", "motor", "lateral"),
-        ("thalamus", "motor", "thalamic"),
     )
 
     # ------------------------------------------------------------------

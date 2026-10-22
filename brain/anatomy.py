@@ -278,6 +278,26 @@ def _path(src, dst, k, psp, direction="", **kw) -> PathwaySpec:
     return PathwaySpec(src, dst, k=k, psp_mv=psp, direction=direction, **kw)
 
 
+def _motor_thalamic(src: str, dst: str) -> list[PathwaySpec]:
+    """
+    Моторный таламус → агранулярная и дисгранулярная моторная кора: не в
+    L4, как у сенсорного реле, а в L1 (верхушечные дендриты L2/3 — ветки
+    дендрита) и L3 (тела L2/3); в L5 — меньше (макака: терминали VA/VL
+    сильнее всего в L1, затем L3 и L5 — McFarland & Haber 2002,
+    https://doi.org/10.1523/JNEUROSCI.22-18-08117.2002; поверхностные и
+    глубокие проекции по ядрам — Nakano et al. 1992,
+    https://doi.org/10.1016/0168-0102(92)90093-R). Доля L1 : L3 не мерена —
+    поровну [сверить]; L5 — без входа (доли нет). Число входов и сила —
+    engine._thalamic_path: одна таламическая доза клетки на все сходящиеся
+    ядра.
+    """
+
+    return [
+        _path(src, dst, 20, 0.6, "thalamic_l1", name=f"{src} -> {dst} (L1)"),
+        _path(src, dst, 20, 0.6, "thalamic_l3", name=f"{src} -> {dst} (L3)"),
+    ]
+
+
 def pathways(cfg) -> list[PathwaySpec]:
     out = [
         # GPi → таламус VA/VL: крупные окончания с многими синапсами (Bodor et
@@ -289,9 +309,8 @@ def pathways(cfg) -> list[PathwaySpec]:
         # [сверить: 30 по −2 мВ] — при 60 Гц GPi ~70 мВ торможения, подбор
         # держит VA/VL фоном ~+55 мВ.
         _path("gpi", "thalamus", 30, -2.0),
-        # Моторный таламус → речевая моторная кора — путь таламуса в колонку
-        # (engine._thalamic_path: 85 входов по 1.0 мВ), как VA/VL → M1.
-        _path("thalamus", "motor", 20, 0.6, "thalamic"),
+        # Моторный таламус → речевая моторная кора — в L1 и L3 (_motor_thalamic).
+        *_motor_thalamic("thalamus", "motor"),
         # Смысл → базолатеральная миндалина — путь коры (0.15 мВ), учится
         # дофамином.
         _path("association", "amygdala", 50, 0.15, plastic=True),
@@ -382,7 +401,7 @@ def pathways(cfg) -> list[PathwaySpec]:
         _path("gpe", "fsi", 10, -1.0),
     ]
     # Таламус VA/VL → рука (как моторная кора): «давай» из базальных ганглиев.
-    out.append(_path("thalamus", "hand", 20, 0.6, "thalamic"))
+    out += _motor_thalamic("thalamus", "hand")
     # ---- модуляторы ----
     # Ядро Мейнерта: вход — ПФК и миндалина (Zaborszky et al. 1997);
     # орексин → LC, Мейнерт (Hagan et al. 1999; Eggermann et al. 2001); VLPO
@@ -511,8 +530,8 @@ def pathways(cfg) -> list[PathwaySpec]:
         # Ядра мозжечка → VLp (мозжечковая часть моторного таламуса,
         # Asanuma et al. 1983), не в часть с входом GPi.
         _path("dcn", "vl_cb", 20, 1.0),
-        _path("vl_cb", "hand", 20, 0.6, "thalamic"),
-        _path("vl_cb", "motor", 20, 0.6, "thalamic"),
+        *_motor_thalamic("vl_cb", "hand"),
+        *_motor_thalamic("vl_cb", "motor"),
         # Коллатерали мшистых волокон — к ядрам мозжечка (Eccles 1967):
         # ядра возбуждает тот же вход, что гранулярные клетки (PSP
         # [сверить]).
@@ -601,7 +620,7 @@ def cortex_chain(cfg) -> list[PathwaySpec]:
     # Моторный таламус: VA → премоторная (Jones 2007), как VL → M1; L6
     # премоторной и руки → своё реле и ретикулярное (Sherman & Guillery).
     out += [
-        _path("thalamus", "premotor", 20, 0.6, "thalamic"),
+        *_motor_thalamic("thalamus", "premotor"),
         _path("premotor", "thalamus", 50, 0.3, "ct"),
         _path("premotor", "trn_motor", 50, 0.7, "ct"),
         _path("hand", "thalamus", 50, 0.3, "ct"),
@@ -686,84 +705,84 @@ NUCLEUS_BIAS_MV = (
     ('raphe', -3.33),
     ('nbm', 14.79),
     ('orexin', -1.07),
-    ('vta', 23.82),
-    ('amygdala', 9.03),
-    ('scn', -5.91),
-    ('striatum_d1', 11.51),
-    ('striatum_d2', 30.94),
-    ('gpe', 55.94),
-    ('gpi', 142.66),
-    ('thalamus', 77.06),
-    ('granule', 4.8),
-    ('lgn', 64.76),
-    ('mgn', 24.48),
-    ('md', 24.81),
-    ('trn', 32.06),
-    ('trn_mgn', 13.07),
-    ('trn_md', 11.73),
-    ('trn_motor', -4.66),
-    ('fsi', 18.97),
-    ('stn', 13.18),
-    ('cea', 15.55),
-    ('lhb', 10.29),
-    ('dmh', 13.09),
-    ('colliculus', 34.58),
-    ('purkinje', 14.57),
-    ('dcn', 53.55),
-    ('io', 2.57),
-    ('cn', 11.88),
-    ('ic', 11.15),
-    ('vnll', 9.99),
-    ('vl_cb', 16.05),
-    ('entorhinal', -34.68),
-    ('dentate', -48.6),
-    ('ca3', 0.37),
-    ('ca1', -11.62),
+    ('vta', 22.95),
+    ('amygdala', 8.72),
+    ('scn', -5.98),
+    ('striatum_d1', 10.38),
+    ('striatum_d2', 29.51),
+    ('gpe', 57.05),
+    ('gpi', 144.64),
+    ('thalamus', 76.63),
+    ('granule', 2.15),
+    ('lgn', 64.02),
+    ('mgn', 24.53),
+    ('md', 23.77),
+    ('trn', 29.78),
+    ('trn_mgn', 12.66),
+    ('trn_md', 11.85),
+    ('trn_motor', -8.26),
+    ('fsi', 9.65),
+    ('stn', 9.49),
+    ('cea', 15.4),
+    ('lhb', 9.87),
+    ('dmh', 13.19),
+    ('colliculus', 31.84),
+    ('purkinje', 14.76),
+    ('dcn', 52.9),
+    ('io', 1.57),
+    ('cn', 12.16),
+    ('ic', 10.96),
+    ('vnll', 10.21),
+    ('vl_cb', 15.31),
+    ('entorhinal', -51.19),
+    ('dentate', -75.66),
+    ('ca3', -12.0),
+    ('ca1', -18.1),
 )
 # (зона, слой, тип клетки, множитель внешнего фона)
 COLUMN_EXTERNAL_POP = (
-    ('auditory', 'L23', 'E', 0.013), ('auditory', 'L23', 'PV', 0.001),
+    ('auditory', 'L23', 'E', 0.002), ('auditory', 'L23', 'PV', 0.0),
     ('auditory', 'L4', 'E', 0.0), ('auditory', 'L4', 'PV', 0.0),
-    ('auditory', 'L5', 'E', 0.312), ('auditory', 'L5', 'PV', 0.01),
-    ('auditory', 'L6', 'E', 1.206), ('auditory', 'L6', 'PV', 0.07),
-    ('association', 'L23', 'E', 0.171), ('association', 'L23', 'PV', 0.016),
-    ('association', 'L4', 'E', 0.254), ('association', 'L4', 'PV', 0.035),
-    ('association', 'L5', 'E', 0.685), ('association', 'L5', 'PV', 0.207),
-    ('association', 'L6', 'E', 1.223), ('association', 'L6', 'PV', 0.283),
-    ('prefrontal', 'L23', 'E', 0.006), ('prefrontal', 'L23', 'PV', 0.0),
+    ('auditory', 'L5', 'E', 0.229), ('auditory', 'L5', 'PV', 0.001),
+    ('auditory', 'L6', 'E', 1.203), ('auditory', 'L6', 'PV', 0.01),
+    ('association', 'L23', 'E', 0.025), ('association', 'L23', 'PV', 0.002),
+    ('association', 'L4', 'E', 0.056), ('association', 'L4', 'PV', 0.005),
+    ('association', 'L5', 'E', 0.436), ('association', 'L5', 'PV', 0.036),
+    ('association', 'L6', 'E', 1.289), ('association', 'L6', 'PV', 0.068),
+    ('prefrontal', 'L23', 'E', 0.001), ('prefrontal', 'L23', 'PV', 0.0),
     ('prefrontal', 'L4', 'E', 0.0), ('prefrontal', 'L4', 'PV', 0.0),
-    ('prefrontal', 'L5', 'E', 0.018), ('prefrontal', 'L5', 'PV', 0.003),
-    ('prefrontal', 'L6', 'E', 0.969), ('prefrontal', 'L6', 'PV', 0.012),
-    ('motor', 'L23', 'E', 0.372), ('motor', 'L23', 'PV', 0.033),
-    ('motor', 'L4', 'E', 0.0), ('motor', 'L4', 'PV', 0.001),
-    ('motor', 'L5', 'E', 1.712), ('motor', 'L5', 'PV', 0.564),
-    ('motor', 'L6', 'E', 1.137), ('motor', 'L6', 'PV', 1.169),
-    ('goal', 'L23', 'E', 0.006), ('goal', 'L23', 'PV', 0.0),
+    ('prefrontal', 'L5', 'E', 0.002), ('prefrontal', 'L5', 'PV', 0.0),
+    ('prefrontal', 'L6', 'E', 0.971), ('prefrontal', 'L6', 'PV', 0.001),
+    ('motor', 'L23', 'E', 0.046), ('motor', 'L23', 'PV', 0.004),
+    ('motor', 'L4', 'E', 0.0), ('motor', 'L4', 'PV', 0.0),
+    ('motor', 'L5', 'E', 0.85), ('motor', 'L5', 'PV', 0.069),
+    ('motor', 'L6', 'E', 1.645), ('motor', 'L6', 'PV', 0.144),
+    ('goal', 'L23', 'E', 0.001), ('goal', 'L23', 'PV', 0.0),
     ('goal', 'L4', 'E', 0.0), ('goal', 'L4', 'PV', 0.0),
-    ('goal', 'L5', 'E', 0.018), ('goal', 'L5', 'PV', 0.003),
-    ('goal', 'L6', 'E', 0.918), ('goal', 'L6', 'PV', 0.013),
-    ('limbic', 'L23', 'E', 3.563), ('limbic', 'L23', 'PV', 2.091),
-    ('limbic', 'L5', 'E', 2.166), ('limbic', 'L5', 'PV', 2.68),
-    ('limbic', 'L6', 'E', 1.431), ('limbic', 'L6', 'PV', 3.126),
-    ('category', 'L23', 'E', 0.279), ('category', 'L23', 'PV', 0.019),
-    ('category', 'L4', 'E', 0.092), ('category', 'L4', 'PV', 0.068),
-    ('category', 'L5', 'E', 0.273), ('category', 'L5', 'PV', 0.202),
-    ('category', 'L6', 'E', 1.061), ('category', 'L6', 'PV', 0.396),
-    ('visual', 'L23', 'E', 0.823), ('visual', 'L23', 'PV', 0.056),
-    ('visual', 'L4', 'E', 0.028), ('visual', 'L4', 'PV', 0.018),
-    ('visual', 'L5', 'E', 1.571), ('visual', 'L5', 'PV', 0.119),
-    ('visual', 'L6', 'E', 1.11), ('visual', 'L6', 'PV', 0.85),
-    ('letters', 'L23', 'E', 1.038), ('letters', 'L23', 'PV', 0.024),
-    ('letters', 'L4', 'E', 2.171), ('letters', 'L4', 'PV', 0.02),
-    ('letters', 'L5', 'E', 1.247), ('letters', 'L5', 'PV', 0.051),
-    ('letters', 'L6', 'E', 1.165), ('letters', 'L6', 'PV', 0.247),
-    ('hand', 'L23', 'E', 0.918), ('hand', 'L23', 'PV', 0.021),
-    ('hand', 'L4', 'E', 0.0), ('hand', 'L4', 'PV', 0.001),
-    ('hand', 'L5', 'E', 1.811), ('hand', 'L5', 'PV', 0.269),
-    ('hand', 'L6', 'E', 1.125), ('hand', 'L6', 'PV', 0.611),
-    ('premotor', 'L23', 'E', 0.003), ('premotor', 'L23', 'PV', 0.0),
-    ('premotor', 'L5', 'E', 1.089), ('premotor', 'L5', 'PV', 0.007),
-    ('premotor', 'L6', 'E', 1.329), ('premotor', 'L6', 'PV', 0.015),
+    ('goal', 'L5', 'E', 0.002), ('goal', 'L5', 'PV', 0.0),
+    ('goal', 'L6', 'E', 0.874), ('goal', 'L6', 'PV', 0.002),
+    ('limbic', 'L23', 'E', 3.595), ('limbic', 'L23', 'PV', 2.65),
+    ('limbic', 'L5', 'E', 2.208), ('limbic', 'L5', 'PV', 2.803),
+    ('limbic', 'L6', 'E', 1.432), ('limbic', 'L6', 'PV', 3.189),
+    ('category', 'L23', 'E', 0.041), ('category', 'L23', 'PV', 0.002),
+    ('category', 'L4', 'E', 0.011), ('category', 'L4', 'PV', 0.008),
+    ('category', 'L5', 'E', 0.045), ('category', 'L5', 'PV', 0.028),
+    ('category', 'L6', 'E', 1.051), ('category', 'L6', 'PV', 0.089),
+    ('visual', 'L23', 'E', 0.135), ('visual', 'L23', 'PV', 0.007),
+    ('visual', 'L4', 'E', 0.003), ('visual', 'L4', 'PV', 0.002),
+    ('visual', 'L5', 'E', 0.24), ('visual', 'L5', 'PV', 0.015),
+    ('visual', 'L6', 'E', 1.074), ('visual', 'L6', 'PV', 0.154),
+    ('letters', 'L23', 'E', 0.217), ('letters', 'L23', 'PV', 0.003),
+    ('letters', 'L4', 'E', 0.296), ('letters', 'L4', 'PV', 0.002),
+    ('letters', 'L5', 'E', 0.434), ('letters', 'L5', 'PV', 0.008),
+    ('letters', 'L6', 'E', 1.141), ('letters', 'L6', 'PV', 0.057),
+    ('hand', 'L23', 'E', 0.113), ('hand', 'L23', 'PV', 0.003),
+    ('hand', 'L4', 'E', 0.0), ('hand', 'L4', 'PV', 0.0),
+    ('hand', 'L5', 'E', 0.524), ('hand', 'L5', 'PV', 0.033),
+    ('hand', 'L6', 'E', 1.559), ('hand', 'L6', 'PV', 0.075),
+    ('premotor', 'L23', 'E', 0.0), ('premotor', 'L23', 'PV', 0.0),
+    ('premotor', 'L5', 'E', 0.571), ('premotor', 'L5', 'PV', 0.001),
+    ('premotor', 'L6', 'E', 1.363), ('premotor', 'L6', 'PV', 0.002),
 )
 
 

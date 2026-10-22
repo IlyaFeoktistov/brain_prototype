@@ -887,7 +887,7 @@ class SpikingBrain:
         direction = path.direction or next(
             (d for s, t, d in self.cfg.pathway_directions if (s, t) == (path.src, path.dst)), "",
         )
-        return direction == "thalamic" and dst.layers is not None
+        return direction in ("thalamic", "thalamic_l1", "thalamic_l3") and dst.layers is not None
 
     def _thalamic_path(self, path, pre: Population, post: Population, inhibitory: bool) -> tuple[int, float]:
         """
@@ -897,8 +897,8 @@ class SpikingBrain:
         Синапс депрессирует (PPR 0.67 при 10–20 Гц, там же) — пока без
         кратковременной пластичности [долг: τ восстановления]; на тормозные
         L4 — ~56 входов (Potjans: 0.062 × 902), синапс на быстрые тормозные в
-        2–3 раза сильнее (Cruikshank, Lewis & Connors 2007) — ×2. Агранулярная
-        зона — в L2/3 (моторный таламус → L2/3 и L5, Hooks et al. 2013). Масштаб —
+        2–3 раза сильнее (Cruikshank, Lewis & Connors 2007) — ×2. Моторный
+        таламус — в L1 и L3 одной дозой (anatomy._motor_thalamic). Масштаб —
         как у межзонных путей: вес × √(k_data / k), недостающее — ток по частоте
         ядра in vivo.
         """
@@ -907,14 +907,19 @@ class SpikingBrain:
 
         cfg = self.cfg
         k_data = 56.0 if inhibitory else 85.0
+        motor = ("thalamic_l1", "thalamic_l3")
 
-        if post.name.split(".")[0] in cfg.thin_l4_areas:
-            # Моторная кора: таламических синапсов меньше, на тормозные — нет
-            # (Bopp et al. 2017; config thin_l4_*).
+        if path.direction in motor:
+            # Моторный таламус: одна таламическая доза клетки (85 входов) на
+            # все сходящиеся на зону ядра и на L1 и L3 — не по дозе сенсорного
+            # реле на каждое ядро. [замер] по дозе на ядро L4 руки и моторной
+            # коры стреляли 34–48 Гц при цели 1.4 (tools/input_trace.py).
+            # Сколько синапсов моторного таламуса у клетки M1 — не мерено
+            # [сверить]; на тормозные — нет (Bopp et al. 2017, L4 M1 мыши).
             if inhibitory:
                 return 0, 0.0
 
-            k_data *= cfg.thin_l4_thalamic_ratio
+            k_data /= sum(1 for p in cfg.pathways if p.dst == path.dst and p.direction in motor)
 
         self.modeled_inputs[post.name] = self.modeled_inputs.get(post.name, 0.0) + k_data
         psp = 2.0 if inhibitory else 1.0
@@ -1110,7 +1115,11 @@ class SpikingBrain:
             pre = src.layers["L5"]["E"]
 
         if dst.layers is not None:
-            if direction in ("ff", "thalamic") and "L4" in dst.layers:
+            if direction in ("thalamic_l1", "thalamic_l3"):
+                # Моторный таламус (anatomy._motor_thalamic): L1 — ветки
+                # дендрита L2/3, L3 — тела L2/3; тормозным — нет.
+                post, inhibitory, top_down = dst.layers["L23"]["E"], None, direction == "thalamic_l1"
+            elif direction in ("ff", "thalamic") and "L4" in dst.layers:
                 post, inhibitory = dst.layers["L4"]["E"], dst.layers["L4"]["PV"]
             elif direction == "fb":
                 # Обратный путь — на ветки E и на VIP; без VIP в колонке

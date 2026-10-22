@@ -8,7 +8,7 @@
 второго при коротком интервале — до ~1 (Sincich et al. 2007); кошка, пара —
 после паузы 30%, второй через 10 мс 47% (Usrey, Reppas & Reid 1998).
 
-    PYTHONPATH=. python tools/relay_epsp.py [repeats=20]
+    PYTHONPATH=. python tools/relay_epsp.py [repeats=20] [trn_scale=1]
 """
 
 from __future__ import annotations
@@ -21,13 +21,18 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 
 
-def main(repeats: int) -> None:
+def main(repeats: int, trn_scale: float = 1.0) -> None:
     cfg = BrainConfig()
     cfg.size = "small"
     cfg.autosave = False
     b = Mind(cfg).brain
     b.plasticity = False
     lgn = b.areas["lgn"].E
+    # Анализ чувствительности: проводимость TRN → реле × trn_scale (нормировка
+    # ТПСП при другом потенциале: ×19/11 при −63 мВ, ×19/29 при −45; E_ГАМК −74).
+    for p in b.projections:
+        if p.post is lgn and p.name == "trn -> lgn":
+            p.weight.mul_(trn_scale)
     eye = [x.name for x in b.sensors].index("eye")
     off, size = b.sensor_offsets[eye], b.sensors[eye].size
     b.spontaneous[off: off + size] = 0.0
@@ -88,4 +93,4 @@ def main(repeats: int) -> None:
 
 if __name__ == "__main__":
     opts = dict(kv.split("=", 1) for kv in sys.argv[1:])
-    main(int(opts.get("repeats", 20)))
+    main(int(opts.get("repeats", 20)), float(opts.get("trn_scale", 1.0)))

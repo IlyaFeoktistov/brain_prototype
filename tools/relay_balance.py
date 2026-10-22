@@ -9,7 +9,7 @@
 al. 2021; кошка −63 ± 7); торможение от TRN при стимуляции 50 Гц ~4 мВ
 (мышь, срез — Campbell et al. 2020).
 
-    PYTHONPATH=. python tools/relay_balance.py [lgn_bias=мВ] [ms=2000] [text=…]
+    PYTHONPATH=. python tools/relay_balance.py [lgn_bias=мВ] [ms=2000] [text=…] [trn_scale=1]
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from brain.mind import Mind
 from brain.session import Session
 
 
-def main(lgn_bias: float | None, ms: float, text: str) -> None:
+def main(lgn_bias: float | None, ms: float, text: str, trn_scale: float = 1.0) -> None:
     cfg = BrainConfig()
     cfg.size = "small"
     cfg.autosave = False
@@ -31,6 +31,11 @@ def main(lgn_bias: float | None, ms: float, text: str) -> None:
     b = mind.brain
     b.plasticity = False
     lgn = b.areas["lgn"].E
+    # Анализ чувствительности: проводимость TRN → реле × trn_scale (нормировка
+    # ТПСП при другом потенциале: ×19/11 при −63 мВ, ×19/29 при −45; E_ГАМК −74).
+    for p in b.projections:
+        if p.post is lgn and p.name == "trn -> lgn":
+            p.weight.mul_(trn_scale)
     s = Session(mind)
     s.line, s.gaze = text + " " if text else "", 0.0
 
@@ -84,4 +89,5 @@ def main(lgn_bias: float | None, ms: float, text: str) -> None:
 
 if __name__ == "__main__":
     opts = dict(kv.split("=", 1) for kv in sys.argv[1:])
-    main(float(opts["lgn_bias"]) if "lgn_bias" in opts else None, float(opts.get("ms", 2000)), opts.get("text", "мама мыла раму"))
+    main(float(opts["lgn_bias"]) if "lgn_bias" in opts else None, float(opts.get("ms", 2000)), opts.get("text", "мама мыла раму"),
+         float(opts.get("trn_scale", 1.0)))

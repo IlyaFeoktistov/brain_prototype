@@ -6,7 +6,10 @@ win мс — частота каждой ступени против покоя:
 задержкой (первое окно, где частота выше покоя на 3 σ окон покоя) и где
 пропал. Отладка идёт по этой таблице сверху вниз.
 
-    PYTHONPATH=. .venv/bin/python tools/chain_bench.py [word=мама] [ms=300] [win=20] [warm=2500] [load=МОЗГ]
+    PYTHONPATH=. .venv/bin/python tools/chain_bench.py [word=мама] [ms=300] [win=20] [warm=2500] [load=МОЗГ] [trn_scale=1]
+
+trn_scale — проводимость TRN → реле LGN ×k (анализ чувствительности, не число
+мозга); прочие ключи — поля BrainConfig (relay_v_t_mv=-59, seed=2).
 """
 
 import sys
@@ -18,7 +21,7 @@ from brain.config import BrainConfig
 from brain.mind import Mind
 from brain.world import Keyboard, Screen
 
-opts = {"word": "мама", "ms": "300", "win": "20", "rest": "1000", "warm": "2500", "load": ""}
+opts = {"word": "мама", "ms": "300", "win": "20", "rest": "1000", "warm": "2500", "load": "", "trn_scale": "1"}
 cfg = BrainConfig()
 cfg.save_path = "/nonexistent/brain.pt"
 cfg.autosave = False
@@ -37,6 +40,10 @@ mind = Mind.load(opts["load"]) if opts["load"] else Mind(cfg)
 mind.cfg.autosave = False
 cfg, brain = mind.cfg, mind.brain
 brain.plasticity = False
+
+for p in brain.projections:
+    if p.name == "trn -> lgn":
+        p.weight.mul_(float(opts["trn_scale"]))
 i = [s.name for s in brain.sensors].index("eye")
 eye = Eye(cfg, brain.sensor_offsets[i], brain.sensors[i].size, brain.device)
 screen = Screen(cfg.retina_rows, cfg.retina_cols)

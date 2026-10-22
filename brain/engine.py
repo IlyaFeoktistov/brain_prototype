@@ -2587,6 +2587,12 @@ class SpikingBrain:
         self.adapt = z()
         self.refractory = z()
         self.spikes = z()
+        # Зажим (стенды звена): клетки clamp_mask стреляют по записи
+        # (clamp_now — спайки шага), а не по своему V. Включается
+        # clamp_on = True и recompile(); выключен — шаг прежний.
+        self.clamp_on = False
+        self.clamp_mask = torch.zeros(self.n_slots, dtype=torch.bool, device=self.device)
+        self.clamp_now = torch.zeros(self.n_slots, dtype=torch.bool, device=self.device)
         # STDP-следы: пре (LTP) и пост (LTD).
         self.trace_pre = z()
         self.trace_pre_rise = z()
@@ -3022,6 +3028,9 @@ class SpikingBrain:
         self.refractory.sub_(cfg.dt_ms)
 
         fired = v >= self.v_peak
+
+        if self.clamp_on:
+            fired = torch.where(self.clamp_mask, self.clamp_now, fired)
         self.spikes.copy_(fired)
         # Выброс веществ ядрами: доля выстреливших клеток каждого ядра.
         released = (self.chemistry_source @ self.spikes).to(torch.float64)

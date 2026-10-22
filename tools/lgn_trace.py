@@ -4,6 +4,7 @@
 против прочих — при выключенных по очереди входах реле (веса пути → 0).
 
     PYTHONPATH=. python tools/lgn_trace.py brain=проверка-веба.pt ms=1000
+    PYTHONPATH=. python tools/lgn_trace.py brain=new     # мозг-минимум с нуля (проводка — нынешняя)
 
 Человек и примат: ведомая клетка LGN отвечает на стимул в поле в разы чаще
 спонтанной (~10 Гц покоя против десятков Гц на контраст; Usrey, Reppas &
@@ -16,12 +17,19 @@ import sys
 
 import torch
 
+from brain import anatomy
+from brain.config import BrainConfig
 from brain.mind import Mind
 from brain.session import Session
 
 
 def main(brain: str = "проверка-веба.pt", ms: float = 1000.0, text: str = "мама мыла раму") -> None:
-    mind = Mind.load(brain)
+    if brain == "new":
+        cfg = BrainConfig()
+        cfg.size = str(anatomy.min_size())
+        mind = Mind(cfg)
+    else:
+        mind = Mind.load(brain)
     mind.cfg.autosave = False
     b = mind.brain
     s = Session(mind)

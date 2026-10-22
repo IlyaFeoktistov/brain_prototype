@@ -1654,11 +1654,13 @@ class SpikingBrain:
             elif path.psp_mv is None:
                 raise ValueError(f"путь {path.src} -> {path.dst} без данных: нет psp_mv, и это не путь между колонками")
 
+            # Путь по карте реле (TRN ↔ LGN): входы — ближайшие по месту.
+            index = self._lgn_local(self.areas[path.mapped], pre, post, min(k, pre.size)) if path.mapped else None
             proj = self._connect(
                 path.name or f"{path.src} -> {path.dst}", pre, post, k,
                 weight, plastic=path.plastic, cap=path.cap,
                 modulator=path.modulator, ach_suppressed=path.ach_suppressed,
-                topographic=path.topographic, retinotopic=path.retinotopic,
+                topographic=path.topographic, retinotopic=path.retinotopic, pre_index=index,
             )
 
             if proj is not None:

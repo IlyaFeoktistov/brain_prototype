@@ -309,7 +309,17 @@ def pathways(cfg) -> list[PathwaySpec]:
     # L6 → реле: много слабых облегчающихся входов (модуляторы; ~30–50%
     # синапсов клетки реле — Van Horn, Erişir & Sherman 2000); L6 → TRN —
     # в 2–3 раза сильнее (Golshani, Liu & Jones 2001). Реле → TRN —
-    # коллатерали; TRN → реле — ГАМК, IPSP ~1–2 мВ [сверить].
+    # коллатерали; TRN → реле — ГАМК: IPSP от одного нейрона PGN (зрительный
+    # сектор TRN) 0.5–1.9 мВ, полуширина 10–50 мс (хорёк, срез, парные записи
+    # — Kim & McCormick 1998, https://doi.org/10.1523/JNEUROSCI.18-22-09500.1998).
+    # Входов TRN на клетку реле не мерено: F-терминали (местные ГАМК —
+    # интернейроны и TRN вместе) — 30.9% синапсов клетки реле (кошка, ЭМ —
+    # Van Horn, Erişir & Sherman 2000, https://doi.org/10.1002/(SICI)1096-9861(20000124)416:4<509::AID-CNE7>3.0.CO;2-H)
+    # [20 — сверить]. Петля зрительного сектора — по карте поля: аксон TRN
+    # ветвится местно, с ограниченным расхождением (крыса — Pinault &
+    # Deschênes 1998, https://doi.org/10.1002/(SICI)1096-9861(19980209)391:2<180::AID-CNE3>3.0.CO;2-Z;
+    # кошка — Uhlrich et al. 1991, https://doi.org/10.1152/jn.1991.65.6.1528).
+    # Слуховой и прочие секторы — пока случайно [сверить топографию].
     relays = [("visual", "lgn"), ("auditory", "mgn"), ("prefrontal", "md"), ("goal", "md"), ("motor", "thalamus"), ("motor", "vl_cb")]
     sector = {"lgn": "trn", "mgn": "trn_mgn", "md": "trn_md", "thalamus": "trn_motor", "vl_cb": "trn_motor"}
 
@@ -320,9 +330,10 @@ def pathways(cfg) -> list[PathwaySpec]:
         ]
 
     for relay, trn in sector.items():
+        mapped = relay if relay == "lgn" else ""
         out += [
-            _path(relay, trn, 20, 1.5),
-            _path(trn, relay, 20, -1.5),
+            _path(relay, trn, 20, 1.5, mapped=mapped),
+            _path(trn, relay, 20, -1.5, mapped=mapped),
         ]
 
     # Реле ПФК: MD → ПФК и цель (в L4, как вход таламуса).

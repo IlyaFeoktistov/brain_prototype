@@ -25,7 +25,11 @@ E_ГАМК)), их сумма, мембрана. И у каждой величи
 корреляция по клеткам разности A−B первой половины показов со второй (0 —
 разность случайна, 1 — воспроизводима целиком).
 
-    PYTHONPATH=. python tools/letters_select.py [n=30] [t_sel=2.6] [seed=1]
+без_pv=1 — причинная проверка: веса ветки пути V1 → буквы на PV (visual ->
+letters.I) в ноль, всё прочее как есть (среднее поле недостающих входов
+этой ветки остаётся — оно общее для зоны, не своё у клетки).
+
+    PYTHONPATH=. python tools/letters_select.py [n=30] [t_sel=2.6] [seed=1] [без_pv=0]
 """
 
 from __future__ import annotations
@@ -60,6 +64,10 @@ def main(opts: dict) -> None:
     stages = {"V1 L2/3": vis["L23"]["E"], "буквы L4": let["L4"]["E"], "буквы L2/3": let["L23"]["E"]}
     L4 = let["L4"]["E"]
     path = next(p for p in b.projections if p.name == "visual -> letters")
+    if opts.get("без_pv") == "1":
+        to_pv = next(p for p in b.projections if p.name == "visual -> letters.I")
+        print(f"ветка V1 → PV букв: {to_pv.weight.numel()} синапсов, средний вес {float(to_pv.weight.mean()):.3f} → 0")
+        to_pv.weight.zero_()
     currents = ("вход V1", "возбуждение", "торможение", "сумма токов", "мембрана")
 
     s.line, s.gaze = "", 0.0

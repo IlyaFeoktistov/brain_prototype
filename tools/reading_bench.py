@@ -18,8 +18,10 @@
 этой фиксации, и их ресурс синапсов; V1 L4 E — поле фиксации (больше
 половины входов LGN — зрячие этой фиксации) и вне поля всей строки (ни
 одного зрячего входа); V1 L2/3 E, зона букв L4 и L2/3 E. Различение: вектор
-частот зоны букв L2/3 E по фиксациям, сходство (корреляция) A с повтором A
-против A с B — повтор должен быть ближе.
+частот по фиксациям на каждой ступени (LGN, V1 L4, V1 L2/3, буквы L4, L2/3),
+сходство (корреляция) A с повтором A против A с B — повтор должен быть ближе.
+По ступеням видно, где пропадает различение и не упирается ли мера в шум
+счёта (если и LGN не различает — мера, а не цепь).
 
     PYTHONPATH=. python tools/reading_bench.py [a=мама мыла раму] [b=папа пила чай] [fix=225]
         [step=5] [seed=1] [fit=lgn-a] [homeo=имя] [relay_v_t_mv=-59] [relay_rest_mv=-48] [trn_scale=0.5]
@@ -91,6 +93,8 @@ def main(opts: dict) -> None:
         n = max(1, int((len(line) + step - 1) // step))
         return [i * step * width for i in range(n)]
 
+    stages = {"LGN": lgn, "V1 L4": l4, "V1 L2/3": vis["L23"]["E"],
+              "буквы L4": let["L4"]["E"], "буквы L2/3": let["L23"]["E"]}
     names = ("LGN зрячие, Гц", "ресурс зрячих", "L4 поле, Гц", "L4 вне строки", "V1 L2/3 E", "буквы L4 E", "буквы L2/3 E")
 
     for mode in ("неподвижно", "чтение"):
@@ -98,7 +102,7 @@ def main(opts: dict) -> None:
         for label, text in (("A", a_text), ("B", b_text), ("A2", a_text)):
             s.line = ""
             b.observe(500.0, s._view(500.0))      # пустой экран между фразами
-            letters_vec = []
+            stage_vec = {k: [] for k in stages}
             rows = []
             line = text + " "
             points = gazes(line)
@@ -113,7 +117,7 @@ def main(opts: dict) -> None:
                 gaze = g if mode == "чтение" else points[0]
                 seeing = ink(line, gaze)
                 field = seeing[tc_pre].float().mean(1) > 0.5
-                trace, lv = [], 0
+                trace, acc = [], {k: 0 for k in stages}
                 for _ in range(int(fix // WIN)):
                     r = b.observe(WIN, s._view(WIN))
                     pick = lambda m: r[lgn.slice][m].mean() if m.any() else r.new_tensor(0.0)
@@ -123,20 +127,24 @@ def main(opts: dict) -> None:
                         r[l4.slice][outside].mean() if outside.any() else r.new_tensor(0.0),
                         r[vis["L23"]["E"].slice].mean(), r[let["L4"]["E"].slice].mean(), r[let["L23"]["E"].slice].mean(),
                     ]).cpu())
-                    lv = lv + r[let["L23"]["E"].slice].cpu()
-                letters_vec.append(lv)
+                    for k, pop in stages.items():
+                        acc[k] = acc[k] + r[pop.slice].cpu()
+                for k in stages:
+                    stage_vec[k].append(acc[k])
                 rows.append((g, torch.stack(trace), int(field.sum()), int(outside.sum())))
-            vectors[label] = torch.cat(letters_vec)
+            vectors[label] = {k: torch.cat(v) for k, v in stage_vec.items()}
             print(f"\n=== {mode}: «{text}» ({label}), фиксаций {len(points)}, {fix:g} мс, окна {WIN:g} мс")
             for g, tr, nf, no in rows:
                 print(f"  взгляд {g:5.1f}: клеток поля L4 {nf}, вне строки {no}")
                 for j, name in enumerate(names):
                     fmt = "{:5.2f}" if j == 1 else "{:5.1f}"
                     print(f"    {name:16s} " + " ".join(fmt.format(float(v)) for v in tr[:, j]))
-        n = min(len(v) for v in vectors.values())
-        c = lambda x, y: float(torch.corrcoef(torch.stack([x[:n], y[:n]]))[0, 1])
-        print(f"\n{mode}: зона букв L2/3 — сходство A с повтором A {c(vectors['A'], vectors['A2']):.3f}, "
-              f"A с B {c(vectors['A'], vectors['B']):.3f} (повтор должен быть ближе)", flush=True)
+        print(f"\n{mode}: сходство A с повтором A против A с B (повтор должен быть ближе)")
+        for k in stages:
+            va, va2, vb = (vectors[x][k] for x in ("A", "A2", "B"))
+            n = min(len(va), len(va2), len(vb))
+            c = lambda x, y: float(torch.corrcoef(torch.stack([x[:n], y[:n]]))[0, 1])
+            print(f"  {k:12s} A–A2 {c(va, va2):6.3f}   A–B {c(va, vb):6.3f}", flush=True)
 
 
 if __name__ == "__main__":

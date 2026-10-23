@@ -98,8 +98,9 @@ class Net:
 
     STEPS_PER_GRAPH = 50
 
-    def __init__(self, n_in: int, n_e: int, seeds: list[int], dev: str):
+    def __init__(self, n_in: int, n_e: int, seeds: list[int], dev: str, compile: bool = True):
         self.n_in, self.n_e, self.dev, self.B = n_in, n_e, dev, len(seeds)
+        self.compile, self.fused = compile, None
         ws = []
         for sd in seeds:
             g = torch.Generator().manual_seed(sd)
@@ -171,6 +172,10 @@ class Net:
             for _ in range(n):
                 self._step(learn)
             return
+        if self.fused is None:
+            # Шаг одним куском (inductor): поэлементные действия над весами
+            # (−LTD, +LTP, обрезка) — один проход вместо четырёх ядер.
+            self.fused = torch.compile(self._step, fullgraph=True, dynamic=False) if self.compile else self._step
         if learn not in self.graphs:
             # Прогрев на побочном потоке и запись графа (состояние после
             # прогрева — настоящие шаги, не выбрасываются).
@@ -178,19 +183,19 @@ class Net:
             side.wait_stream(torch.cuda.current_stream())
             with torch.cuda.stream(side):
                 for _ in range(3):
-                    self._step(learn)
+                    self.fused(learn)
             torch.cuda.current_stream().wait_stream(side)
             graph = torch.cuda.CUDAGraph()
             with torch.cuda.graph(graph):
                 for _ in range(self.STEPS_PER_GRAPH):
-                    self._step(learn)
+                    self.fused(learn)
             self.graphs[learn] = graph
             n -= 3
         k, rest = divmod(n, self.STEPS_PER_GRAPH)
         for _ in range(k):
             self.graphs[learn].replay()
         for _ in range(rest):
-            self._step(learn)
+            self.fused(learn)
 
     def run(self, rates: torch.Tensor, ms: float) -> torch.Tensor:
         """Прожить ms при частотах входа rates [B, вход] (Гц); спайки E [B, E]."""

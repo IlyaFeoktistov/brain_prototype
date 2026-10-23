@@ -27,7 +27,7 @@ DESIGN «Сборка из готовых блоков»).
 Буквы: 33 строчные, учёба — на train_fonts шрифтах со сдвигами ±1 px,
 проверка — на других шрифтах (не виденных) и на учебных.
 
-    PYTHONPATH=. python tools/block_dc.py [n_e=400] [epochs=3] [px=14] [side=20] [seed=1] [device=cpu] [threads=2]
+    PYTHONPATH=. python tools/block_dc.py [n_e=400] [epochs=3] [px=14] [side=20] [seeds=1,2,3] [device=cuda|cpu] [threads=2]
 """
 
 from __future__ import annotations
@@ -89,144 +89,192 @@ def dataset(fonts: list[str], shifts: list[tuple[int, int]], px: int, side: int)
 
 
 class Net:
-    def __init__(self, n_in: int, n_e: int, dev: str, gen: torch.Generator):
-        self.n_in, self.n_e, self.dev = n_in, n_e, dev
-        self.w = ((torch.rand(n_in, n_e, generator=gen) + 0.01) * 0.3).to(dev)
-        self.theta = torch.full((n_e,), 20.0, device=dev)
+    """
+    B независимых сетей в одном тензоре (зёрна / варианты): веса [B, вход,
+    E], состояние [B, клетки]. На GPU шаги показа записаны в CUDA graph
+    (один запуск на STEPS_PER_GRAPH шагов вместо ~20 ядер на шаг); на CPU —
+    тот же код без графа. Уравнения — как у авторов (см. начало файла).
+    """
+
+    STEPS_PER_GRAPH = 50
+
+    def __init__(self, n_in: int, n_e: int, seeds: list[int], dev: str):
+        self.n_in, self.n_e, self.dev, self.B = n_in, n_e, dev, len(seeds)
+        ws = []
+        for sd in seeds:
+            g = torch.Generator().manual_seed(sd)
+            ws.append((torch.rand(n_in, n_e, generator=g) + 0.01) * 0.3)
+        self.w = torch.stack(ws).to(dev)
+        self.theta = torch.full((self.B, n_e), 20.0, device=dev)
         self.w_ie = torch.full((n_e, n_e), 17.0, device=dev).fill_diagonal_(0.0)
+        shape_e, B = (self.B, n_e), self.B
+        z = lambda *sh: torch.zeros(*sh, device=dev)
+        self.v_e, self.v_i = torch.full(shape_e, -65.0, device=dev), torch.full(shape_e, -60.0, device=dev)
+        self.ge_e, self.gi_e, self.ge_i, self.gi_i = z(*shape_e), z(*shape_e), z(*shape_e), z(*shape_e)
+        self.ref_e, self.ref_i, self.spk_e, self.spk_i = z(*shape_e), z(*shape_e), z(*shape_e), z(*shape_e)
+        self.pre, self.post1, self.post2 = z(B, n_in), z(*shape_e), z(*shape_e)
+        self.p = z(B, n_in)          # вероятность спайка входа за шаг
+        self.count = z(*shape_e)     # спайки E за показ
         self.learn = True
+        self.graphs: dict[bool, torch.cuda.CUDAGraph] = {}
+        d = lambda tau: float(torch.exp(torch.tensor(-DT / tau)))
+        self.d_ge, self.d_gi = d(1.0), d(2.0)
+        self.d_pre, self.d_p1, self.d_p2, self.d_theta = d(20.0), d(20.0), d(40.0), d(1e7)
 
     def normalize(self) -> None:
-        self.w *= 78.0 / self.w.sum(0, keepdim=True)
+        self.w.mul_(78.0 / self.w.sum(1, keepdim=True))
+
+    def _step(self, learn: bool) -> None:
+        x = (torch.rand(self.B, self.n_in, device=self.dev) < self.p).float()
+        if learn:
+            self.pre.mul_(self.d_pre)
+            self.post1.mul_(self.d_p1)
+            self.post2.mul_(self.d_p2)
+            # спайк входа: w −= 0.0001 · post1, след pre ← 1
+            self.w.sub_(0.0001 * x[:, :, None] * self.post1[:, None, :])
+            self.pre.copy_(torch.where(x > 0, 1.0, self.pre))
+        self.ge_e.mul_(self.d_ge).add_(torch.bmm(x[:, None, :], self.w)[:, 0])
+        self.gi_e.mul_(self.d_gi).add_(self.spk_i @ self.w_ie)
+        self.ge_i.mul_(self.d_ge).add_(self.spk_e * 10.4)
+        self.gi_i.mul_(self.d_gi)
+        # Шаг мембраны — экспоненциальный: за шаг v точно релаксирует к
+        # равновесию при текущих проводимостях. Простой Эйлер при
+        # торможении 17 × (число выстреливших I) неустойчив — v
+        # перескакивает и даёт ложные спайки (θ уходил в тысячи мВ).
+        g = 1.0 + self.ge_e + self.gi_e
+        v_inf = (-65.0 - 100.0 * self.gi_e) / g
+        gi_ = 1.0 + self.ge_i + self.gi_i
+        vi_inf = (-60.0 - 85.0 * self.gi_i) / gi_
+        free_e, free_i = self.ref_e <= 0, self.ref_i <= 0
+        v = torch.where(free_e, v_inf + (self.v_e - v_inf) * torch.exp(-DT * g / 100.0), self.v_e)
+        vi = torch.where(free_i, vi_inf + (self.v_i - vi_inf) * torch.exp(-DT * gi_ / 10.0), self.v_i)
+        spk_e = (v > self.theta - 72.0) & free_e
+        spk_i = (vi > -40.0) & free_i
+        self.v_e.copy_(torch.where(spk_e, -65.0, v))
+        self.v_i.copy_(torch.where(spk_i, -45.0, vi))
+        self.ref_e.copy_(torch.where(spk_e, 5.0, self.ref_e - DT))
+        self.ref_i.copy_(torch.where(spk_i, 2.0, self.ref_i - DT))
+        self.spk_e.copy_(spk_e.float())
+        self.spk_i.copy_(spk_i.float())
+        self.count.add_(self.spk_e)
+        if learn:
+            self.theta.mul_(self.d_theta).add_(0.05 * self.spk_e)
+            # спайк E: w += 0.01 · pre · post2 (до сброса), следы post ← 1
+            self.w.add_(0.01 * self.pre[:, :, None] * (self.post2 * self.spk_e)[:, None, :])
+            self.post1.copy_(torch.where(spk_e, 1.0, self.post1))
+            self.post2.copy_(torch.where(spk_e, 1.0, self.post2))
+            self.w.clamp_(0.0, 1.0)
+
+    def _steps(self, n: int) -> None:
+        learn = self.learn
+        if self.dev != "cuda":
+            for _ in range(n):
+                self._step(learn)
+            return
+        if learn not in self.graphs:
+            # Прогрев на побочном потоке и запись графа (состояние после
+            # прогрева — настоящие шаги, не выбрасываются).
+            side = torch.cuda.Stream()
+            side.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(side):
+                for _ in range(3):
+                    self._step(learn)
+            torch.cuda.current_stream().wait_stream(side)
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):
+                for _ in range(self.STEPS_PER_GRAPH):
+                    self._step(learn)
+            self.graphs[learn] = graph
+            n -= 3
+        k, rest = divmod(n, self.STEPS_PER_GRAPH)
+        for _ in range(k):
+            self.graphs[learn].replay()
+        for _ in range(rest):
+            self._step(learn)
 
     def run(self, rates: torch.Tensor, ms: float) -> torch.Tensor:
-        """Прожить ms при частотах входа rates (Гц); вернуть спайки E за время."""
+        """Прожить ms при частотах входа rates [B, вход] (Гц); спайки E [B, E]."""
 
-        dev, n_e = self.dev, self.n_e
-        steps = int(ms / DT)
-        p = rates.to(dev) * DT / 1000.0
-        count = torch.zeros(n_e, device=dev)
-        s = self.state
-        dec_ge_e, dec_gi_e = torch.exp(torch.tensor(-DT / 1.0)), torch.exp(torch.tensor(-DT / 2.0))
-        dec_pre, dec_p1, dec_p2 = [float(torch.exp(torch.tensor(-DT / t))) for t in (20.0, 20.0, 40.0)]
-        dec_theta = float(torch.exp(torch.tensor(-DT / 1e7)))
-        for _ in range(steps):
-            x = (torch.rand(self.n_in, device=dev) < p).float()
-            # входные следы и депрессия на спайк входа
-            if self.learn:
-                s["pre"] *= dec_pre
-                s["post1"] *= dec_p1
-                s["post2"] *= dec_p2
-                if x.any():
-                    idx = x.bool()
-                    self.w[idx] -= 0.0001 * s["post1"]
-                    s["pre"][idx] = 1.0
-            # проводимости
-            s["ge_e"] = s["ge_e"] * dec_ge_e + x @ self.w
-            s["gi_e"] = s["gi_e"] * dec_gi_e + s["spk_i"] @ self.w_ie
-            s["ge_i"] = s["ge_i"] * dec_ge_e + s["spk_e"] * 10.4
-            s["gi_i"] = s["gi_i"] * dec_gi_e
-            # мембраны
-            # Шаг мембраны — экспоненциальный: за шаг v точно релаксирует к
-            # равновесию при текущих проводимостях. Простой Эйлер при
-            # торможении 17 × (число выстреливших I) неустойчив — v
-            # перескакивает и даёт ложные спайки (θ уходил в тысячи мВ).
-            v, vi = s["v_e"], s["v_i"]
-            g = 1.0 + s["ge_e"] + s["gi_e"]
-            v_inf = (-65.0 + s["gi_e"] * -100.0) / g
-            gi_ = 1.0 + s["ge_i"] + s["gi_i"]
-            vi_inf = (-60.0 + s["gi_i"] * -85.0) / gi_
-            free_e, free_i = s["ref_e"] <= 0, s["ref_i"] <= 0
-            v = torch.where(free_e, v_inf + (v - v_inf) * torch.exp(-DT * g / 100.0), v)
-            vi = torch.where(free_i, vi_inf + (vi - vi_inf) * torch.exp(-DT * gi_ / 10.0), vi)
-            spk_e = (v > (self.theta - 20.0 - 52.0)) & free_e
-            spk_i = (vi > -40.0) & free_i
-            v = torch.where(spk_e, torch.full_like(v, -65.0), v)
-            vi = torch.where(spk_i, torch.full_like(vi, -45.0), vi)
-            s["ref_e"] = torch.where(spk_e, torch.full_like(v, 5.0), s["ref_e"] - DT)
-            s["ref_i"] = torch.where(spk_i, torch.full_like(vi, 2.0), s["ref_i"] - DT)
-            s["v_e"], s["v_i"] = v, vi
-            s["spk_e"], s["spk_i"] = spk_e.float(), spk_i.float()
-            count += s["spk_e"]
-            if self.learn:
-                self.theta = self.theta * dec_theta + 0.05 * s["spk_e"]
-                if spk_e.any():
-                    j = spk_e
-                    self.w[:, j] += 0.01 * s["pre"][:, None] * s["post2"][j][None, :]
-                    s["post1"][j] = 1.0
-                    s["post2"][j] = 1.0
-                self.w.clamp_(0.0, 1.0)
-        return count
+        self.p.copy_(rates.to(self.dev) * DT / 1000.0)
+        self.count.zero_()
+        self._steps(int(ms / DT))
+        return self.count.clone()
 
-    def reset(self) -> None:
-        z = lambda n: torch.zeros(n, device=self.dev)
-        self.state = {
-            "v_e": torch.full((self.n_e,), -65.0, device=self.dev), "v_i": torch.full((self.n_e,), -60.0, device=self.dev),
-            "ge_e": z(self.n_e), "gi_e": z(self.n_e), "ge_i": z(self.n_e), "gi_i": z(self.n_e),
-            "ref_e": z(self.n_e), "ref_i": z(self.n_e), "spk_e": z(self.n_e), "spk_i": z(self.n_e),
-            "pre": z(self.n_in), "post1": z(self.n_e), "post2": z(self.n_e),
-        }
+    def present(self, imgs: torch.Tensor) -> torch.Tensor:
+        """
+        Показ как у авторов: 350 мс, пауза 150 мс; сеть с < 5 спайками E —
+        ярче и заново (только она; прочие в это время получают пустой вход).
+        imgs [B, вход]; вернуть спайки E [B, E] принятого показа.
+        """
 
-    def present(self, img: torch.Tensor) -> torch.Tensor:
-        """Показ как у авторов: 350 мс, пауза 150 мс; < 5 спайков — ярче и заново."""
-
-        intensity = 2.0
-        while True:
+        intensity = torch.full((self.B, 1), 2.0)
+        pending = torch.ones(self.B, dtype=torch.bool)
+        out = torch.zeros(self.B, self.n_e)
+        while pending.any():
             if self.learn:
                 self.normalize()
-            count = self.run(img * 63.75 * intensity / 2.0, SHOW_MS)
-            self.run(torch.zeros(self.n_in), REST_MS)
-            if count.sum() >= 5 or intensity > 20:
-                return count
-            intensity += 1.0
+            rates = imgs * 63.75 * intensity / 2.0 * pending[:, None]
+            count = self.run(rates, SHOW_MS).cpu()
+            self.run(torch.zeros_like(imgs), REST_MS)
+            ok = pending & ((count.sum(1) >= 5) | (intensity[:, 0] > 20))
+            out[ok] = count[ok]
+            pending &= ~ok
+            intensity[pending] += 1.0
+        return out
 
 
 def main(opts: dict) -> None:
-    dev = opts.get("device", "cpu")
-    # Сеть маленькая: на CPU быстрее, чем на GPU (запуск ядер на шаг), и
-    # с 2 потоками быстрее, чем со всеми — не толкается с прогоном мозга на
-    # GPU (замер: 2 потока 0.27 с на показ, 4 — 0.37, 8 — 2.3).
+    dev = opts.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+    # На CPU — 2 потока: не толкается с прогоном мозга на GPU (замер одной
+    # сети: 2 потока 0.27 с на показ, 4 — 0.37, 8 — 2.3).
     torch.set_num_threads(int(opts.get("threads", 2)))
+    seeds = [int(x) for x in opts.get("seeds", opts.get("seed", "1")).split(",")]
     n_e, epochs = int(opts.get("n_e", 400)), int(opts.get("epochs", 3))
     px, side = int(opts.get("px", 14)), int(opts.get("side", 20))
-    gen = torch.Generator().manual_seed(int(opts.get("seed", 1)))
-    torch.manual_seed(int(opts.get("seed", 1)))
+    torch.manual_seed(seeds[0])
     shifts = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]
     x_tr, y_tr = dataset(FONTS[:N_TRAIN_FONTS], shifts, px, side)
     x_new, y_new = dataset(FONTS[N_TRAIN_FONTS:], [(0, 0)], px, side)
     print(f"учёба {len(x_tr)} картинок ({N_TRAIN_FONTS} шрифтов × {len(shifts)} сдвигов × 33), "
-          f"проверка на новых шрифтах {len(x_new)}; n_e {n_e}, эпох {epochs}, {side}×{side} px", flush=True)
+          f"проверка на новых шрифтах {len(x_new)}; n_e {n_e}, эпох {epochs}, {side}×{side} px, "
+          f"зёрна {seeds}, {dev}", flush=True)
 
-    net = Net(side * side, n_e, dev, gen)
-    net.reset()
+    net = Net(side * side, n_e, seeds, dev)
+    gens = [torch.Generator().manual_seed(sd) for sd in seeds]
     t0 = time.time()
     for ep in range(epochs):
-        for j, i in enumerate(torch.randperm(len(x_tr), generator=gen).tolist()):
-            spikes = net.present(x_tr[i]).sum()
-            recent = spikes if j % 100 == 0 else recent + spikes
+        orders = torch.stack([torch.randperm(len(x_tr), generator=g) for g in gens])
+        recent = torch.zeros(len(seeds))
+        for j in range(len(x_tr)):
+            recent += net.present(x_tr[orders[:, j]]).sum(1)
             if (j + 1) % 100 == 0:
-                print(f"  эпоха {ep + 1}, показов {j + 1}/{len(x_tr)}, {time.time() - t0:.0f} с, "
-                      f"θ {float(net.theta.mean() - 20):.2f} мВ (макс {float(net.theta.max() - 20):.2f}), "
-                      f"спайков E на показ {float(recent) / 100:.1f}", flush=True)
+                th = net.theta.cpu() - 20
+                print(f"  эпоха {ep + 1}, показов {j + 1}/{len(x_tr)}, {time.time() - t0:.0f} с; по зёрнам "
+                      f"θ {', '.join(f'{float(t.mean()):.2f}' for t in th)} мВ, "
+                      f"спайков E на показ {', '.join(f'{float(r) / 100:.1f}' for r in recent)}", flush=True)
+                recent.zero_()
 
     net.learn = False
 
     def responses(x: torch.Tensor) -> torch.Tensor:
-        return torch.stack([net.present(img) for img in x]).cpu()
+        """Ответы [B, показы, E]: каждая сеть видит те же картинки."""
 
-    r_tr = responses(x_tr)
-    mean_cls = torch.stack([r_tr[y_tr == k].mean(0) for k in range(len(LETTERS))])
-    label = mean_cls.argmax(0)
+        return torch.stack([net.present(img.expand(len(seeds), -1)) for img in x], 1)
 
-    def accuracy(r: torch.Tensor, y: torch.Tensor) -> float:
-        score = torch.stack([r[:, label == k].mean(1) if (label == k).any() else torch.full((len(r),), -1.0)
-                             for k in range(len(LETTERS))], 1)
-        return float((score.argmax(1) == y).float().mean())
+    r_tr, r_new = responses(x_tr), responses(x_new)
+    print()
+    for b, sd in enumerate(seeds):
+        mean_cls = torch.stack([r_tr[b][y_tr == k].mean(0) for k in range(len(LETTERS))])
+        label = mean_cls.argmax(0)
 
-    used = len(set(label.tolist()))
-    print(f"\nклеток с классом: букв покрыто {used}/33; ответов на показ (учебные) {float(r_tr.sum(1).mean()):.1f} спайков")
-    print(f"точность на учебных картинках: {accuracy(r_tr, y_tr):.3f}  (случайно {1 / 33:.3f})")
-    print(f"точность на новых шрифтах:     {accuracy(responses(x_new), y_new):.3f}")
+        def accuracy(r: torch.Tensor, y: torch.Tensor) -> float:
+            score = torch.stack([r[:, label == k].mean(1) if (label == k).any() else torch.full((len(r),), -1.0)
+                                 for k in range(len(LETTERS))], 1)
+            return float((score.argmax(1) == y).float().mean())
+
+        print(f"зерно {sd}: букв покрыто клетками {len(set(label.tolist()))}/33, спайков на показ "
+              f"{float(r_tr[b].sum(1).mean()):.1f}; точность учебные {accuracy(r_tr[b], y_tr):.3f}, "
+              f"новые шрифты {accuracy(r_new[b], y_new):.3f}  (случайно {1 / 33:.3f})", flush=True)
     print(f"всего {time.time() - t0:.0f} с")
 
 

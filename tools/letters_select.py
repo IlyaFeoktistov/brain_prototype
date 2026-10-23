@@ -29,7 +29,7 @@ E_ГАМК)), их сумма, мембрана. И у каждой величи
 letters.I) в ноль, всё прочее как есть (среднее поле недостающих входов
 этой ветки остаётся — оно общее для зоны, не своё у клетки).
 
-    PYTHONPATH=. python tools/letters_select.py [n=30] [t_sel=2.6] [seed=1] [без_pv=0]
+    PYTHONPATH=. python tools/letters_select.py [n=30] [t_sel=2.6] [seed=1] [без_pv=0] [rep=0]
 """
 
 from __future__ import annotations
@@ -60,6 +60,12 @@ def main(opts: dict) -> None:
     fix, step = float(opts.get("fix", 225)), float(opts.get("step", 5))
     texts = (opts.get("a", "мама мыла раму"), opts.get("b", "папа пила чай"))
     gen = torch.Generator().manual_seed(int(opts.get("seed", 1)))
+    if opts.get("rep"):
+        # Повтор на том же мозге: другой шум и порядок показов, проводка та же
+        # — разброс самой меры.
+        torch.manual_seed(1000 + int(opts["rep"]))
+        b.generator.manual_seed(1000 + int(opts["rep"]))
+        gen.manual_seed(1000 + int(opts["rep"]))
     vis, let = b.areas["visual"].layers, b.areas["letters"].layers
     stages = {"V1 L2/3": vis["L23"]["E"], "буквы L4": let["L4"]["E"], "буквы L2/3": let["L23"]["E"]}
     L4 = let["L4"]["E"]

@@ -324,7 +324,8 @@ class BrainConfig:
     # NMDA у тормозных клеток колонок — доля от доли E: в модели V1 макаки
     # (Chariker, Shapley & Young 2016, https://doi.org/10.1523/JNEUROSCI.2603-16.2016)
     # NMDA 0.33 проводимости у I против 0.2 у E (у тормозных NMDA больше —
-    # Lisman et al. 2008) → 1.65 [из модели; по типам PV/SST/VIP у человека
+    # Lisman et al. 2008, https://doi.org/10.1016/j.tins.2008.02.005) → 1.65
+    # [из модели; по типам PV/SST/VIP у человека
     # не мерено]. Спад NMDA у Chariker ~80 мс, у нас 20 (эффективный по Hunt).
     nmda_inh_ratio: float = 1.65
     # NMDA по Chariker, Shapley & Young 2016 (флаг): без блока магнием, доля

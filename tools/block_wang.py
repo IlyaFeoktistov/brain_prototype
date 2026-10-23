@@ -1,7 +1,8 @@
 """
 Эталон блока «устойчивые избирательные состояния и выбор» — Wang 2002
 (https://doi.org/10.1016/S0896-6273(02)01092-9), числа из воспроизведения
-Brian2 (examples/frompapers/Wang_2002.py, Wimmer & Stimberg). Не мозг —
+Brian2 (https://github.com/brian-team/brian2/blob/master/examples/frompapers/Wang_2002.py,
+Wimmer & Stimberg). Не мозг —
 отдельная сеть на torch: сколько испытаний — столько независимых сетей в
 одном тензоре (шаг 1 сборки, DESIGN «Сборка из готовых блоков»).
 

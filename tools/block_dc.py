@@ -1,7 +1,7 @@
 """
 Эталон блока «обучение без учителя» — Diehl & Cook 2015
 (https://doi.org/10.3389/fncom.2015.00099), уравнения и числа из кода
-авторов (github.com/peter-u-diehl/stdp-mnist, Diehl&Cook_spiking_MNIST.py),
+авторов (https://github.com/peter-u-diehl/stdp-mnist, Diehl&Cook_spiking_MNIST.py),
 на буквах кириллицы вместо цифр MNIST. Не мозг — отдельная сеть на torch:
 проверяет, что сам блок учит наши буквы, до переноса в движок (шаг 1 из
 DESIGN «Сборка из готовых блоков»).

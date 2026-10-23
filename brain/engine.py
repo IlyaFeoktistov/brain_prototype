@@ -2265,6 +2265,12 @@ class SpikingBrain:
         self.clopath = [p for p in self.projections if p.name in self.cfg.clopath_paths]
         for p in self.clopath:
             p.plastic = False
+        # Пути блока Diehl & Cook (cfg.dc_paths): веса меняет _dc, STDP их не трогает.
+        self.dc = [p for p in self.projections if p.name in self.cfg.dc_paths]
+        for p in self.dc:
+            p.plastic = False
+            p.dc_mean = float(p.weight.mean())
+            p.dc_sum = p.weight.sum(1, keepdim=True).clone()
         net = sorted(
             (p for p in self.projections if p.source == "net" and not isinstance(p, ProceduralProjection)),
             key=lambda p: not p.plastic,
@@ -2630,6 +2636,17 @@ class SpikingBrain:
             self.cl_ref2 = torch.full((self.n_slots,), cfg.clopath_u_ref2, device=self.device)
             self.cl_ltp = torch.zeros(1, device=self.device)
             self.cl_ltd = torch.zeros(1, device=self.device)
+        if getattr(self, "dc", None):
+            # Следы блока Diehl & Cook (_dc) и адаптивный порог: v_t_base —
+            # порог экспоненты без θ, клетки поста — dc_post.
+            self.dc_pre = z()
+            self.dc_post1 = z()
+            self.dc_post2 = z()
+            self.dc_post = torch.zeros(self.n_slots, dtype=torch.bool, device=self.device)
+            for p in self.dc:
+                self.dc_post[p.post.slice] = True
+            self.v_t_base = self.v_t.clone()
+        self.dc_on = False
         branches = max(1, cfg.dendrite_branches)
         self.tick = torch.zeros(1, dtype=torch.long, device=self.device)
         # Кольцо задержек путей (cfg.path_delays): [шаг, вход (возб, торм,
@@ -3156,6 +3173,9 @@ class SpikingBrain:
         if plastic and self.clopath:
             self._clopath()
 
+        if self.dc_on:
+            self._dc()
+
         self.trace_pre.mul_(self.decay_plus).add_(self.spikes)
         self.trace_pre_rise.mul_(self.decay_rise).add_(self.spikes)
         torch.sub(self.trace_pre, self.trace_pre_rise, out=self.ltp_kernel)
@@ -3252,6 +3272,44 @@ class SpikingBrain:
             self.cl_ltd.add_(down.sum() * p.innate_mean)
             p.weight.add_((up - down) * p.innate_mean).clamp_(0.0, p.cap)
 
+    def _dc(self) -> None:
+        """
+        Шаг блока Diehl & Cook на путях self.dc (cfg.dc_*): спайк пре — LTD
+        по следу поста₁, спайк поста — LTP по следу пре × следу поста₂ (до
+        сброса), затем следы спайков ← 1; веса — в долях среднего врождённого
+        веса пути, в пределах [0, dc_cap]; спайк поста поднимает его порог
+        v_t на dc_theta_mv.
+        """
+
+        cfg = self.cfg
+        dt = cfg.dt_ms
+        self.dc_pre.mul_(math.exp(-dt / cfg.dc_tau_pre_ms))
+        self.dc_post1.mul_(math.exp(-dt / cfg.dc_tau_post1_ms))
+        self.dc_post2.mul_(math.exp(-dt / cfg.dc_tau_post2_ms))
+        self.dc_pre.copy_(torch.where(self.spikes > 0, 1.0, self.dc_pre))
+
+        for p in self.dc:
+            post = slice(p.post.start, p.post.stop)
+            pre = p.pre.flatten()
+            fired_pre = self.spikes.index_select(0, pre).view(p.pre.shape)
+            trace_pre = self.dc_pre.index_select(0, pre).view(p.pre.shape)
+            down = cfg.dc_ltd * fired_pre * self.dc_post1[post][:, None]
+            up = cfg.dc_ltp * trace_pre * (self.dc_post2[post] * self.spikes[post])[:, None]
+            p.weight.add_((up - down) * p.dc_mean).clamp_(0.0, cfg.dc_cap * p.dc_mean)
+
+        fired_post = (self.spikes > 0) & self.dc_post
+        self.dc_post1.copy_(torch.where(fired_post, 1.0, self.dc_post1))
+        self.dc_post2.copy_(torch.where(fired_post, 1.0, self.dc_post2))
+        # Адаптивный порог: θ = v_t − v_t_base растёт со спайком, спадает к 0.
+        theta = (self.v_t - self.v_t_base) * math.exp(-dt / cfg.dc_theta_tau_ms) + cfg.dc_theta_mv * fired_post
+        self.v_t.copy_(torch.where(self.dc_post, self.v_t_base + theta, self.v_t))
+
+    def dc_normalize(self) -> None:
+        """Сумма весов каждой клетки поста на путях блока Diehl & Cook — к исходной (у авторов — перед каждым примером)."""
+
+        for p in self.dc:
+            p.weight.mul_(p.dc_sum / p.weight.sum(1, keepdim=True).clamp_min(1e-12))
+
     def _chunk(self, plastic: bool) -> None:
         step = self._compiled_step()
 
@@ -3326,7 +3384,7 @@ class SpikingBrain:
         use_graph = self.device.type == "cuda"
         self.set_clock()
 
-        key = self.plasticity
+        key = (self.plasticity, self.dc_on)
 
         if use_graph and key not in self._graphs:
             self._graphs[key] = self._capture(self.plasticity)
@@ -3611,11 +3669,12 @@ class SpikingBrain:
         "v", "i_syn", "i_inh", "i_ngf", "ngf_mf", "i_nmda", "nmda_mf", "i_dend", "adapt", "refractory", "spikes",
         "trace_pre", "trace_pre_rise", "ltp_kernel", "trace_post", "counts", "eligibility",
         "eligibility_scale", "dropped", "bias", "t_h", "kick_current", "kick_left", "stp_x", "stp_u4", "stp_x4", "inh_gain",
-        "chemistry", "tick", "mf_rate",
+        "chemistry", "tick", "mf_rate", "v_t", "dc_pre", "dc_post1", "dc_post2",
     )
 
     def _snapshot(self) -> dict:
-        return {name: getattr(self, name).clone() for name in self._DYNAMIC}
+        # Следов блока Diehl & Cook (dc_*) нет у мозга без cfg.dc_paths.
+        return {name: getattr(self, name).clone() for name in self._DYNAMIC if hasattr(self, name)}
 
     def _restore(self, saved: dict) -> None:
         for name, value in saved.items():

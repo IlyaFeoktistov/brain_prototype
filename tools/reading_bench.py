@@ -54,6 +54,9 @@ def build(opts: dict):
     if opts.get("clopath"):
         # Правило по напряжению на этих путях вместо STDP (cfg.clopath_paths).
         cfg.clopath_paths = tuple(opts["clopath"].split(","))
+    if opts.get("dc"):
+        # Пути с правилом блока Diehl & Cook (cfg.dc_paths) вместо STDP.
+        cfg.dc_paths = tuple(opts["dc"].split(","))
     if opts.get("ee_skip"):
         # Зоны без человеческой связности E → E (cfg.column_ee_human_skip).
         cfg.column_ee_human_skip = tuple(opts["ee_skip"].split(","))

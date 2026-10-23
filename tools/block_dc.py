@@ -27,7 +27,7 @@ DESIGN «Сборка из готовых блоков»).
 Буквы: 33 строчные, учёба — на train_fonts шрифтах со сдвигами ±1 px,
 проверка — на других шрифтах (не виденных) и на учебных.
 
-    PYTHONPATH=. python tools/block_dc.py [n_e=400] [epochs=3] [px=14] [side=20] [seed=1] [device=cuda]
+    PYTHONPATH=. python tools/block_dc.py [n_e=400] [epochs=3] [px=14] [side=20] [seed=1] [device=cpu] [threads=2]
 """
 
 from __future__ import annotations
@@ -176,7 +176,11 @@ class Net:
 
 
 def main(opts: dict) -> None:
-    dev = opts.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+    dev = opts.get("device", "cpu")
+    # Сеть маленькая: на CPU быстрее, чем на GPU (запуск ядер на шаг), и
+    # с 2 потоками быстрее, чем со всеми — не толкается с прогоном мозга на
+    # GPU (замер: 2 потока 0.27 с на показ, 4 — 0.37, 8 — 2.3).
+    torch.set_num_threads(int(opts.get("threads", 2)))
     n_e, epochs = int(opts.get("n_e", 400)), int(opts.get("epochs", 3))
     px, side = int(opts.get("px", 14)), int(opts.get("side", 20))
     gen = torch.Generator().manual_seed(int(opts.get("seed", 1)))

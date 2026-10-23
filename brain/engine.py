@@ -971,7 +971,7 @@ class SpikingBrain:
 
     def _init_nmda(self) -> None:
         """
-        NMDA у клеток E колонок (cfg.nmda): медленный ток от тех же
+        NMDA у клеток колонок (cfg.nmda; у тормозных ×nmda_inh_ratio): медленный ток от тех же
         возбуждающих входов (построенных и среднего поля), с блоком магнием.
         Сила — по пику: при −70 мВ NMDA даёт nmda_share_at_rest пика EPSP
         (Hunt et al. 2023), то есть r · B(−70) · пик(τ_NMDA) = доля · пик(τ_AMPA).
@@ -982,7 +982,8 @@ class SpikingBrain:
         self.i_nmda = torch.zeros(self.n_slots, device=self.device)
         self.nmda_mf = torch.zeros(self.n_slots, device=self.device)
         self.nmda_on = cfg.nmda
-        tau = cfg.nmda_tau_ms
+        self.nmda_mg = not cfg.nmda_chariker
+        tau = 80.0 if cfg.nmda_chariker else cfg.nmda_tau_ms
         self.decay_nmda = math.exp(-cfg.dt_ms / tau)
 
         if not self.nmda_on:
@@ -995,9 +996,15 @@ class SpikingBrain:
                 continue
 
             for group in area.layers.values():
-                pop = group["E"]
-                r = cfg.nmda_share_at_rest * self._psp_peak(pop) / (block * self._psp_peak(pop, tau))
-                self.nmda_r[pop.slice] = r
+                for kind, pop in group.items():
+                    if cfg.nmda_chariker:
+                        # Заряд NMDA к заряду AMPA того же веса (скачок τm/τ
+                        # ниже даёт r = отношение зарядов).
+                        r = 0.2 / 0.8 if kind == "E" else 0.33 / 0.67
+                    else:
+                        share = cfg.nmda_share_at_rest * (1.0 if kind == "E" else cfg.nmda_inh_ratio)
+                        r = share * self._psp_peak(pop) / (block * self._psp_peak(pop, tau))
+                    self.nmda_r[pop.slice] = r
 
         # Скачок τm/τ — тот же интеграл, что у быстрого синапса того же веса.
         self.nmda_scale = self.nmda_r * self.tau_m / tau
@@ -3041,7 +3048,7 @@ class SpikingBrain:
             # Недостающие соседи — тот же NMDA через фильтр τ_NMDA; блок
             # магнием (Jahr & Stevens 1990) — по текущему потенциалу.
             self.nmda_mf.mul_(self.decay_nmda).add_(dc_e * (1.0 - self.decay_nmda))
-            block = 1.0 / (1.0 + cfg.mg_mm / 3.57 * torch.exp(-0.062 * self.v))
+            block = 1.0 / (1.0 + cfg.mg_mm / 3.57 * torch.exp(-0.062 * self.v)) if self.nmda_mg else 1.0
             synaptic = synaptic + (self.i_nmda + self.nmda_r * self.nmda_mf) * block
 
         synaptic = (synaptic + dc_e) * excite + (self.i_inh + self.i_ngf + dc_i) * force

@@ -65,6 +65,10 @@ def main(opts: dict) -> None:
     cfg.homeostasis_scope = opts.get("scope", "cell")
     if opts.get("ee_skip"):
         cfg.column_ee_human_skip = tuple(opts["ee_skip"].split(","))
+    if opts.get("nmda"):
+        # NMDA у клеток колонок, E и тормозных (cfg.nmda, cfg.nmda_inh_ratio).
+        cfg.nmda = True
+        cfg.nmda_chariker = opts["nmda"] == "chariker"
     for k in ("relay_v_t_mv", "relay_rest_mv"):
         if k in opts:
             setattr(cfg, k, float(opts[k]))

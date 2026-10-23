@@ -1302,8 +1302,9 @@ class SpikingBrain:
                         dst_ei = "E" if dst_kind == "E" else "I"
                         p = potjans(src_layer, src_ei, dst_layer, dst_ei)
 
-                        if src_ei == dst_ei == "E":
-                            # Где у человека измерено иначе (L4 → L4 почти нет).
+                        if src_ei == dst_ei == "E" and spec.name not in cfg.column_ee_human_skip:
+                            # Где у человека измерено иначе (L4 → L4 почти нет;
+                            # кроме зон cfg.column_ee_human_skip).
                             p = next((q for a, b, q in cfg.column_ee_probability_human
                                       if (a, b) == (src_layer, dst_layer)), p)
 

@@ -54,6 +54,9 @@ def build(opts: dict):
     if opts.get("clopath"):
         # Правило по напряжению на этих путях вместо STDP (cfg.clopath_paths).
         cfg.clopath_paths = tuple(opts["clopath"].split(","))
+    if opts.get("ee_skip"):
+        # Зоны без человеческой связности E → E (cfg.column_ee_human_skip).
+        cfg.column_ee_human_skip = tuple(opts["ee_skip"].split(","))
     if opts.get("lgn_l6"):
         # Прямой вход LGN → V1 L6 (cfg.lgn_l6): доля клеток[,входов[,по данным]].
         parts = opts["lgn_l6"].split(",")

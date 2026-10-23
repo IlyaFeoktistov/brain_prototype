@@ -15,7 +15,16 @@ V1 — водитель, различие в токе, не в спайках»)
 перемешанные метки. Изменение пути V1 → буквы: средний |Δw| в долях
 среднего веса.
 
-    PYTHONPATH=. python tools/letters_learn.py [train=60] [n=12] [plastic=1] [seed=1] [fix=225] [step=5]
+Полезны ли новые веса — без шума спайков букв: вход пути V1 → буквы
+(Σ вес × спайки V1 L2/3 за фиксацию) на одной и той же записи спайков V1
+проверки «после» — с весами при рождении и с выученными: разность A−B
+у клетки в долях шума повторов и точность по этому входу.
+
+rule=clopath — правило по напряжению (cfg.clopath_paths, Clopath et al.
+2010) на пути V1 → буквы вместо STDP; по ходу учёбы — суммы LTP и LTD
+правила, перцентили Δw (в долях среднего веса), V и частота букв L4.
+
+    PYTHONPATH=. python tools/letters_learn.py [train=60] [n=12] [plastic=1] [rule=stdp|clopath] [seed=1] [fix=225] [step=5]
 """
 
 from __future__ import annotations
@@ -35,6 +44,8 @@ WIN = 10.0
 def main(opts: dict) -> None:
     opts = {"fit": "lgn-a", "homeo": f"lgn-a-s{opts.get('seed', 1)}", "relay_v_t_mv": "-59",
             "relay_rest_mv": "-48", "trn_scale": "0.5", **opts}
+    if opts.get("rule") == "clopath":
+        opts["clopath"] = "visual -> letters"
     mind, b = build(opts)
     cfg = b.cfg
     s = Session(mind, window_ms=WIN)
@@ -46,6 +57,10 @@ def main(opts: dict) -> None:
     stages = {"V1 L2/3": vis["L23"]["E"], "буквы L4": let["L4"]["E"], "буквы L2/3": let["L23"]["E"]}
     path = next(p for p in b.projections if p.name == "visual -> letters")
     w0 = path.weight.float().clone()
+    v1 = vis["L23"]["E"]
+    pre_v1 = path.pre.long() - v1.start
+    assert int(pre_v1.min()) >= 0 and int(pre_v1.max()) < v1.size, "вход пути — не V1 L2/3 E"
+    train_v = []
 
     s.line, s.gaze = "", 0.0
     b.run(2500.0)
@@ -74,6 +89,8 @@ def main(opts: dict) -> None:
                 for k, pop in stages.items():
                     acc[k] = acc[k] + r[pop.slice].cpu()
                 acc["ток букв L4"] = acc["ток букв L4"] + b.i_syn[stages["буквы L4"].slice].float().cpu() / n_win
+                if b.plasticity:
+                    train_v.append(float(b.v[stages["буквы L4"].slice].mean()))
             for k in rows:
                 rows[k].append(acc[k])
         return {k: torch.cat(v) for k, v in rows.items()}
@@ -93,8 +110,18 @@ def main(opts: dict) -> None:
         for k in feats[0]:
             x = torch.stack([f[k] for f in feats])
             ch = float(torch.tensor([loo(x, y[torch.randperm(len(y), generator=gen)]) for _ in range(20)]).mean())
-            print(f"  {k:12s} {float(x.mean()) * (1 if k.startswith('ток') else 1):10.3f} {loo(x, y):9.2f} {ch:9.2f}",
-                  flush=True)
+            print(f"  {k:12s} {float(x.mean()):10.3f} {loo(x, y):9.2f} {ch:9.2f}", flush=True)
+        # Вход пути V1 → буквы на этой записи V1: веса при рождении и нынешние.
+        counts = torch.stack([f["V1 L2/3"] for f in feats]).view(len(feats), -1, v1.size)
+        pre = pre_v1.cpu()
+        for name_w, w in (("вход V1, веса рождения", w0), ("вход V1, веса сейчас", path.weight.float())):
+            w = w.cpu()
+            drive = torch.stack([(w[None] * counts[:, f][:, pre]).sum(2) for f in range(counts.shape[1])], 1)
+            x = drive.reshape(len(feats), -1)
+            ma, mb = x[y == 0].mean(0), x[y == 1].mean(0)
+            noise = torch.cat([x[y == 0] - ma, x[y == 1] - mb]).std(0).mean()
+            snr = float((ma - mb).abs().mean() / noise.clamp_min(1e-9))
+            print(f"  {name_w:22s} A−B / шум {snr:5.2f}, точность {loo(x, y):.2f}", flush=True)
 
     test("до учёбы")
     plastic = opts.get("plastic", "1") == "1"
@@ -103,8 +130,20 @@ def main(opts: dict) -> None:
         b.plasticity = plastic
         show(lab)
         if (i + 1) % 20 == 0:
-            dw = float((path.weight.float() - w0).abs().mean() / w0.abs().mean())
-            print(f"  учёба {i + 1}/{2 * n_train} показов, |Δw| {dw:.4f}, {time.time() - t0:.0f} с", flush=True)
+            d = (path.weight.float() - w0) / w0.mean()
+            dw = float(d.abs().mean())
+            q = torch.quantile(d.flatten()[torch.randperm(d.numel(), device=d.device)[:200000]],
+                               torch.tensor([0.01, 0.25, 0.5, 0.75, 0.99], device=d.device))
+            extra = ""
+            if getattr(b, "cl_ltp", None) is not None and b.clopath:
+                extra = (f", LTP {float(b.cl_ltp) / float(w0.sum()):.4f} LTD {float(b.cl_ltd) / float(w0.sum()):.4f}"
+                         f" (доли суммы весов)")
+                b.cl_ltp.zero_()
+                b.cl_ltd.zero_()
+            print(f"  учёба {i + 1}/{2 * n_train} показов, |Δw| {dw:.4f}{extra}; Δw перц. 1/25/50/75/99: "
+                  + " ".join(f"{float(v):+.3f}" for v in q)
+                  + f"; V букв L4 {sum(train_v) / max(1, len(train_v)):.1f} мВ, {time.time() - t0:.0f} с", flush=True)
+            train_v.clear()
     test(f"после учёбы ({2 * n_train} показов, пластичность {'вкл' if plastic else 'выкл — контроль'})")
 
 

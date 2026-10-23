@@ -709,6 +709,32 @@ class BrainConfig:
     # Гетеросинаптическое сохранение суммы входа клетки по пути коры
     # (engine._conserve; Royer & Paré 2003; обзор — Chistiakova et al. 2014).
     heterosynaptic_conservation: bool = True
+    # Правило по напряжению (Clopath et al. 2010, https://doi.org/10.1038/nn.2479)
+    # на названных путях вместо STDP — флаг, пусто — выкл. LTD на спайк пре ∝
+    # (ū₋ − θ₋)₊ поста (клетка деполяризована), LTP ∝ след пре × (u − θ₊)₊ ×
+    # (ū₊ − θ₋)₊ — нужна сильная деполяризация (спайк): клетка закрепляет
+    # входы, на которые уже отвечает. Гомеостаз LTD — × ū²/u_ref² (средняя
+    # деполяризация за ~1 с). Числа — подгонка под зрительную кору крысы
+    # (Sjöström et al. 2001) в табл. 1 Clopath [сверить по табл. 1]; спайк в
+    # правиле — u = 29.4 мВ на 2 мс, как у их AdEx. Вес — в долях среднего
+    # врождённого веса пути, в пределах [0, cap пути]. θ₋ у них равен покою
+    # клетки (E_L −70.6, срез), ū — деполяризация от покоя: у нас оба от
+    # собственного покоя клетки (v_rest + фон bias — клетки в сети на −55…−60,
+    # как наяву); θ₊ — абсолютный (сразу над порогом спайка, порог фон не
+    # сдвигает).
+    clopath_paths: tuple[str, ...] = ()
+    clopath_rest_mv: float = -70.6
+    clopath_a_ltd: float = 14e-5
+    clopath_a_ltp: float = 8e-5
+    clopath_theta_minus_mv: float = -70.6
+    clopath_theta_plus_mv: float = -45.3
+    clopath_tau_minus_ms: float = 10.0
+    clopath_tau_plus_ms: float = 7.0
+    clopath_tau_x_ms: float = 15.0
+    clopath_u_ref2: float = 60.0
+    clopath_tau_ubar_ms: float = 1000.0
+    clopath_spike_mv: float = 29.4
+    clopath_spike_ms: float = 2.0
     # След для третьего фактора живёт ~1 с: дофамин действует, если пришёл
     # в 0.3–2 с после пары спайков (Yagishita et al. 2014).
     eligibility_tau: float = 1000.0

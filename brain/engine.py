@@ -2218,6 +2218,11 @@ class SpikingBrain:
         """
 
         self.procedural = [p for p in self.projections if isinstance(p, ProceduralProjection)]
+        # Пути с правилом по напряжению (cfg.clopath_paths): STDP и сохранение
+        # суммы их не трогают — веса меняет _clopath.
+        self.clopath = [p for p in self.projections if p.name in self.cfg.clopath_paths]
+        for p in self.clopath:
+            p.plastic = False
         net = sorted(
             (p for p in self.projections if p.source == "net" and not isinstance(p, ProceduralProjection)),
             key=lambda p: not p.plastic,
@@ -2571,6 +2576,17 @@ class SpikingBrain:
         z = lambda: torch.zeros(self.n_slots, device=self.device)
 
         self.v = cfg.v_rest + self._uniform((self.n_slots,), 0.0, 10.0)
+        if getattr(self, "clopath", None):
+            # Следы правила по напряжению (_clopath): ū₋, ū₊ — мембрана
+            # поста, ū — средняя деполяризация, x̄ — след спайков пре, шаги
+            # «спайка» в правиле; суммы LTP и LTD — для стендов.
+            self.cl_minus = self.v.clone()
+            self.cl_plus = self.v.clone()
+            self.cl_ubar = torch.full((self.n_slots,), math.sqrt(cfg.clopath_u_ref2), device=self.device)
+            self.cl_x = z()
+            self.cl_left = z()
+            self.cl_ltp = torch.zeros(1, device=self.device)
+            self.cl_ltd = torch.zeros(1, device=self.device)
         branches = max(1, cfg.dendrite_branches)
         self.tick = torch.zeros(1, dtype=torch.long, device=self.device)
         # Кольцо задержек путей (cfg.path_delays): [шаг, вход (возб, торм,
@@ -3094,6 +3110,9 @@ class SpikingBrain:
                 )
             self.eligibility_scale.mul_(self.decay_eligibility)
 
+        if plastic and self.clopath:
+            self._clopath()
+
         self.trace_pre.mul_(self.decay_plus).add_(self.spikes)
         self.trace_pre_rise.mul_(self.decay_rise).add_(self.spikes)
         torch.sub(self.trace_pre, self.trace_pre_rise, out=self.ltp_kernel)
@@ -3153,6 +3172,40 @@ class SpikingBrain:
         ).squeeze(1)
 
         return torch.where(fired == self.n, self.dummy_rows, fired)
+
+    def _clopath(self) -> None:
+        """
+        Шаг правила по напряжению (cfg.clopath_*; Clopath et al. 2010) на
+        путях self.clopath: dw/dt = −A_LTD·ū²/u_ref²·X_pre·(ū₋ − θ₋)₊
+        + A_LTP·x̄_pre·(u − θ₊)₊·(ū₊ − θ₋)₊; вес — в долях среднего
+        врождённого веса пути, в пределах [0, cap].
+        """
+
+        cfg = self.cfg
+        dt = cfg.dt_ms
+        self.cl_left.sub_(1.0).clamp_(min=0.0)
+        self.cl_left.add_(self.spikes * round(cfg.clopath_spike_ms / dt))
+        u = torch.where(self.cl_left > 0, cfg.clopath_spike_mv, self.v)
+        # Покой клетки — v_rest + фон; θ₋ и ū — от него (cfg.clopath_rest_mv).
+        rest = cfg.v_rest + self.bias
+        theta_minus = rest + (cfg.clopath_theta_minus_mv - cfg.clopath_rest_mv)
+        self.cl_minus.add_((u - self.cl_minus) * (dt / cfg.clopath_tau_minus_ms))
+        self.cl_plus.add_((u - self.cl_plus) * (dt / cfg.clopath_tau_plus_ms))
+        self.cl_ubar.add_(((u - rest).clamp(min=0.0) - self.cl_ubar) * (dt / cfg.clopath_tau_ubar_ms))
+        self.cl_x.add_((self.spikes - self.cl_x * dt) / cfg.clopath_tau_x_ms)
+
+        for p in self.clopath:
+            post = slice(p.post.start, p.post.stop)
+            ltd = (cfg.clopath_a_ltd * self.cl_ubar[post] ** 2 / cfg.clopath_u_ref2
+                   * (self.cl_minus[post] - theta_minus[post]).clamp(min=0.0))
+            ltp = (cfg.clopath_a_ltp * dt * (u[post] - cfg.clopath_theta_plus_mv).clamp(min=0.0)
+                   * (self.cl_plus[post] - theta_minus[post]).clamp(min=0.0))
+            pre = p.pre.flatten()
+            up = ltp[:, None] * self.cl_x.index_select(0, pre).view(p.pre.shape)
+            down = ltd[:, None] * self.spikes.index_select(0, pre).view(p.pre.shape)
+            self.cl_ltp.add_(up.sum() * p.innate_mean)
+            self.cl_ltd.add_(down.sum() * p.innate_mean)
+            p.weight.add_((up - down) * p.innate_mean).clamp_(0.0, p.cap)
 
     def _chunk(self, plastic: bool) -> None:
         step = self._compiled_step()

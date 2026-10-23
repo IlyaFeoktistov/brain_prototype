@@ -51,6 +51,9 @@ def build(opts: dict):
             setattr(cfg, k, float(opts[k]))
     if opts.get("fit"):
         anatomy.use_fit(cfg, opts["fit"])
+    if opts.get("clopath"):
+        # Правило по напряжению на этих путях вместо STDP (cfg.clopath_paths).
+        cfg.clopath_paths = tuple(opts["clopath"].split(","))
     mind = Mind(cfg)
     b = mind.brain
     b.plasticity = False

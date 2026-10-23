@@ -24,7 +24,14 @@ rule=clopath — правило по напряжению (cfg.clopath_paths, Cl
 2010) на пути V1 → буквы вместо STDP; по ходу учёбы — суммы LTP и LTD
 правила, перцентили Δw (в долях среднего веса), V и частота букв L4.
 
-    PYTHONPATH=. python tools/letters_learn.py [train=60] [n=12] [plastic=1] [rule=stdp|clopath] [seed=1] [fix=225] [step=5]
+attend=мВ — внимание при учёбе (только на учёбе, не на проверках):
+деполяризация клеток букв L4 E — нисходящий сигнал; сила по данным о V4:
+ответ +23% (Buffalo et al. 2010, https://doi.org/10.1073/pnas.0910779107),
+до ×1.51 эквивалентного контраста (Reynolds et al. 2000,
+https://doi.org/10.1016/S0896-6273(00)81206-4). Частота букв L4 на учёбе
+печатается — по ней видно, в диапазоне ли доза.
+
+    PYTHONPATH=. python tools/letters_learn.py [attend=0] [train=60] [n=12] [plastic=1] [rule=stdp|clopath] [seed=1] [fix=225] [step=5]
 """
 
 from __future__ import annotations
@@ -126,11 +133,19 @@ def main(opts: dict) -> None:
 
     test("до учёбы")
     v1_seen = torch.zeros(v1.size)
+    L4 = stages["буквы L4"]
+    attend = float(opts.get("attend", 0))
+    base_bias = b.bias[L4.slice].clone()
+    train_rate = []
     plastic = opts.get("plastic", "1") == "1"
     t0 = time.time()
     for i, lab in enumerate(shuffled(n_train)):
         b.plasticity = plastic
-        v1_seen += show(lab)["V1 L2/3"].view(-1, v1.size).sum(0)
+        b.bias[L4.slice] = base_bias + attend
+        f = show(lab)
+        b.bias[L4.slice] = base_bias
+        v1_seen += f["V1 L2/3"].view(-1, v1.size).sum(0)
+        train_rate.append(float(f["буквы L4"].mean()))
         if (i + 1) % 20 == 0:
             d = (path.weight.float() - w0) / w0.mean()
             dw = float(d.abs().mean())
@@ -144,7 +159,9 @@ def main(opts: dict) -> None:
                 b.cl_ltd.zero_()
             print(f"  учёба {i + 1}/{2 * n_train} показов, |Δw| {dw:.4f}{extra}; Δw перц. 1/25/50/75/99: "
                   + " ".join(f"{float(v):+.3f}" for v in q)
-                  + f"; V букв L4 {sum(train_v) / max(1, len(train_v)):.1f} мВ, {time.time() - t0:.0f} с", flush=True)
+                  + f"; V букв L4 {sum(train_v) / max(1, len(train_v)):.1f} мВ, сп/кл/фикс "
+                  f"{sum(train_rate) / len(train_rate):.3f}, {time.time() - t0:.0f} с", flush=True)
+            train_rate.clear()
             train_v.clear()
     feats, y = test(f"после учёбы ({2 * n_train} показов, пластичность {'вкл' if plastic else 'выкл — контроль'})")
     if not plastic:

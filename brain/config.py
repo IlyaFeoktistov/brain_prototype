@@ -735,6 +735,13 @@ class BrainConfig:
     clopath_tau_ubar_ms: float = 1000.0
     clopath_spike_mv: float = 29.4
     clopath_spike_ms: float = 2.0
+    # Адаптивная нормализация LTD по средней деполяризации (флаг; 0 — выкл):
+    # u_ref² клетки следует за её ū² с этим временем, начало — clopath_u_ref2.
+    # Не скользящий порог BCM (порог LTP/LTD этим не задан) — регулировка
+    # силы LTD; идея метапластичности — Kirkwood, Rioult & Bear 1996
+    # (https://doi.org/10.1038/381526a0). 30 с — медленнее фразы (~1 с) и
+    # показа, быстрее учёбы (минуты) [гипотеза].
+    clopath_ref_tau_ms: float = 0.0
     # След для третьего фактора живёт ~1 с: дофамин действует, если пришёл
     # в 0.3–2 с после пары спайков (Yagishita et al. 2014).
     eligibility_tau: float = 1000.0

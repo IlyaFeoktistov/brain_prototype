@@ -99,7 +99,7 @@ def main(opts: dict) -> None:
         order = [0, 1] * n
         return [order[i] for i in torch.randperm(len(order), generator=gen)]
 
-    def test(name: str) -> None:
+    def test(name: str):
         b.plasticity = False
         order = shuffled(n_test)
         feats = [show(lab) for lab in order]
@@ -122,13 +122,15 @@ def main(opts: dict) -> None:
             noise = torch.cat([x[y == 0] - ma, x[y == 1] - mb]).std(0).mean()
             snr = float((ma - mb).abs().mean() / noise.clamp_min(1e-9))
             print(f"  {name_w:22s} A−B / шум {snr:5.2f}, точность {loo(x, y):.2f}", flush=True)
+        return feats, y
 
     test("до учёбы")
+    v1_seen = torch.zeros(v1.size)
     plastic = opts.get("plastic", "1") == "1"
     t0 = time.time()
     for i, lab in enumerate(shuffled(n_train)):
         b.plasticity = plastic
-        show(lab)
+        v1_seen += show(lab)["V1 L2/3"].view(-1, v1.size).sum(0)
         if (i + 1) % 20 == 0:
             d = (path.weight.float() - w0) / w0.mean()
             dw = float(d.abs().mean())
@@ -144,7 +146,33 @@ def main(opts: dict) -> None:
                   + " ".join(f"{float(v):+.3f}" for v in q)
                   + f"; V букв L4 {sum(train_v) / max(1, len(train_v)):.1f} мВ, {time.time() - t0:.0f} с", flush=True)
             train_v.clear()
-    test(f"после учёбы ({2 * n_train} показов, пластичность {'вкл' if plastic else 'выкл — контроль'})")
+    feats, y = test(f"после учёбы ({2 * n_train} показов, пластичность {'вкл' if plastic else 'выкл — контроль'})")
+    if not plastic:
+        return
+    # Зависят ли изменения весов от входов: у клетки — корреляция
+    # относительного Δw синапса с частотой его входа V1 при учёбе и с
+    # избирательностью входа к «своей» фразе клетки (знак A−B ответа клетки
+    # на проверке × A−B входа); контроль — знак клетки перемешан.
+    rel = ((path.weight.float() - w0) / w0.mean()).cpu()
+    pre = pre_v1.cpu()
+
+    def row_corr(a: torch.Tensor, c: torch.Tensor) -> float:
+        a = a - a.mean(1, keepdim=True)
+        c = c - c.mean(1, keepdim=True)
+        r = (a * c).sum(1) / (a.norm(dim=1) * c.norm(dim=1)).clamp_min(1e-12)
+        return float(r.mean())
+
+    v1_counts = torch.stack([f["V1 L2/3"] for f in feats]).view(len(feats), -1, v1.size).sum(1)
+    d = v1_counts[y == 0].mean(0) - v1_counts[y == 1].mean(0)
+    l4_counts = torch.stack([f["буквы L4"] for f in feats]).view(len(feats), 3, -1).sum(1)
+    pref = torch.sign(l4_counts[y == 0].mean(0) - l4_counts[y == 1].mean(0))
+    shuffled_pref = pref[torch.randperm(len(pref), generator=gen)]
+    print(f"\n=== Δw по входам (в долях среднего веса): среднее {float(rel.mean()):+.4f}, "
+          f"разброс внутри клетки {float(rel.std(1).mean()):.4f}")
+    print(f"  корр. Δw с частотой входа при учёбе      {row_corr(rel, v1_seen[pre]):+.4f}")
+    print(f"  корр. Δw с избирательностью к своей фразе {row_corr(rel, pref[:, None] * d[pre]):+.4f} "
+          f"(контроль {row_corr(rel, shuffled_pref[:, None] * d[pre]):+.4f}; "
+          f"клеток с предпочтением {int((pref != 0).sum())} из {len(pref)})", flush=True)
 
 
 if __name__ == "__main__":

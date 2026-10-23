@@ -2585,6 +2585,7 @@ class SpikingBrain:
             self.cl_ubar = torch.full((self.n_slots,), math.sqrt(cfg.clopath_u_ref2), device=self.device)
             self.cl_x = z()
             self.cl_left = z()
+            self.cl_ref2 = torch.full((self.n_slots,), cfg.clopath_u_ref2, device=self.device)
             self.cl_ltp = torch.zeros(1, device=self.device)
             self.cl_ltd = torch.zeros(1, device=self.device)
         branches = max(1, cfg.dendrite_branches)
@@ -3193,10 +3194,12 @@ class SpikingBrain:
         self.cl_plus.add_((u - self.cl_plus) * (dt / cfg.clopath_tau_plus_ms))
         self.cl_ubar.add_(((u - rest).clamp(min=0.0) - self.cl_ubar) * (dt / cfg.clopath_tau_ubar_ms))
         self.cl_x.add_((self.spikes - self.cl_x * dt) / cfg.clopath_tau_x_ms)
+        if cfg.clopath_ref_tau_ms > 0:
+            self.cl_ref2.add_((self.cl_ubar ** 2 - self.cl_ref2) * (dt / cfg.clopath_ref_tau_ms))
 
         for p in self.clopath:
             post = slice(p.post.start, p.post.stop)
-            ltd = (cfg.clopath_a_ltd * self.cl_ubar[post] ** 2 / cfg.clopath_u_ref2
+            ltd = (cfg.clopath_a_ltd * self.cl_ubar[post] ** 2 / self.cl_ref2[post]
                    * (self.cl_minus[post] - theta_minus[post]).clamp(min=0.0))
             ltp = (cfg.clopath_a_ltp * dt * (u[post] - cfg.clopath_theta_plus_mv).clamp(min=0.0)
                    * (self.cl_plus[post] - theta_minus[post]).clamp(min=0.0))

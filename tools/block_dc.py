@@ -27,7 +27,7 @@ DESIGN «Сборка из готовых блоков»).
 Буквы: 33 строчные, учёба — на train_fonts шрифтах со сдвигами ±1 px,
 проверка — на других шрифтах (не виденных) и на учебных.
 
-    PYTHONPATH=. python tools/block_dc.py [n_e=400] [epochs=3] [px=14] [side=20] [seeds=1,2,3] [device=cuda|cpu] [threads=2]
+    PYTHONPATH=. python tools/block_dc.py [n_e=400] [epochs=3] [px=14] [side=20] [seeds=1,2,3] [device=cuda|cpu] [threads=2] [save=имя]
 """
 
 from __future__ import annotations
@@ -281,6 +281,14 @@ def main(opts: dict) -> None:
               f"{float(r_tr[b].sum(1).mean()):.1f}; точность учебные {accuracy(r_tr[b], y_tr):.3f}, "
               f"новые шрифты {accuracy(r_new[b], y_new):.3f}  (случайно {1 / 33:.3f})", flush=True)
     print(f"всего {time.time() - t0:.0f} с")
+    if opts.get("save"):
+        # Замороженный эталон: веса, θ, картинки и ответы — для сверки блока
+        # в движке на тех же входах (шаг 2 сборки).
+        from brain.config import BRAIN_HOME
+        out = BRAIN_HOME / "fits" / f"block_dc-{opts['save']}.pt"
+        torch.save({"seeds": seeds, "w": net.w.cpu(), "theta": net.theta.cpu(), "x_tr": x_tr, "y_tr": y_tr,
+                    "x_new": x_new, "y_new": y_new, "r_tr": r_tr, "r_new": r_new, "opts": opts}, out)
+        print(f"эталон → {out}")
 
 
 if __name__ == "__main__":

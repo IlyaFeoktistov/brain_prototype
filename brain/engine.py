@@ -3642,11 +3642,26 @@ class SpikingBrain:
             self.homeo_target = target
             self.homeo_rate = torch.where(target.isnan(), 0.0, target)
             self.homeo_shift = torch.zeros(self.n, device=self.device)
+            # Номер популяции клетки (homeostasis_scope "population").
+            self.homeo_pop = torch.zeros(self.n, dtype=torch.long, device=self.device)
+            pops = [area.E for area in self.areas.values() if area.layers is None] + [
+                pop for area in self.areas.values() if area.layers is not None
+                for group in area.layers.values() for pop in group.values()]
+            for i, pop in enumerate(pops):
+                self.homeo_pop[pop.slice] = i
+            self.homeo_npop = len(pops)
 
         k = 1.0 / max(1, cfg.homeostasis_avg_windows)
         self.homeo_rate.mul_(1.0 - k).add_(rates[: self.n] * k)
         on = ~self.homeo_target.isnan()
-        step = cfg.homeostasis_step_mv * torch.log((self.homeo_target + 0.5) / (self.homeo_rate + 0.5))
+        rate = self.homeo_rate
+        if cfg.homeostasis_scope == "population":
+            # Средняя частота популяции — у всех её клеток один шаг.
+            total = torch.zeros(self.homeo_npop, device=self.device).index_add_(0, self.homeo_pop, rate)
+            count = torch.zeros(self.homeo_npop, device=self.device).index_add_(
+                0, self.homeo_pop, torch.ones_like(rate))
+            rate = (total / count.clamp_min(1.0)).index_select(0, self.homeo_pop)
+        step = cfg.homeostasis_step_mv * torch.log((self.homeo_target + 0.5) / (rate + 0.5))
         new = (self.homeo_shift + torch.where(on, step, 0.0)).clamp(-cfg.homeostasis_max_mv, cfg.homeostasis_max_mv)
         self.bias[: self.n] += new - self.homeo_shift
         self.homeo_shift = new

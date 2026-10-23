@@ -627,6 +627,13 @@ class BrainConfig:
     homeostasis_step_mv: float = 0.5
     homeostasis_avg_windows: int = 5
     homeostasis_max_mv: float = 10.0
+    # "cell" — каждая клетка к частоте своего типа (сжимает разброс: фон V1
+    # L2/3 2.2–3.8 Гц без молчащих, DESIGN «Гомеостаз по клетке уравнял
+    # частоты»); "population" — шаг по средней частоте популяции, общий для
+    # её клеток: среднее идёт к цели, у клетки остаётся своё место в
+    # распределении, заданное проводкой (уставка своя у клетки — Hengen et al.
+    # 2016, https://doi.org/10.1016/j.cell.2016.01.046).
+    homeostasis_scope: str = "cell"
     e_delta_t: float = 2.0
     # Адаптация: e_adapt_b мВ за спайк при индексе E мыши (e_adaptation_index),
     # спад e_adapt_tau [сверить: пересчёт индекса Allen в мВ не выведен].

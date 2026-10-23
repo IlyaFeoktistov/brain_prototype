@@ -7,7 +7,11 @@ homeostasis_update): мозг живёт с пустым экраном окна
 на замерах выключен — сдвиг заморожен).
 
     PYTHONPATH=. python tools/develop.py [seconds=60] [win=1000] [seed=42] [fit=lgn-a]
-        [relay_v_t_mv=-59] [relay_rest_mv=-48] [trn_scale=0.5] [out=lgn-a] [every=10]
+        [relay_v_t_mv=-59] [relay_rest_mv=-48] [trn_scale=0.5] [out=lgn-a] [every=10] [scope=cell|population]
+
+scope=population — общий шаг популяции (cfg.homeostasis_scope): разброс
+клеток остаётся от проводки; в отчёте — распределение частот клеток зрительных
+популяций (медиана, 10–90%, доля без спайков за окно).
 """
 
 from __future__ import annotations
@@ -44,6 +48,12 @@ def report(b, rates, label: str) -> None:
         edge = float((shift.abs() >= lim - 1e-3).float().mean())
         print(f"   {name:22s} {float(rates[sl].mean()):6.2f} / {float(t.mean()):5.2f}   {float(shift.mean()):+6.2f}"
               + (f"   {edge:.0%}" if edge > 0 else ""), flush=True)
+    for name in ("visual.L23E", "visual.L4E", "letters.L4E", "letters.L23E"):
+        sl = dict(populations(b))[name]
+        x = rates[sl].float()
+        q = torch.quantile(x, torch.tensor([0.1, 0.5, 0.9], device=x.device))
+        print(f"   распределение {name:14s} медиана {float(q[1]):.2f}, 10–90% {float(q[0]):.2f}–{float(q[2]):.2f}, "
+              f"без спайков {float((x == 0).float().mean()):.0%}, > 1 Гц {float((x > 1).float().mean()):.0%}", flush=True)
 
 
 def main(opts: dict) -> None:
@@ -52,6 +62,7 @@ def main(opts: dict) -> None:
     cfg.seed = int(opts.get("seed", 42))
     cfg.autosave = False
     cfg.homeostasis = True
+    cfg.homeostasis_scope = opts.get("scope", "cell")
     for k in ("relay_v_t_mv", "relay_rest_mv"):
         if k in opts:
             setattr(cfg, k, float(opts[k]))

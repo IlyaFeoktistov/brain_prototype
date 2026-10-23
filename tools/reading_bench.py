@@ -69,7 +69,7 @@ def build(opts: dict):
         parts = opts["lgn_l6"].split(",")
         cfg.lgn_l6 = (float(parts[0]), int(parts[1]) if len(parts) > 1 else 20, float(parts[2]) if len(parts) > 2 else 85.0)
     for k, v in opts.items():
-        if k.startswith("clopath_") and k != "clopath_paths":
+        if (k.startswith("clopath_") and k != "clopath_paths") or (k.startswith("dc_") and k != "dc_paths"):
             setattr(cfg, k, float(v))
     mind = Mind(cfg)
     b = mind.brain

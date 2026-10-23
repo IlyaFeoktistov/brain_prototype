@@ -44,7 +44,8 @@ def main(opts: dict) -> None:
     gen = torch.Generator().manual_seed(int(opts.get("seed", 1)))
     torch.manual_seed(int(opts.get("seed", 1)))
     vis, let = b.areas["visual"].layers, b.areas["letters"].layers
-    stages = {"V1 L2/3": vis["L23"]["E"], "буквы L4": let["L4"]["E"], "буквы L2/3": let["L23"]["E"]}
+    stages = {"LGN": b.areas["lgn"].E, "V1 L4": vis["L4"]["E"], "V1 L2/3": vis["L23"]["E"],
+              "буквы L4": let["L4"]["E"], "буквы L2/3": let["L23"]["E"]}
     L4 = let["L4"]["E"]
     path = b.dc[0]
     w0 = path.weight.clone()
@@ -97,7 +98,12 @@ def main(opts: dict) -> None:
         score = torch.stack([r_test[key][:, (label == k) & active].mean(1) if ((label == k) & active).any()
                              else torch.full((len(y_test),), -1.0) for k in range(len(letters))], 1)
         acc = float((score.argmax(1) == y_test).float().mean())
-        print(f"  {key:12s} точность {acc:.2f}; клеток с ответом {int(active.sum())}, букв с клетками "
+        # Классификатор по корреляции: центр буквы — средний ответ на метках,
+        # ответ — центр с наибольшей корреляцией (как l4_decode).
+        z = lambda x: (x - x.mean(-1, keepdim=True)) / x.std(-1, keepdim=True).clamp_min(1e-9)
+        corr = z(r_test[key]) @ z(mean).T / mean.shape[1]
+        acc_c = float((corr.argmax(1) == y_test).float().mean())
+        print(f"  {key:12s} точность {acc:.2f} (голос клеток), {acc_c:.2f} (корреляция); клеток с ответом {int(active.sum())}, букв с клетками "
               f"{len(set(label[active].tolist()))}/{len(letters)}, спайков на показ {float(r_test[key].sum(1).mean()):.1f}",
               flush=True)
     print(f"всего {time.time() - t0:.0f} с")

@@ -1874,10 +1874,44 @@ class SpikingBrain:
                 )
 
         self._v1_to_colliculus()
+        self._lgn_to_l6()
         self._external_minus_modeled()
         self._build_mean_field()
         self._pack()
         self._init_nmda()
+
+    def _lgn_to_l6(self) -> None:
+        """
+        Прямой вход LGN → V1 L6 E у доли клеток (cfg.lgn_l6): k клеток реле
+        из столбцов поля клетки ±1.5 px (ON и OFF, любые строки), синапс как
+        LGN → L4 (вес × входов по данным / построено, как у L4); у прочих
+        клеток вес 0.
+        """
+
+        cfg = self.cfg
+        frac, k, k_data = cfg.lgn_l6
+
+        if not (frac > 0 and "lgn" in self.areas and self.areas.get("visual") is not None
+                and "L6" in (self.areas["visual"].layers or {})):
+            return
+
+        L6 = self.areas["visual"].layers["L6"]["E"]
+        relay = self.areas["lgn"].E
+        R, C = cfg.retina_rows, cfg.retina_cols
+        g = self.generator
+        dev = self.device
+        cols = self.field_cols[L6.name].to(dev)
+        col = (cols[:, None] + torch.rand((L6.size, k), device=dev, generator=g) * 3 - 1.5).round().long().clamp(0, C - 1)
+        row = torch.randint(0, R, (L6.size, k), device=dev, generator=g)
+        layer = torch.randint(0, 2, (L6.size, k), device=dev, generator=g)
+        # Клетка реле j — рецептор j % размер органа (_build: cells = arange % size).
+        pre = (layer * R * C + row * C + col) % relay.size
+        chosen = torch.rand(L6.size, device=dev, generator=g) < frac
+        w = cfg.thalamic_psp_mv / self._psp_peak(L6) * (k_data / k)
+        weight = torch.where(chosen[:, None], w, 0.0).expand(L6.size, k).contiguous()
+        proj = Projection(f"lgn -> {L6.name}", "net", (pre + relay.start).to(torch.int32), L6, weight)
+        proj.pre_pop = relay
+        self.projections.append(proj)
 
     def _v1_to_colliculus(self) -> None:
         """

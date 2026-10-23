@@ -54,6 +54,10 @@ def build(opts: dict):
     if opts.get("clopath"):
         # Правило по напряжению на этих путях вместо STDP (cfg.clopath_paths).
         cfg.clopath_paths = tuple(opts["clopath"].split(","))
+    if opts.get("lgn_l6"):
+        # Прямой вход LGN → V1 L6 (cfg.lgn_l6): доля клеток[,входов[,по данным]].
+        parts = opts["lgn_l6"].split(",")
+        cfg.lgn_l6 = (float(parts[0]), int(parts[1]) if len(parts) > 1 else 20, float(parts[2]) if len(parts) > 2 else 85.0)
     for k, v in opts.items():
         if k.startswith("clopath_") and k != "clopath_paths":
             setattr(cfg, k, float(v))

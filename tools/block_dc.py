@@ -27,7 +27,7 @@ DESIGN «Сборка из готовых блоков»).
 Буквы: 33 строчные, учёба — на train_fonts шрифтах со сдвигами ±1 px,
 проверка — на других шрифтах (не виденных) и на учебных.
 
-    PYTHONPATH=. python tools/block_dc.py [n_e=400] [epochs=3] [px=14] [side=20] [seeds=1,2,3] [device=cuda|cpu] [threads=2] [save=имя]
+    PYTHONPATH=. python tools/block_dc.py [n_e=400] [epochs=3] [px=14] [side=20] [seeds=1,2,3] [device=cuda|cpu] [threads=2] [save=имя] [theta_plus=0.05] [norm=1] [w_ie=17] [tau_e=100] [rule=dc|ours]
 """
 
 from __future__ import annotations
@@ -98,16 +98,28 @@ class Net:
 
     STEPS_PER_GRAPH = 50
 
-    def __init__(self, n_in: int, n_e: int, seeds: list[int], dev: str, compile: bool = True):
+    def __init__(self, n_in: int, n_e: int, seeds: list[int], dev: str, compile: bool = True,
+                 variant: dict | None = None):
         self.n_in, self.n_e, self.dev, self.B = n_in, n_e, dev, len(seeds)
         self.compile, self.fused = compile, None
+        # Замены деталей блока на наши (шаг 2′ сборки), по умолчанию — авторы:
+        #   theta_plus — прирост порога за спайк, мВ (0 — без адаптивного порога);
+        #   norm — нормировка суммы весов клетки до 78 перед показом;
+        #   w_ie — торможение I → прочие E (авторы 17 — «победитель забирает всё»);
+        #   tau_e — τm клеток E, мс (авторы 100, у нас ~20);
+        #   rule — "dc" (авторы) или "ours" (наше окно: τ+ 13.5, τ− 34.5, A+ 1%
+        #     среднего веса, A− 0.5% · w, LTD от веса — config stdp_*).
+        v = {"theta_plus": 0.05, "norm": True, "w_ie": 17.0, "tau_e": 100.0, "rule": "dc", **(variant or {})}
+        self.variant = v
+        self.theta_plus, self.tau_e, self.rule = float(v["theta_plus"]), float(v["tau_e"]), v["rule"]
         ws = []
         for sd in seeds:
             g = torch.Generator().manual_seed(sd)
             ws.append((torch.rand(n_in, n_e, generator=g) + 0.01) * 0.3)
         self.w = torch.stack(ws).to(dev)
         self.theta = torch.full((self.B, n_e), 20.0, device=dev)
-        self.w_ie = torch.full((n_e, n_e), 17.0, device=dev).fill_diagonal_(0.0)
+        self.w_ie = torch.full((n_e, n_e), float(v["w_ie"]), device=dev).fill_diagonal_(0.0)
+        self.w0 = 78.0 / n_in  # средний вес после нормировки
         shape_e, B = (self.B, n_e), self.B
         z = lambda *sh: torch.zeros(*sh, device=dev)
         self.v_e, self.v_i = torch.full(shape_e, -65.0, device=dev), torch.full(shape_e, -60.0, device=dev)
@@ -121,9 +133,13 @@ class Net:
         d = lambda tau: float(torch.exp(torch.tensor(-DT / tau)))
         self.d_ge, self.d_gi = d(1.0), d(2.0)
         self.d_pre, self.d_p1, self.d_p2, self.d_theta = d(20.0), d(20.0), d(40.0), d(1e7)
+        if self.rule == "ours":
+            # След пресинапса τ+ (LTP на спайк E), след постсинапса τ− (LTD на спайк входа).
+            self.d_pre, self.d_p1 = d(13.5), d(34.5)
 
     def normalize(self) -> None:
-        self.w.mul_(78.0 / self.w.sum(1, keepdim=True))
+        if self.variant["norm"]:
+            self.w.mul_(78.0 / self.w.sum(1, keepdim=True))
 
     def _step(self, learn: bool) -> None:
         x = (torch.rand(self.B, self.n_in, device=self.dev) < self.p).float()
@@ -131,9 +147,14 @@ class Net:
             self.pre.mul_(self.d_pre)
             self.post1.mul_(self.d_p1)
             self.post2.mul_(self.d_p2)
-            # спайк входа: w −= 0.0001 · post1, след pre ← 1
-            self.w.sub_(0.0001 * x[:, :, None] * self.post1[:, None, :])
-            self.pre.copy_(torch.where(x > 0, 1.0, self.pre))
+            if self.rule == "dc":
+                # спайк входа: w −= 0.0001 · post1, след pre ← 1
+                self.w.sub_(0.0001 * x[:, :, None] * self.post1[:, None, :])
+                self.pre.copy_(torch.where(x > 0, 1.0, self.pre))
+            else:
+                # спайк входа: w −= A− · w · след post (τ−), след pre += 1
+                self.w.sub_(0.010 * 51.0 / 103.0 * self.w * x[:, :, None] * self.post1[:, None, :])
+                self.pre.add_(x)
         self.ge_e.mul_(self.d_ge).add_(torch.bmm(x[:, None, :], self.w)[:, 0])
         self.gi_e.mul_(self.d_gi).add_(self.spk_i @ self.w_ie)
         self.ge_i.mul_(self.d_ge).add_(self.spk_e * 10.4)
@@ -147,7 +168,7 @@ class Net:
         gi_ = 1.0 + self.ge_i + self.gi_i
         vi_inf = (-60.0 - 85.0 * self.gi_i) / gi_
         free_e, free_i = self.ref_e <= 0, self.ref_i <= 0
-        v = torch.where(free_e, v_inf + (self.v_e - v_inf) * torch.exp(-DT * g / 100.0), self.v_e)
+        v = torch.where(free_e, v_inf + (self.v_e - v_inf) * torch.exp(-DT * g / self.tau_e), self.v_e)
         vi = torch.where(free_i, vi_inf + (self.v_i - vi_inf) * torch.exp(-DT * gi_ / 10.0), self.v_i)
         spk_e = (v > self.theta - 72.0) & free_e
         spk_i = (vi > -40.0) & free_i
@@ -159,11 +180,16 @@ class Net:
         self.spk_i.copy_(spk_i.float())
         self.count.add_(self.spk_e)
         if learn:
-            self.theta.mul_(self.d_theta).add_(0.05 * self.spk_e)
-            # спайк E: w += 0.01 · pre · post2 (до сброса), следы post ← 1
-            self.w.add_(0.01 * self.pre[:, :, None] * (self.post2 * self.spk_e)[:, None, :])
-            self.post1.copy_(torch.where(spk_e, 1.0, self.post1))
-            self.post2.copy_(torch.where(spk_e, 1.0, self.post2))
+            self.theta.mul_(self.d_theta).add_(self.theta_plus * self.spk_e)
+            if self.rule == "dc":
+                # спайк E: w += 0.01 · pre · post2 (до сброса), следы post ← 1
+                self.w.add_(0.01 * self.pre[:, :, None] * (self.post2 * self.spk_e)[:, None, :])
+                self.post1.copy_(torch.where(spk_e, 1.0, self.post1))
+                self.post2.copy_(torch.where(spk_e, 1.0, self.post2))
+            else:
+                # спайк E: w += A+ · w0 · след pre (τ+), след post += 1
+                self.w.add_(0.010 * self.w0 * self.pre[:, :, None] * self.spk_e[:, None, :])
+                self.post1.add_(self.spk_e)
             self.w.clamp_(0.0, 1.0)
 
     def _steps(self, n: int) -> None:
@@ -244,7 +270,11 @@ def main(opts: dict) -> None:
           f"проверка на новых шрифтах {len(x_new)}; n_e {n_e}, эпох {epochs}, {side}×{side} px, "
           f"зёрна {seeds}, {dev}", flush=True)
 
-    net = Net(side * side, n_e, seeds, dev)
+    variant = {k: (v == "1") if k == "norm" else v if k == "rule" else float(v)
+               for k, v in opts.items() if k in ("theta_plus", "norm", "w_ie", "tau_e", "rule")}
+    if variant:
+        print(f"вариант: {variant}", flush=True)
+    net = Net(side * side, n_e, seeds, dev, variant=variant)
     gens = [torch.Generator().manual_seed(sd) for sd in seeds]
     t0 = time.time()
     for ep in range(epochs):

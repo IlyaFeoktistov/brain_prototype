@@ -17,6 +17,14 @@ Li & DiCarlo 2008 (https://doi.org/10.1126/science.1160028): обучение п
 популяции (ближайший центр по отборочной половине → отложенная).
 Ступени: V1 L2/3 (сравнение), буквы L4, буквы L2/3.
 
+Где теряется различие у букв L4 E — те же меры для токов клетки (среднее
+за показ): вход пути V1 → буквы (Σ вес × спайки V1, мера проводки),
+возбуждающий ток с движущей силой (i_syn × (E_AMPA − V) / (E_AMPA −
+V_держ), как в engine), тормозной (i_inh × (V − E_ГАМК) / (V_держ −
+E_ГАМК)), их сумма, мембрана. И у каждой величины — надёжность половин:
+корреляция по клеткам разности A−B первой половины показов со второй (0 —
+разность случайна, 1 — воспроизводима целиком).
+
     PYTHONPATH=. python tools/letters_select.py [n=30] [t_sel=2.6] [seed=1]
 """
 
@@ -50,6 +58,9 @@ def main(opts: dict) -> None:
     gen = torch.Generator().manual_seed(int(opts.get("seed", 1)))
     vis, let = b.areas["visual"].layers, b.areas["letters"].layers
     stages = {"V1 L2/3": vis["L23"]["E"], "буквы L4": let["L4"]["E"], "буквы L2/3": let["L23"]["E"]}
+    L4 = let["L4"]["E"]
+    path = next(p for p in b.projections if p.name == "visual -> letters")
+    currents = ("вход V1", "возбуждение", "торможение", "сумма токов", "мембрана")
 
     s.line, s.gaze = "", 0.0
     b.run(2500.0)
@@ -63,7 +74,8 @@ def main(opts: dict) -> None:
         s.line = ""
         b.run(500.0, s._blank(500.0))
         line = texts[lab] + " "
-        acc = {k: 0 for k in stages}
+        acc = {k: 0 for k in (*stages, *currents)}
+        n_win = 0
         for i, g in enumerate(gazes(line)):
             if i:
                 s.line, s.gaze = line, g
@@ -73,6 +85,19 @@ def main(opts: dict) -> None:
                 r = b.observe(WIN, s._view(WIN)) * (WIN / 1000.0)
                 for k, pop in stages.items():
                     acc[k] = acc[k] + r[pop.slice].cpu()
+                v = b.v[L4.slice]
+                excite = ((cfg.ampa_reversal_mv - v) / (cfg.ampa_reversal_mv - cfg.epsp_holding_mv)).clamp(min=0.0)
+                force = ((v - cfg.gaba_reversal_mv) / (cfg.ipsp_holding_mv - cfg.gaba_reversal_mv)).clamp(min=0.0)
+                e = b.i_syn[L4.slice] * excite
+                i_ = b.i_inh[L4.slice] * force
+                acc["вход V1"] = acc["вход V1"] + (path.weight.float() * r[path.pre.long()]).sum(1).cpu()
+                acc["возбуждение"] = acc["возбуждение"] + e.float().cpu()
+                acc["торможение"] = acc["торможение"] + i_.float().cpu()
+                acc["сумма токов"] = acc["сумма токов"] + (e + i_).float().cpu()
+                acc["мембрана"] = acc["мембрана"] + v.float().cpu()
+                n_win += 1
+        for k in currents:
+            acc[k] = acc[k] / n_win
         return acc
 
     order = [0, 1] * n_rep
@@ -89,6 +114,13 @@ def main(opts: dict) -> None:
 
     print(f"\n=== Исходная избирательность: «{texts[0]}» против «{texts[1]}», по {n_rep} показов, "
           f"отбор на {half} показах (|t| > {t_sel:g}), проверка на {len(order) - half}")
+    def halves(x: torch.Tensor) -> float:
+        """Корреляция по клеткам разности A−B первой и второй половины."""
+
+        d = [x[part][y[part] == 0].mean(0) - x[part][y[part] == 1].mean(0) for part in (sel, held)]
+        d = [u - u.mean() for u in d]
+        return float((d[0] * d[1]).sum() / (d[0].norm() * d[1].norm()).clamp_min(1e-12))
+
     for k in stages:
         x = torch.stack([f[k] for f in feats]) / seconds          # Гц за показ
         ys, yh = y[sel], y[held]
@@ -125,7 +157,20 @@ def main(opts: dict) -> None:
                   f"к разбросу повторов {float(snr_h.mean()):+.2f}; "
                   f"воспроизводимо избирательных {int(keep.sum())} ({float(keep.float().mean()) * 100:.2f}%)")
         print(f"    лучшие 1% ({len(top)} клеток) на отложенных: предпочитаемая {float(pref):.1f} Гц, "
-              f"другая {float(non):.1f} Гц", flush=True)
+              f"другая {float(non):.1f} Гц; надёжность половин A−B {halves(x):+.3f}", flush=True)
+
+    print(f"\n=== Где теряется различие у букв L4 E: надёжность половин A−B по клеткам и отбор |t| > {t_sel:g}")
+    print(f"  {'величина':14s} {'среднее':>9s} {'надёжн.':>8s} {'отобрано':>9s} {'по шуму':>8s} {'знак на отлож.':>15s}")
+    for k in currents:
+        x = torch.stack([f[k] for f in feats])
+        t = welch(x[sel], None, y[sel])
+        picked = t.abs() > t_sel
+        n_shuf = int((welch(x[sel], None, y[sel][torch.randperm(half, generator=gen)]).abs() > t_sel).sum())
+        xh, yh = x[held], y[held]
+        sign = torch.sign(xh[yh == 0].mean(0) - xh[yh == 1].mean(0)) == torch.sign(t)
+        kept = float(sign[picked].float().mean()) if picked.any() else float("nan")
+        print(f"  {k:14s} {float(x.mean()):9.3f} {halves(x):+8.3f} {int(picked.sum()):9d} {n_shuf:8d} {kept:15.2f}",
+              flush=True)
 
 
 if __name__ == "__main__":

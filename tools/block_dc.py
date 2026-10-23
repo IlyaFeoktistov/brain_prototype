@@ -127,12 +127,18 @@ class Net:
             s["ge_i"] = s["ge_i"] * dec_ge_e + s["spk_e"] * 10.4
             s["gi_i"] = s["gi_i"] * dec_gi_e
             # мембраны
+            # Шаг мембраны — экспоненциальный: за шаг v точно релаксирует к
+            # равновесию при текущих проводимостях. Простой Эйлер при
+            # торможении 17 × (число выстреливших I) неустойчив — v
+            # перескакивает и даёт ложные спайки (θ уходил в тысячи мВ).
             v, vi = s["v_e"], s["v_i"]
-            dv = ((-65.0 - v) + s["ge_e"] * (-v) + s["gi_e"] * (-100.0 - v)) / 100.0
-            dvi = ((-60.0 - vi) + s["ge_i"] * (-vi) + s["gi_i"] * (-85.0 - vi)) / 10.0
+            g = 1.0 + s["ge_e"] + s["gi_e"]
+            v_inf = (-65.0 + s["gi_e"] * -100.0) / g
+            gi_ = 1.0 + s["ge_i"] + s["gi_i"]
+            vi_inf = (-60.0 + s["gi_i"] * -85.0) / gi_
             free_e, free_i = s["ref_e"] <= 0, s["ref_i"] <= 0
-            v = torch.where(free_e, v + DT * dv, v)
-            vi = torch.where(free_i, vi + DT * dvi, vi)
+            v = torch.where(free_e, v_inf + (v - v_inf) * torch.exp(-DT * g / 100.0), v)
+            vi = torch.where(free_i, vi_inf + (vi - vi_inf) * torch.exp(-DT * gi_ / 10.0), vi)
             spk_e = (v > (self.theta - 20.0 - 52.0)) & free_e
             spk_i = (vi > -40.0) & free_i
             v = torch.where(spk_e, torch.full_like(v, -65.0), v)
@@ -196,10 +202,12 @@ def main(opts: dict) -> None:
     t0 = time.time()
     for ep in range(epochs):
         for j, i in enumerate(torch.randperm(len(x_tr), generator=gen).tolist()):
-            net.present(x_tr[i])
-            if (j + 1) % 500 == 0:
+            spikes = net.present(x_tr[i]).sum()
+            recent = spikes if j % 100 == 0 else recent + spikes
+            if (j + 1) % 100 == 0:
                 print(f"  эпоха {ep + 1}, показов {j + 1}/{len(x_tr)}, {time.time() - t0:.0f} с, "
-                      f"θ {float(net.theta.mean() - 20):.2f} мВ", flush=True)
+                      f"θ {float(net.theta.mean() - 20):.2f} мВ (макс {float(net.theta.max() - 20):.2f}), "
+                      f"спайков E на показ {float(recent) / 100:.1f}", flush=True)
 
     net.learn = False
 

@@ -62,7 +62,7 @@ VI −2/3, время в с):
 спайков за показ.
 
     PYTHONPATH=. python tools/block_chariker.py [letters=абвгдежзик] [trials=10] [a=1] [hc_px=2] [side=16]
-        [show=350] [rest=300] [dt=0.1] [batch=50] [seed=1] [device=cuda] [s_ie=0.0095] [stp=U,τмс] [lgn_wiring=ours] [save=файл]
+        [show=350] [rest=300] [dt=0.1] [batch=50] [seed=1] [device=cuda] [s_ie=0.0095] [stp=U,τмс] [lgn_wiring=ours] [lgn_psp=мВ] [save=файл]
 """
 
 from __future__ import annotations
@@ -85,6 +85,20 @@ NLGN_P = torch.tensor([0.04, 0.04, 0.25, 0.0, 0.22, 0.25, 0.20])
 ROWS = {3: [(1, 1, 1), (2, 1)], 4: [(2, 2), (1, 2, 1)], 5: [(2, 1, 2), (2, 3), (1, 3, 1)], 6: [(3, 3), (2, 2, 2)]}
 # Синапсы: (подъём, спад), с.
 TAU = {"ampa": (0.001, 0.003), "gaba": (0.001, 0.005), "nmda": (0.002, 0.080)}
+
+
+def psp_peak(S: float, g_leak: float) -> float:
+    """Пик ВПСП (норм. единицы, порог 1) от одного спайка AMPA силы S у клетки в покое."""
+
+    dt, (tr, td) = 1e-5, TAU["ampa"]
+    v = peak = 0.0
+    dec = ris = S / (td - tr)
+    for _ in range(int(0.05 / dt)):
+        dec *= math.exp(-dt / td)
+        ris *= math.exp(-dt / tr)
+        v += dt * (-g_leak * v - (dec - ris) * (v - VE))
+        peak = max(peak, v)
+    return peak
 
 
 def lattice(n_side: int, size: float, dev) -> torch.Tensor:
@@ -247,6 +261,10 @@ class Block:
             lgn_e = (pre_o[ok], post_o[ok])
         # LGN → I: 0–8 входов (гаусс 3 ± 2), без ориентации, в пределах reach.
         k_i = (3 + 2 * torch.randn(NI, generator=g)).round().clamp(0, 8).long().to(dev)
+        if "lgn_psp" in opts:
+            # Сила по мозгу (ниже): 56 входов по данным строятся все — сжатые в ~3
+            # они давали бы толчки в десятки ВПСП, которых нет ни у авторов, ни в мозге.
+            k_i = torch.full((NI,), 56, device=dev)
         post = torch.repeat_interleave(torch.arange(NI, device=dev), k_i)
         r_off, a_off = reach * rnd(len(post)).sqrt(), 2 * math.pi * rnd(len(post))
         c = xy_i[post] / um_px - 0.5
@@ -290,10 +308,27 @@ class Block:
 
         # Силы с множителем клетки ±10%.
         jit = lambda n: 0.9 + 0.2 * rnd(n)
+        s_lgn = {"E": 0.059 * lgn_scale, "I": 0.084}
+        self.lgn_psp = "lgn_psp" in opts
+        if self.lgn_psp:
+            # Замена на нашу деталь: сила таламуса как в мозге (cfg.thalamic_psp_mv,
+            # _thalamic_path) — ВПСП отдохнувшего синапса lgn_psp мВ (Bruno &
+            # Sakmann 2006; на I ×2, Cruikshank et al. 2007), входов по данным 85
+            # на E и 56 на I; все они — на построенных входах (их сила × k_данных /
+            # k_построено). мВ → норм. единицы: порог − покой нашего нейрона
+            # (cfg.v_threshold − cfg.v_rest = 20 мВ). Депрессия — абсолютная: на
+            # фоне сила падает до x_фон (без нормировки к авторам).
+            mv = float(opts["lgn_psp"])
+            k_built = {"E": len(lgn_e[0]) / NE, "I": len(lgn_i[0]) / NI}
+            for kind, k_data, ratio, gl in (("E", 85.0, 1.0, 50.0), ("I", 56.0, 2.0, 66.5)):
+                s1 = mv * ratio / 20.0 / (psp_peak(1e-3, gl) / 1e-3)
+                s_lgn[kind] = s1 * k_data / k_built[kind]
+            print(f"сила LGN по мозгу: ВПСП {mv} мВ, на построенный вход E {s_lgn['E']:.3f} "
+                  f"(авторы 0.059), I {s_lgn['I']:.3f} (авторы 0.084)", flush=True)
         self.S = {
-            "E": {"lgn": 0.059 * lgn_scale * jit(NE), "e": 0.028 * jit(NE), "i": 0.056 * jit(NE), "l6": 0.014 * jit(NE),
+            "E": {"lgn": s_lgn["E"] * jit(NE), "e": 0.028 * jit(NE), "i": 0.056 * jit(NE), "l6": 0.014 * jit(NE),
                   "amb": torch.full((NE,), 0.01, device=dev)},
-            "I": {"lgn": 0.084 * jit(NI), "e": float(opts.get("s_ie", 0.0095)) * jit(NI), "i": 0.036 + 0.012 * rnd(NI), "l6": 0.0047 * jit(NI),
+            "I": {"lgn": s_lgn["I"] * jit(NI), "e": float(opts.get("s_ie", 0.0095)) * jit(NI), "i": 0.036 + 0.012 * rnd(NI), "l6": 0.0047 * jit(NI),
                   "amb": torch.full((NI,), 0.01, device=dev)},
         }
         self.nmda = {"E": 0.2, "I": 0.33}
@@ -317,7 +352,7 @@ class Block:
         self.lgn_w = torch.ones(B, NL, device=dev)
         if self.stp:
             U, tau = self.stp
-            self.x_bg = 1.0 / (1.0 + U * 20.0 * tau / 1000.0)
+            self.x_bg = 1.0 if self.lgn_psp else 1.0 / (1.0 + U * 20.0 * tau / 1000.0)
         self.noise_rate, self.s_noise, self.gain = 1000.0, 0.1, 1.0
         self.drive = {"lgn": torch.zeros(B, NE, device=dev), "all": torch.zeros(B, NE, device=dev)}
         # Событий за шаг на источник (статический размер для nonzero_static):

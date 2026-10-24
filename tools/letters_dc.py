@@ -63,9 +63,12 @@ def main(opts: dict) -> None:
         b.dc_on = train
         r = b.observe(show_ms, s._view(show_ms)) * (show_ms / 1000.0)
         s.line = ""
-        b.run(rest_ms, s._blank(rest_ms))
         b.dc_on = False
-        return {k: r[pop.slice].cpu() for k, pop in stages.items()}
+        # Фон — пауза после показа (частоты, Гц): для распределения частот.
+        r0 = b.observe(rest_ms, s._blank(rest_ms))
+        out = {k: r[pop.slice].cpu() for k, pop in stages.items()}
+        out.update({"фон " + k: r0[pop.slice].cpu() for k, pop in stages.items()})
+        return out
 
     t0 = time.time()
     order = torch.arange(len(letters)).repeat(n_train)
@@ -85,7 +88,7 @@ def main(opts: dict) -> None:
         idx = torch.arange(len(letters)).repeat(n)
         idx = idx[torch.randperm(len(idx), generator=gen)]
         outs = [show(letters[k], False) for k in idx.tolist()]
-        return {key: torch.stack([o[key] for o in outs]) for key in stages}, idx
+        return {key: torch.stack([o[key] for o in outs]) for key in outs[0]}, idx
 
     r_lab, y_lab = collect(n_label)
     r_test, y_test = collect(n_test)
@@ -106,6 +109,18 @@ def main(opts: dict) -> None:
         print(f"  {key:12s} точность {acc:.2f} (голос клеток), {acc_c:.2f} (корреляция); клеток с ответом {int(active.sum())}, букв с клетками "
               f"{len(set(label[active].tolist()))}/{len(letters)}, спайков на показ {float(r_test[key].sum(1).mean()):.1f}",
               flush=True)
+    # Частоты клеток (все показы меток и проверки): фон — пауза после показа,
+    # показ — счёт за показ / show. Молчащая — ни одного спайка за все окна;
+    # отвечает — парная разность показ − фон по показам, |t| > 2.
+    print(f"\nчастоты клеток, Гц ({2 * len(y_lab)} показов; фон — {rest_ms:.0f} мс после показа):")
+    for key in stages:
+        on = torch.cat([r_lab[key], r_test[key]]) / (show_ms / 1000.0)
+        off = torch.cat([r_lab["фон " + key], r_test["фон " + key]])
+        d = on - off
+        t = d.mean(0) / (d.std(0) / len(d) ** 0.5).clamp_min(1e-9)
+        q = lambda x: f"медиана {float(x.mean(0).median()):.2f}, среднее {float(x.mean()):.2f}, молчат {float((x.sum(0) == 0).float().mean()):.0%}"
+        print(f"  {key:12s} клеток {on.shape[1]}; фон: {q(off)}; показ: {q(on)}; "
+              f"отвечают вверх {float((t > 2).float().mean()):.0%}, вниз {float((t < -2).float().mean()):.0%}", flush=True)
     print(f"всего {time.time() - t0:.0f} с")
 
 

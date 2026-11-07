@@ -62,7 +62,7 @@ VI −2/3, время в с):
 спайков за показ.
 
     PYTHONPATH=. python tools/block_chariker.py [letters=абвгдежзик] [trials=10] [a=1] [hc_px=2] [side=16]
-        [show=350] [rest=300] [dt=0.1] [batch=50] [seed=1] [device=cuda] [s_ie=0.0095] [stp=U,τмс] [lgn_wiring=ours] [lgn_psp=мВ] [cap=e:Гц,i:Гц] [save=файл]
+        [show=350] [rest=300] [dt=0.1] [batch=50] [seed=1] [device=cuda] [s_ie=0.0095] [stp=U,τмс] [lgn_wiring=ours] [lgn_psp=мВ] [cap=e:Гц,i:Гц] [l4_local=brain] [save=файл]
 """
 
 from __future__ import annotations
@@ -85,6 +85,27 @@ NLGN_P = torch.tensor([0.04, 0.04, 0.25, 0.0, 0.22, 0.25, 0.20])
 ROWS = {3: [(1, 1, 1), (2, 1)], 4: [(2, 2), (1, 2, 1)], 5: [(2, 1, 2), (2, 3), (1, 3, 1)], 6: [(3, 3), (2, 2, 2)]}
 # Синапсы: (подъём, спад), с.
 TAU = {"ampa": (0.001, 0.003), "gaba": (0.001, 0.005), "nmda": (0.002, 0.080)}
+
+
+def psp_mix_peak(S: float, g_leak: float, parts: tuple) -> float:
+    """
+    Пик ПСП (норм. единицы, по модулю) от одного спайка силы S у клетки в покое:
+    parts — (доля силы, рецептор, потенциал реверсии), как в cortex_step.
+    """
+
+    dt = 1e-5
+    syn = [[f * S / (TAU[r][1] - TAU[r][0])] * 2 + [TAU[r], rev] for f, r, rev in parts]
+    v = peak = 0.0
+    for _ in range(int(0.08 / dt)):
+        g_v = 0.0
+        for st in syn:
+            (tr, td), rev = st[2], st[3]
+            st[0] *= math.exp(-dt / td)
+            st[1] *= math.exp(-dt / tr)
+            g_v += (st[0] - st[1]) * (v - rev)
+        v += dt * (-g_leak * v - g_v)
+        peak = max(peak, abs(v))
+    return peak
 
 
 def psp_peak(S: float, g_leak: float) -> float:
@@ -282,6 +303,21 @@ class Block:
         ie = sample_pre(xy_e, torch.full((NE,), 0.6 * RHO_I * area(SD_I), device=dev), SD_I, n_i, size, g)
         ei = sample_pre(xy_i, torch.full((NI,), 0.6 * RHO_E * area(SD_E), device=dev), SD_E, n_e, size, g)
         ii = sample_pre(xy_i, torch.full((NI,), 0.6 * RHO_I * area(SD_I), device=dev), SD_I, n_i, size, g)
+        self.l4_brain = opts.get("l4_local") == "brain"
+        if self.l4_brain:
+            # Замена на нашу деталь: связи L4 → L4 как в колонке мозга
+            # (engine._wire_column для V1, column_kinds E и PV): входов на клетку
+            # по данным (Potjans Table 5 ÷ контактов на связь; E → E — человек,
+            # Campagnola 2022: p 0.007; тормозные — доля PV и отношения
+            # Campagnola) и ПСП пары (config: layer_ee_psp_mv, layer_ei_psp_mv,
+            # inhibitory_psp_mv). Разброс в пространстве — блока (SD авторов).
+            # Числа — вывод _wire_column для L4 (проверено скриптом по config).
+            k_brain = {"ee": 45.1, "ie": 116.6, "ei": 762.9, "ii": 290.4}
+            full = lambda n, k: torch.full((n,), k, device=dev)
+            ee = sample_pre(xy_e, full(NE, k_brain["ee"]), SD_E, n_e, size, g)
+            ie = sample_pre(xy_e, full(NE, k_brain["ie"]), SD_I, n_i, size, g)
+            ei = sample_pre(xy_i, full(NI, k_brain["ei"]), SD_E, n_e, size, g)
+            ii = sample_pre(xy_i, full(NI, k_brain["ii"]), SD_I, n_i, size, g)
         l6e = sample_pre(xy_e, base_6 * boost_6, SD_6, n_6, size, g)
         # L6 → I — «как внутри 4Cα»: во столько же раз больше, во сколько E → I больше E → E.
         l6i = sample_pre(xy_i, torch.full((NI,), 50.0 * 750 / 200, device=dev), SD_6, n_6, size, g)
@@ -294,7 +330,8 @@ class Block:
         self.paths = [  # (источник, получатель, ящик, таблица, доля отказов)
             ("lgn", self.E, "lgn", table(*lgn_e, NL, NE), 0.0),
             ("lgn", self.I, "lgn", table(*lgn_i, NL, NI), 0.0),
-            ("e", self.E, "e", table(*ee, NE, NE), 0.1),
+            # Отказы E → E 0.1 — у авторов; ПСП мозга — средние с отказами.
+            ("e", self.E, "e", table(*ee, NE, NE), 0.0 if self.l4_brain else 0.1),
             ("e", self.I, "e", table(*ei, NE, NI), 0.0),
             ("i", self.E, "i", table(*ie, NI, NE), 0.0),
             ("i", self.I, "i", table(*ii, NI, NI), 0.0),
@@ -332,6 +369,21 @@ class Block:
                   "amb": torch.full((NI,), 0.01, device=dev)},
         }
         self.nmda = {"E": 0.2, "I": 0.33}
+        if self.l4_brain:
+            # ПСП мозга (мВ) → сила блока: пик ПСП по форме синапсов блока
+            # (AMPA + доля NMDA у E-входов, ГАМК с реверсией VI), мВ / 20.
+            def strength(mv, kind, src):
+                gl = 50.0 if kind == "E" else 66.5
+                f = self.nmda[kind]
+                parts = ((1 - f, "ampa", VE), (f, "nmda", VE)) if src == "e" else ((1.0, "gaba", VI),)
+                return abs(mv) / 20.0 / (psp_mix_peak(1e-3, gl, parts) / 1e-3)
+            psp_brain = {("E", "e"): 0.18, ("E", "i"): -0.21, ("I", "e"): 0.45, ("I", "i"): -0.88}
+            for (kind, src), mv in psp_brain.items():
+                old = float(self.S[kind][src].mean())
+                new = strength(mv, kind, src)
+                self.S[kind][src] = self.S[kind][src] / old * new
+                print(f"L4 → L4 по мозгу: {kind} ← {src} ПСП {mv} мВ, сила {new:.4f} "
+                      f"(авторы {old:.4f} — ПСП {old / strength(1.0, kind, src):.2f} мВ по модулю)", flush=True)
         self.n_lgn = n_lgn
         # L6: пуассон 0.5–10 Гц, только фон.
         self.p6 = (0.5 + 9.5 * rnd(N6)) * self.dt

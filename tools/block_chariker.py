@@ -62,7 +62,7 @@ VI −2/3, время в с):
 спайков за показ.
 
     PYTHONPATH=. python tools/block_chariker.py [letters=абвгдежзик] [trials=10] [a=1] [hc_px=2] [side=16]
-        [show=350] [rest=300] [dt=0.1] [batch=50] [seed=1] [device=cuda] [s_ie=0.0095] [stp=U,τмс] [lgn_wiring=ours] [lgn_psp=мВ] [save=файл]
+        [show=350] [rest=300] [dt=0.1] [batch=50] [seed=1] [device=cuda] [s_ie=0.0095] [stp=U,τмс] [lgn_wiring=ours] [lgn_psp=мВ] [cap=e:Гц,i:Гц] [save=файл]
 """
 
 from __future__ import annotations
@@ -358,9 +358,15 @@ class Block:
         # Событий за шаг на источник (статический размер для nonzero_static):
         # с запасом на частоту до cap Гц у всех клеток; сверх — счёт потерь.
         cap = {"lgn": 300.0, "e": 100.0, "i": 300.0, "l6": 40.0}
+        # cap=e:400,i:600 — больший запас (память ∝ запас): при синхронных
+        # залпах за один шаг спайкует больше клеток, чем средняя частота cap.
+        for kv in opts.get("cap", "").split(",") if opts.get("cap") else []:
+            k, v = kv.split(":")
+            cap[k] = float(v)
         n_src = {"lgn": NL, "e": NE, "i": NI, "l6": N6}
         self.K = {s: max(256, math.ceil(B * n_src[s] * cap[s] * self.dt)) for s in cap}
-        self.lost = torch.zeros((), device=dev)
+        # Потери по источнику (оба пути источника считают своё — число событий × 2).
+        self.lost = {s: torch.zeros((), device=dev) for s in cap}
         if dev == "cuda":
             # Шаг одним куском (inductor): [замер] 1.6 мс против 10 на 64 тыс. клеток × 20 испытаний.
             self.step = torch.compile(self.step)
@@ -424,7 +430,7 @@ class Block:
         B, n_pre = spk.shape
         K = self.K[src]
         flat = torch.nonzero_static(spk.reshape(-1), size=K, fill_value=-1)[:, 0]
-        self.lost += (spk.sum() - K).clamp(min=0)
+        self.lost[src] += (spk.sum() - K).clamp(min=0)
         valid = flat >= 0
         b = torch.where(valid, flat // n_pre, 0)
         pre = torch.where(valid, flat % n_pre, n_pre)
@@ -558,7 +564,7 @@ def main(opts: dict) -> None:
               f"{float(r0['LGN'].mean()) / 0.1:.1f}, E {float(r0['L4 E'].mean()) / 0.1:.2f}, I {float(r0['L4 I'].mean()) / 0.1:.2f} Гц; "
               f"показ LGN {float(r['LGN'].mean()) * 1000 / show:.1f}, E {float(r['L4 E'].mean()) * 1000 / show:.2f}, "
               f"I {float(r['L4 I'].mean()) * 1000 / show:.2f} Гц; доля LGN в возбуждении E {frac[-1]:.0%}; "
-              f"потеряно событий {float(net.lost):.0f}", flush=True)
+              "потеряно событий " + ", ".join(f"{k} {float(v):.0f}" for k, v in net.lost.items()), flush=True)
 
     # Метки — первая половина показов каждой буквы, проверка — вторая.
     half = trials // 2

@@ -7,7 +7,7 @@ DESIGN, итог блока Chariker: реле отвечают на штрих 
 
 Реле — по водителю (путь eye -> lgn): «штрих» — частота его клетки
 сетчатки на показе ≥ 0.3 · retina_rate_hz, «рядом» — больше 0, «пусто» — 0
-(в паузе у всех 0). По группам, окна: пауза (последние 200 мс), показ 0–50
+(своя активность сетчатки — у всех). По группам, окна: пауза (последние 200 мс), показ 0–50
 и 50–show мс:
   - вход каждого пути в реле, мВ: доля пути в Σ вес × частота источника
     (× ресурс депрессии у путей с ней) × ток сомы своего знака
@@ -113,6 +113,14 @@ def main(opts: dict) -> None:
     s.line, s.gaze = "", 0.0
     b.run(2500.0)
     n_rec = 2 * cfg.retina_rows * cfg.retina_cols
+    # Своя активность сетчатки (SensorSpec.spontaneous_hz) — движок добавляет
+    # её к растру глаза (спайк, если есть хоть один из двух).
+    p_sp = b.spontaneous[off:off + n_rec] if b.spontaneous is not None else torch.zeros(n_rec, device=b.device)
+
+    def retina_hz(view: torch.Tensor) -> torch.Tensor:
+        p_v = view[:, off:off + n_rec].mean(0)
+        return (p_v + p_sp - p_v * p_sp) * (1000.0 / cfg.dt_ms)
+
     n_rest, n_show, early = int(rest // WIN), int(show // WIN), int(50 // WIN)
     for _ in range(n_rep):
         for ch in letters:
@@ -126,12 +134,12 @@ def main(opts: dict) -> None:
                 view = s._blank(WIN)
                 r = b.observe(WIN, view)
                 if t >= n_rest - 20:
-                    add("пауза", sample(r, view[:, off:off + n_rec].sum(0) / (WIN / 1000.0), masks))
+                    add("пауза", sample(r, retina_hz(view), masks))
             s.line = ch
             for t in range(n_show):
                 view = s._view(WIN)
                 r = b.observe(WIN, view)
-                rec = view[:, off:off + n_rec].sum(0) / (WIN / 1000.0)
+                rec = retina_hz(view)
                 add("0–50 мс" if t < early else f"50–{int(show)} мс", sample(r, rec, masks))
             s.line = ""
 

@@ -62,7 +62,7 @@ VI −2/3, время в с):
 спайков за показ.
 
     PYTHONPATH=. python tools/block_chariker.py [letters=абвгдежзик] [trials=10] [a=1] [hc_px=2] [side=16]
-        [show=350] [rest=300] [dt=0.1] [batch=50] [seed=1] [device=cuda] [s_ie=0.0095] [stp=U,τмс] [lgn_wiring=ours] [lgn_psp=мВ] [cap=e:Гц,i:Гц] [l4_local=brain] [l4_size=brain] [save=файл]
+        [show=350] [rest=300] [dt=0.1] [batch=50] [seed=1] [device=cuda] [s_ie=0.0095] [stp=U,τмс] [lgn_wiring=ours] [lgn_psp=мВ] [cap=e:Гц,i:Гц] [l4_local=brain] [l4_size=brain] [lgn_replay=файл] [lgn_gain=k] [save=файл]
 """
 
 from __future__ import annotations
@@ -439,6 +439,20 @@ class Block:
             U, tau = self.stp
             self.x_bg = 1.0 if self.lgn_psp else 1.0 / (1.0 + U * 20.0 * tau / 1000.0)
         self.noise_rate, self.s_noise, self.gain = 1000.0, 0.1, 1.0
+        # Замена 6 (lgn_replay=файл от tools/lgn_record.py): вместо LGN блока —
+        # спайки реле LGN мозга в окне 16 × 16 px (ON/OFF, решётка a = 1, как
+        # у блока). Шаг мозга 0.5 мс: спайк — на случайный из его 5 шагов
+        # блока. Проводка, сила и депрессия входа — прежние (замены 1–3).
+        self.replay = torch.load(opts["lgn_replay"]) if "lgn_replay" in opts else None
+        if self.replay is not None:
+            assert a == 1 and side == 16, "запись LGN мозга — окно 16 × 16 px, a = 1"
+            self.rep_t = torch.zeros((), dtype=torch.long, device=dev)
+            # Диагностика (не исправление): lgn_gain=k — частота каждой клетки ×k
+            # с тем же рисунком: добавочные пуассоновские спайки с частотой
+            # (k − 1) · r̂(t), r̂ — своя частота клетки в этом же показе,
+            # сглаженная окном 25 мс (сведений о букве из других показов нет).
+            self.rep_gain = float(opts.get("lgn_gain", 1.0))
+            self.rep_raster = torch.zeros(1, B, NL, dtype=torch.bool, device=dev)
         self.drive = {"lgn": torch.zeros(B, NE, device=dev), "all": torch.zeros(B, NE, device=dev)}
         # Событий за шаг на источник (статический размер для nonzero_static):
         # с запасом на частоту до cap Гц у всех клеток; сверх — счёт потерь.
@@ -457,7 +471,39 @@ class Block:
             self.step = torch.compile(self.step)
 
     # --- LGN ----------------------------------------------------------------
+    def load_replay(self, trials: list[int], gen: torch.Generator) -> None:
+        """Растр LGN мозга на пачку показов [шагов блока, B, NL] (пусто rest, показ show)."""
+
+        d = self.replay
+        sub = round(d["dt"] / 1000.0 / self.dt)
+        steps = round((d["rest"] + d["show"]) / 1000.0 / self.dt)
+        raster = torch.zeros(steps, self.B, self.NL, dtype=torch.bool)
+        for b, j in enumerate(trials):
+            sp = d["spikes"][j]
+            t = sp[:, 0] * sub + torch.randint(sub, (len(sp),), generator=gen)
+            raster[t, b, sp[:, 1]] = True
+        if self.rep_gain > 1.0:
+            w = round(0.025 / self.dt)
+            x = raster.float().permute(1, 2, 0).reshape(-1, 1, steps)
+            rate = torch.nn.functional.avg_pool1d(x, w, stride=1, padding=w // 2, count_include_pad=False)[..., :steps]
+            p = ((self.rep_gain - 1.0) * rate).clamp(max=1.0)
+            extra = torch.rand(p.shape, generator=gen) < p
+            raster |= extra.reshape(self.B, self.NL, steps).permute(2, 0, 1)
+        self.rep_raster = raster.to(self.dev)
+        self.rep_t.zero_()
+
     def lgn_step(self) -> None:
+        if self.replay is not None:
+            spk = self.rep_raster.index_select(0, self.rep_t.clamp(max=self.rep_raster.shape[0] - 1))[0]
+            self.rep_t += 1
+            self.lgn_spk = spk
+            self.lgn_count += spk
+            if self.stp:
+                U, tau = self.stp
+                self.lgn_w = self.lgn_x / self.x_bg
+                self.lgn_x = self.lgn_x - U * self.lgn_x * spk
+                self.lgn_x = 1.0 - (1.0 - self.lgn_x) * math.exp(-self.dt * 1000.0 / tau)
+            return
         c, dt = 100.0, self.dt
         v_inf = self.lgn_I / c
         v = v_inf + (self.lgn_v - v_inf) * math.exp(-c * dt)
@@ -623,7 +669,13 @@ def main(opts: dict) -> None:
     B = min(int(opts.get("batch", 50)), len(labels))
     t0 = time.time()
     net = Block(opts, B, dev)
-    net.calibrate_lgn()
+    if net.replay is None:
+        net.calibrate_lgn()
+    else:
+        d = net.replay
+        assert d["letters"] == letters and len(d["labels"]) == len(labels) and (d["rest"], d["show"]) == (rest, show), \
+            "запись LGN — те же буквы, показы, rest и show"
+        print(f"LGN — спайки LGN мозга из {opts['lgn_replay']}", flush=True)
     print(f"сборка {time.time() - t0:.0f} с", flush=True)
 
     side = net.side
@@ -636,6 +688,9 @@ def main(opts: dict) -> None:
         if len(y) < B:  # последняя пачка добивается повтором (лишнее отбрасывается)
             y = torch.cat([y, labels[:B - len(y)]])
         t1 = time.time()
+        if net.replay is not None:
+            idx = torch.arange(s, s + B) % len(labels)
+            net.load_replay(idx.tolist(), gen)
         net.set_contrast(None)
         net.run(rest - 100)
         r0 = net.run(100.0)

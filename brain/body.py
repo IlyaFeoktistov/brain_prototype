@@ -25,8 +25,10 @@ class Eye:
     Глаз: картинка яркости → ганглиозные клетки сетчатки → растр спайков.
 
     Ганглиозная клетка сравнивает центр с окружением (Kuffler 1953): ON —
-    центр светлее окружения, OFF — темнее. Ровный фон не даёт ничего,
-    отвечают края и штрихи. Отклик — разность гауссиан (центр уже
+    центр светлее окружения, OFF — темнее. На ровном поле клетка стреляет с
+    поддерживаемой частотой (cfg.retina_maintained_hz, Troy & Lee 1994),
+    контраст сдвигает её вверх у своего знака и вниз у противоположного
+    (ON и OFF — двухтактно); ниже нуля нельзя. Отклик — разность гауссиан (центр уже
     окружения); частота — доля от отклика на штрих толщиной в пиксель
     (тонкий тёмный штрих — самый сильный стимул OFF-клеток здесь).
     Спайки — пуассоновские, пока длится фиксация.
@@ -40,6 +42,7 @@ class Eye:
         self.rows, self.cols = cfg.retina_rows, cfg.retina_cols
         self.center = _gaussian(cfg.retina_center_px)
         self.surround = _gaussian(cfg.retina_surround_px)
+        self.maintained = cfg.retina_maintained_hz
         line = torch.ones(15, 15)
         line[:, 7] = 0.0
         self.scale = float(self._contrast(line)[7, 7].neg()) or 1.0
@@ -58,10 +61,11 @@ class Eye:
     def rates(self, picture: torch.Tensor) -> torch.Tensor:
         """Частота каждой ганглиозной клетки, Гц: слой ON, затем OFF."""
 
-        contrast = self._contrast(picture.cpu()) / self.scale
-        on = contrast.clamp(0.0, 1.0)
-        off = (-contrast).clamp(0.0, 1.0)
-        return torch.cat([on.flatten(), off.flatten()]) * self.cfg.retina_rate_hz
+        contrast = (self._contrast(picture.cpu()) / self.scale).clamp(-1.0, 1.0)
+        rate = self.cfg.retina_rate_hz * contrast
+        on = (self.maintained + rate).clamp(min=0.0)
+        off = (self.maintained - rate).clamp(min=0.0)
+        return torch.cat([on.flatten(), off.flatten()])
 
     def look(self, picture: torch.Tensor, ms: float | None = None) -> torch.Tensor:
         """Растр спайков фиксации [steps, offset + size]: участок глаза заполнен."""
@@ -84,6 +88,9 @@ class Periphery(Eye):
     def __init__(self, cfg, offset: int, size: int, device):
         super().__init__(cfg, offset, size, device)
         self.pool = cfg.periphery_scale
+        # Своя активность боковой сетчатки пока — шум движка (SensorSpec
+        # periphery spontaneous_hz 8), не код яркости [долг: как у ямки].
+        self.maintained = 0.0
         self.rows = cfg.retina_rows // self.pool
         self.cols = cfg.retina_cols * cfg.periphery_fields // self.pool
 

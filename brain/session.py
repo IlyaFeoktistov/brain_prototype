@@ -111,8 +111,13 @@ class Session:
         self.live(ms)
 
     def _blank(self, ms: float) -> torch.Tensor:
+        """Пустой экран: ямка видит ровную страницу (поддерживаемая частота сетчатки)."""
+
         steps = int(round(ms / self.cfg.dt_ms))
-        return torch.zeros(steps, self.brain.n_receptors, device=self.brain.device)
+        out = torch.zeros(steps, self.brain.n_receptors, device=self.brain.device)
+        raster = self.eye.look(self.screen.picture("", 0), ms)
+        out[:, : raster.shape[1]] = raster
+        return out
 
     def live(self, ms: float) -> str:
         """

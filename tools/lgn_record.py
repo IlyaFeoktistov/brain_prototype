@@ -41,8 +41,8 @@ from tools.reading_bench import build  # noqa: E402
 
 def main(opts: dict) -> None:
     seed = int(opts.get("seed", 1))
-    opts = {"fit": "lgn-a", "homeo": f"lgn-a-s{seed}", "relay_v_t_mv": "-59", "relay_rest_mv": "-48",
-            "trn_scale": "0.5", **opts}
+    opts = {"fit": "lgn-a", "homeo": f"lgn-b-s{seed}", "relay_v_t_mv": "-59",
+            "trn_scale": "0.1", **opts}
     mind, b = build(opts)
     s = Session(mind, window_ms=10.0)
     cfg = b.cfg
@@ -73,7 +73,7 @@ def main(opts: dict) -> None:
 
     s.line, s.gaze = "", 0.0
     t0 = time.time()
-    b.run(2500.0)
+    b.run(2500.0, s._blank(2500.0))
     print(f"разгон 2.5 с: {time.time() - t0:.0f} с", flush=True)
 
     labels = torch.arange(len(letters)).repeat(trials)

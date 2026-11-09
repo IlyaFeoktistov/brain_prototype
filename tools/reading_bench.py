@@ -98,7 +98,7 @@ def main(opts: dict) -> None:
     a_text, b_text = opts.get("a", "мама мыла раму"), opts.get("b", "папа пила чай")
     fix, step = float(opts.get("fix", 225)), float(opts.get("step", 5))
     s.line, s.gaze = "", 0.0
-    b.run(2500.0)
+    b.run(2500.0, s._blank(2500.0))
 
     def ink(line: str, gaze: float) -> torch.Tensor:
         """Клетки реле, чей водитель видит штрих при этом взгляде."""

@@ -1026,6 +1026,13 @@ class BrainConfig:
     retina_center_px: float = 0.7
     retina_surround_px: float = 1.5
     retina_rate_hz: float = 150.0
+    # Поддерживаемая частота ганглиозной клетки на ровном поле, Гц: у
+    # макаки на сером P-клетки 15.9, M — 15.1 (Troy & Lee 1994,
+    # https://resolve.cambridge.org/core/journals/visual-neuroscience/article/steady-discharges-of-macaque-retinal-ganglion-cells/5159E0D1C6487EF8EF4928EE0F14305E;
+    # числа — по цитате Tailby et al. 2007). Часть кода яркости
+    # (body.Eye.rates): свет в центре поднимает ON и снижает OFF, тень —
+    # наоборот; ниже нуля частота не идёт.
+    retina_maintained_hz: float = 16.0
     # Синапс сетчатки на клетку LGN — «водитель»: крупный ВПСП (Usrey,
     # Reppas & Reid 1999 — один спайк сетчатки часто сам запускает спайк
     # реле; Sherman & Guillery 1998), мВ [порядок, сверить].
@@ -1083,10 +1090,9 @@ class BrainConfig:
             SensorSpec(
                 "eye", "visual", 2 * self.retina_rows * self.retina_cols, 40, 1.0,
                 rows=self.retina_rows, cols=self.retina_cols, wiring="oriented", relay="lgn",
-                # Ганглиозные клетки сетчатки стреляют и без стимула: у
-                # макаки поддерживаемая частота P- и M-клеток ~10–30 Гц
-                # (Troy & Lee 1994; кошка — Barlow & Levick 1969) — 20 Гц.
-                spontaneous_hz=20.0,
+                # Своя активность сетчатки — не шум движка, а часть кода
+                # яркости (retina_maintained_hz, body.Eye.rates): пустой
+                # экран — глаз видит ровную страницу (Session._blank).
             ),
             # Вкус — канал награды и наказания, как у младенца: сладкое
             # будит дофаминовые клетки VTA (через латеральный гипоталамус и

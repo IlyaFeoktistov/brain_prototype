@@ -33,8 +33,8 @@ from tools.reading_bench import build
 
 
 def main(opts: dict) -> None:
-    opts = {"fit": "lgn-a", "homeo": f"lgn-a-s{opts.get('seed', 1)}", "relay_v_t_mv": "-59",
-            "relay_rest_mv": "-48", "trn_scale": "0.5", "dc": "visual -> letters", **opts}
+    opts = {"fit": "lgn-a", "homeo": f"lgn-b-s{opts.get('seed', 1)}", "relay_v_t_mv": "-59",
+            "trn_scale": "0.1", "dc": "visual -> letters", **opts}
     mind, b = build(opts)
     s = Session(mind, window_ms=10.0)
     letters = opts.get("letters", "абвгдежзик")
@@ -53,7 +53,7 @@ def main(opts: dict) -> None:
           f"путь {path.name}: {path.pre.shape[1]} входов на клетку", flush=True)
 
     s.line, s.gaze = "", 0.0
-    b.run(2500.0)
+    b.run(2500.0, s._blank(2500.0))
 
     def show(ch: str, train: bool) -> dict[str, torch.Tensor]:
         s.line = ch

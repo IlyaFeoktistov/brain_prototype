@@ -33,8 +33,8 @@ WIN = 10.0
 
 def main(opts: dict) -> None:
     seed = int(opts.get("seed", 1))
-    opts = {"fit": "lgn-a", "homeo": f"lgn-a-s{seed}", "relay_v_t_mv": "-59", "relay_rest_mv": "-48",
-            "trn_scale": "0.5", **opts}
+    opts = {"fit": "lgn-a", "homeo": f"lgn-b-s{seed}", "relay_v_t_mv": "-59",
+            "trn_scale": "0.1", **opts}
     mind, b = build(opts)
     cfg = b.cfg
     s = Session(mind, window_ms=WIN)
@@ -111,7 +111,7 @@ def main(opts: dict) -> None:
             cnt[(win, g)] = cnt.get((win, g), 0) + 1
 
     s.line, s.gaze = "", 0.0
-    b.run(2500.0)
+    b.run(2500.0, s._blank(2500.0))
     n_rec = 2 * cfg.retina_rows * cfg.retina_cols
     # Своя активность сетчатки (SensorSpec.spontaneous_hz) — движок добавляет
     # её к растру глаза (спайк, если есть хоть один из двух).

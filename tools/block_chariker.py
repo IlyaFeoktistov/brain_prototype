@@ -62,7 +62,7 @@ VI −2/3, время в с):
 спайков за показ.
 
     PYTHONPATH=. python tools/block_chariker.py [letters=абвгдежзик] [trials=10] [a=1] [hc_px=2] [side=16]
-        [show=350] [rest=300] [dt=0.1] [batch=50] [seed=1] [device=cuda] [s_ie=0.0095] [stp=U,τмс] [lgn_wiring=ours] [lgn_psp=мВ] [cap=e:Гц,i:Гц] [l4_local=brain] [save=файл]
+        [show=350] [rest=300] [dt=0.1] [batch=50] [seed=1] [device=cuda] [s_ie=0.0095] [stp=U,τмс] [lgn_wiring=ours] [lgn_psp=мВ] [cap=e:Гц,i:Гц] [l4_local=brain] [l4_size=brain] [save=файл]
 """
 
 from __future__ import annotations
@@ -318,6 +318,31 @@ class Block:
             ie = sample_pre(xy_e, full(NE, k_brain["ie"]), SD_I, n_i, size, g)
             ei = sample_pre(xy_i, full(NI, k_brain["ei"]), SD_E, n_e, size, g)
             ii = sample_pre(xy_i, full(NI, k_brain["ii"]), SD_I, n_i, size, g)
+        # Замена 5 (l4_size=brain, поверх l4_local=brain): размер зоны мозга.
+        # V1 L4 мозга — 5680 E и 1420 PV против колонки 1 мм² 21915 / 5479
+        # (Potjans; зона 20000 клеток): engine._wire_column строит k =
+        # round(k_данных · 0.259) входов, вес × √(k_данных / k), недостающее
+        # среднее — ток по живой частоте популяции-источника, сглаженной
+        # mean_field_tau_ms = 50 мс (engine._missing, _build_mean_field).
+        # Средний вход тот же, разброс — меньше.
+        self.l4_size = opts.get("l4_size") == "brain"
+        self.mf_k = {"E": {"e": 0.0, "i": 0.0}, "I": {"e": 0.0, "i": 0.0}}
+        if self.l4_size:
+            assert self.l4_brain, "l4_size=brain — поверх l4_local=brain"
+            share = 5680 / 21915
+            self.mf_root = root = {}
+            for key, (kind, src) in (("ee", ("E", "e")), ("ie", ("E", "i")), ("ei", ("I", "e")), ("ii", ("I", "i"))):
+                k = max(1, round(k_brain[key] * share))
+                root[(kind, src)] = math.sqrt(k_brain[key] / k)
+                # Недостающих входов (в весах блока до × √): k_данных − k · √.
+                self.mf_k[kind][src] = k_brain[key] - k * root[(kind, src)]
+                print(f"размер зоны мозга: {kind} ← {src} строится {k} из {k_brain[key]:.1f}, вес × {root[(kind, src)]:.2f}, "
+                      f"среднее поле {self.mf_k[kind][src]:.1f} входов", flush=True)
+                k_brain[key] = k
+            ee = sample_pre(xy_e, full(NE, k_brain["ee"]), SD_E, n_e, size, g)
+            ie = sample_pre(xy_e, full(NE, k_brain["ie"]), SD_I, n_i, size, g)
+            ei = sample_pre(xy_i, full(NI, k_brain["ei"]), SD_E, n_e, size, g)
+            ii = sample_pre(xy_i, full(NI, k_brain["ii"]), SD_I, n_i, size, g)
         l6e = sample_pre(xy_e, base_6 * boost_6, SD_6, n_6, size, g)
         # L6 → I — «как внутри 4Cα»: во столько же раз больше, во сколько E → I больше E → E.
         l6i = sample_pre(xy_i, torch.full((NI,), 50.0 * 750 / 200, device=dev), SD_6, n_6, size, g)
@@ -384,6 +409,14 @@ class Block:
                 self.S[kind][src] = self.S[kind][src] / old * new
                 print(f"L4 → L4 по мозгу: {kind} ← {src} ПСП {mv} мВ, сила {new:.4f} "
                       f"(авторы {old:.4f} — ПСП {old / strength(1.0, kind, src):.2f} мВ по модулю)", flush=True)
+        # Сила синапса недостающего соседа — без × √ (среднее поле, ниже).
+        self.S_mf = {kind: {src: self.S[kind][src].clone() for src in ("e", "i")} for kind in self.S}
+        if self.l4_size:
+            for (kind, src), r in self.mf_root.items():
+                self.S[kind][src] = self.S[kind][src] * r
+        # Частота популяций L4 [B], сглаженная 50 мс (engine mean_field_tau_ms).
+        self.mf_rate = {"e": torch.full((B,), 1.4, device=dev), "i": torch.full((B,), 6.4, device=dev)}
+        self.mf_decay = math.exp(-self.dt / 0.050)
         self.n_lgn = n_lgn
         # L6: пуассон 0.5–10 Гц, только фон.
         self.p6 = (0.5 + 9.5 * rnd(N6)) * self.dt
@@ -505,6 +538,11 @@ class Block:
         got = {s: pop.inbox[s].view(B, n + 1)[:, :n] for s in pop.inbox}
         got["amb"] = (torch.rand(B, n, device=self.dev) < self.p_amb).float()
         f = self.nmda[kind]
+        if self.l4_size:
+            # Недостающие соседи: спайков за шаг = входов × частота × dt (у всех
+            # клеток популяции одно, своё в каждом испытании).
+            for src in ("e", "i"):
+                got[src] = got[src] + (self.mf_k[kind][src] * self.mf_rate[src] * dt)[:, None] * self.S_mf[kind][src] / S[src]
         w_ampa = S["lgn"] * got["lgn"] + (1 - f) * (S["e"] * got["e"] + S["l6"] * got["l6"]) + S["amb"] * got["amb"]
         w_nmda = f * (S["e"] * got["e"] + S["l6"] * got["l6"])
         w_gaba = S["i"] * got["i"]
@@ -533,6 +571,10 @@ class Block:
             box.zero_()
 
     def step(self) -> None:
+        if self.l4_size:
+            for src, pop in (("e", self.E), ("i", self.I)):
+                inst = pop.spk.float().mean(1) / self.dt
+                self.mf_rate[src] = self.mf_rate[src] * self.mf_decay + inst * (1.0 - self.mf_decay)
         self.lgn_step()
         l6 = torch.rand(self.B, self.N6, device=self.dev) < self.p6
         spikes = {"lgn": self.lgn_spk, "e": self.E.spk, "i": self.I.spk, "l6": l6}

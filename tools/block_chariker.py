@@ -62,7 +62,7 @@ VI −2/3, время в с):
 спайков за показ.
 
     PYTHONPATH=. python tools/block_chariker.py [letters=абвгдежзик] [trials=10] [a=1] [hc_px=2] [side=16]
-        [show=350] [rest=300] [dt=0.1] [batch=50] [seed=1] [device=cuda] [s_ie=0.0095] [stp=U,τмс] [lgn_wiring=ours] [lgn_psp=мВ] [cap=e:Гц,i:Гц] [l4_local=brain] [l4_size=brain] [lgn_replay=файл] [lgn_gain=k] [lgn_evoked=k] [save=файл]
+        [show=350] [rest=300] [dt=0.1] [batch=50] [seed=1] [device=cuda] [s_ie=0.0095] [stp=U,τмс] [lgn_wiring=ours] [lgn_psp=мВ] [cap=e:Гц,i:Гц] [l4_local=brain] [l4_size=brain] [lgn_replay=файл] [lgn_gain=k] [lgn_evoked=k] [lgn_cv=0.27] [save=файл]
 """
 
 from __future__ import annotations
@@ -459,6 +459,13 @@ class Block:
             # пуассоновские спайки, ниже — убираются её же спайки; пауза не
             # трогается, свои спайки клетки остаются.
             self.rep_evoked = float(opts.get("lgn_evoked", 1.0))
+            # Диагностика: lgn_cv=c — те же частоты, но регулярные спайки (гамма-
+            # процесс, CV c; у LGN блока 0.27). Частота клетки — её счёт в этом
+            # показе на отрезках пауза / 0–50 мс показа / 50 мс–конец (ход
+            # ответа: переход и устоявшаяся часть); мельче нельзя — при 11 Гц за
+            # 25 мс меньше спайка. В своём времени Λ(t) интервалы — гамма со
+            # средним 1, фаза первого спайка случайна.
+            self.rep_cv = float(opts["lgn_cv"]) if "lgn_cv" in opts else None
             d = self.replay
             n_rest = round(d["rest"] / d["dt"])
             bg = torch.zeros(NL)
@@ -495,6 +502,8 @@ class Block:
             sp = d["spikes"][j]
             t = sp[:, 0] * sub + torch.randint(sub, (len(sp),), generator=gen)
             raster[t, b, sp[:, 1]] = True
+        if self.rep_cv is not None:
+            raster = self.regularize(raster, gen)
         if self.rep_evoked != 1.0:
             k = self.rep_evoked
             t0 = round(d["rest"] / 1000.0 / self.dt)
@@ -518,6 +527,33 @@ class Block:
             raster |= extra.reshape(self.B, self.NL, steps).permute(2, 0, 1)
         self.rep_raster = raster.to(self.dev)
         self.rep_t.zero_()
+
+    def regularize(self, raster: torch.Tensor, gen: torch.Generator) -> torch.Tensor:
+        """Регулярные спайки с той же частотой клетки по отрезкам (см. lgn_cv)."""
+
+        d = self.replay
+        steps = raster.shape[0]
+        t_rest = round(d["rest"] / 1000.0 / self.dt)
+        edges = [0, t_rest, t_rest + round(0.05 / self.dt), steps]
+        x = raster.permute(1, 2, 0).reshape(-1, steps)                      # [клеток, шагов]
+        n = torch.stack([x[:, a:b].sum(1).float() for a, b in zip(edges[:-1], edges[1:])], 1)  # счёт на отрезке
+        lam = torch.cat([torch.zeros(len(x), 1), n.cumsum(1)], 1)          # Λ на границах
+        kappa = 1.0 / self.rep_cv ** 2
+        m = int(lam[:, -1].max()) + 8
+        gam = torch.distributions.Gamma(torch.full((len(x), m), kappa), torch.full((len(x), m), kappa))
+        torch.manual_seed(int(torch.randint(1 << 30, (1,), generator=gen)))
+        isi = gam.sample()
+        tt = isi.cumsum(1) - isi[:, :1] * torch.rand(len(x), 1, generator=gen)  # случайная фаза
+        out = torch.zeros_like(x)
+        for j in range(3):
+            a, b = edges[j], edges[j + 1]
+            lo, hi = lam[:, j:j + 1], lam[:, j + 1:j + 2]
+            inside = (tt >= lo) & (tt < hi) & (hi > lo)
+            frac = ((tt - lo) / (hi - lo).clamp(min=1e-9)).clamp(0, 1 - 1e-6)
+            step = (a + frac * (b - a)).long()
+            r, c = inside.nonzero(as_tuple=True)
+            out[r, step[r, c]] = True
+        return out.reshape(self.B, self.NL, steps).permute(2, 0, 1).contiguous()
 
     def lgn_step(self) -> None:
         if self.replay is not None:

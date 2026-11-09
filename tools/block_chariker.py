@@ -62,7 +62,7 @@ VI −2/3, время в с):
 спайков за показ.
 
     PYTHONPATH=. python tools/block_chariker.py [letters=абвгдежзик] [trials=10] [a=1] [hc_px=2] [side=16]
-        [show=350] [rest=300] [dt=0.1] [batch=50] [seed=1] [device=cuda] [s_ie=0.0095] [stp=U,τмс] [lgn_wiring=ours] [lgn_psp=мВ] [cap=e:Гц,i:Гц] [l4_local=brain] [l4_size=brain] [lgn_replay=файл] [lgn_gain=k] [save=файл]
+        [show=350] [rest=300] [dt=0.1] [batch=50] [seed=1] [device=cuda] [s_ie=0.0095] [stp=U,τмс] [lgn_wiring=ours] [lgn_psp=мВ] [cap=e:Гц,i:Гц] [l4_local=brain] [l4_size=brain] [lgn_replay=файл] [lgn_gain=k] [lgn_evoked=k] [save=файл]
 """
 
 from __future__ import annotations
@@ -452,6 +452,19 @@ class Block:
             # (k − 1) · r̂(t), r̂ — своя частота клетки в этом же показе,
             # сглаженная окном 25 мс (сведений о букве из других показов нет).
             self.rep_gain = float(opts.get("lgn_gain", 1.0))
+            # Диагностика: lgn_evoked=k — только ответ ×k, фон тот же: на показе
+            # частота клетки r' = r_фон + k (r − r_фон). r — своя частота клетки
+            # за весь показ (за 25 мс при 11 Гц — доля спайка, шум), r_фон — её
+            # средняя за все паузы записи (букв там нет). Выше фона — добавочные
+            # пуассоновские спайки, ниже — убираются её же спайки; пауза не
+            # трогается, свои спайки клетки остаются.
+            self.rep_evoked = float(opts.get("lgn_evoked", 1.0))
+            d = self.replay
+            n_rest = round(d["rest"] / d["dt"])
+            bg = torch.zeros(NL)
+            for sp in d["spikes"]:
+                bg += torch.bincount(sp[sp[:, 0] < n_rest, 1], minlength=NL).float()
+            self.rep_bg = bg / (len(d["spikes"]) * d["rest"] / 1000.0)
             self.rep_raster = torch.zeros(1, B, NL, dtype=torch.bool, device=dev)
         self.drive = {"lgn": torch.zeros(B, NE, device=dev), "all": torch.zeros(B, NE, device=dev)}
         # Событий за шаг на источник (статический размер для nonzero_static):
@@ -482,6 +495,20 @@ class Block:
             sp = d["spikes"][j]
             t = sp[:, 0] * sub + torch.randint(sub, (len(sp),), generator=gen)
             raster[t, b, sp[:, 1]] = True
+        if self.rep_evoked != 1.0:
+            k = self.rep_evoked
+            t0 = round(d["rest"] / 1000.0 / self.dt)
+            show_s = d["show"] / 1000.0
+            counts = raster[t0:].sum(0).float()                      # [B, NL]
+            r = counts / show_s
+            dev = r - self.rep_bg[None]
+            target = (self.rep_bg[None] + k * dev).clamp(min=0.0)
+            add = ((target - r).clamp(min=0.0) * self.dt)            # вероятность на шаг
+            keep = torch.where(r > target, target / r.clamp(min=1e-9), torch.ones_like(r))
+            part = raster[t0:]
+            part &= torch.rand(part.shape, generator=gen) < keep[None]
+            part |= torch.rand(part.shape, generator=gen) < add[None]
+            raster[t0:] = part
         if self.rep_gain > 1.0:
             w = round(0.025 / self.dt)
             x = raster.float().permute(1, 2, 0).reshape(-1, 1, steps)

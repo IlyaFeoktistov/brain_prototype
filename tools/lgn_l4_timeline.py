@@ -23,7 +23,7 @@ import sys
 import torch
 
 from brain.session import Session
-from tools.reading_bench import build
+from tools.reading_bench import build, observe_pre
 
 WIN = 10.0
 
@@ -83,14 +83,15 @@ def main(opts: dict) -> None:
 
     names = ("LGN зрячие, Гц", "ресурс зрячих", "эфф. вход L4", "ток L4", "V L4, мВ", "L4 поле, Гц")
 
-    def measure(r: torch.Tensor, see: torch.Tensor, field: torch.Tensor) -> tuple[torch.Tensor, ...]:
+    def measure(r: torch.Tensor, st: dict, see: torch.Tensor, field: torch.Tensor) -> tuple[torch.Tensor, ...]:
         """Покадровые меры (средние по клеткам) и векторы по клеткам поля."""
 
-        eff = (tc.weight.float() * r[lgn.slice][tc_pre] * b.stp_x[lgn.slice][tc_pre]).sum(1)
+        x = st["x"][lgn.slice]
+        eff = (tc.weight.float() * r[lgn.slice][tc_pre] * x[tc_pre]).sum(1)
         cur = b.i_syn[L4.slice].float()
         spk = r[L4.slice]
         pick = lambda v, m: v[m].mean() if m.any() else v.new_tensor(0.0)
-        row = torch.stack([pick(r[lgn.slice], see), pick(b.stp_x[lgn.slice], see), pick(eff, field),
+        row = torch.stack([pick(r[lgn.slice], see), pick(x, see), pick(eff, field),
                            pick(cur, field), pick(b.v[L4.slice], field), pick(spk, field)]).cpu()
         return row, eff.cpu(), cur.cpu(), spk.cpu()
 
@@ -103,8 +104,8 @@ def main(opts: dict) -> None:
         base = 0
         for _ in range(20):
             s.line = ""
-            r = b.observe(WIN, s._blank(WIN))
-            base = base + measure(r, first, field0)[0] / 20
+            r, st = observe_pre(b, WIN, s._blank(WIN))
+            base = base + measure(r, st, first, field0)[0] / 20
         trace, late = [], {"eff": [], "cur": [], "spk": []}
         for i, g in enumerate(gazes(line)):
             if i:
@@ -117,8 +118,8 @@ def main(opts: dict) -> None:
                 gaze = g + move(i, t)
                 see = seeing(line, gaze)
                 s.line, s.gaze = line, gaze
-                r = b.observe(WIN, s._view(WIN))
-                row, eff, cur, spk = measure(r, see, field)
+                r, st = observe_pre(b, WIN, s._view(WIN))
+                row, eff, cur, spk = measure(r, st, see, field)
                 rows.append(row)
                 if t >= early:
                     acc["eff"] = acc["eff"] + eff / (n_win - early)

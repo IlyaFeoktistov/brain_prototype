@@ -8,7 +8,8 @@ tools/l4_response.py: клетка со штрихом в поле прибав�
 половины водитель ≥ 2 × поддерживаемой, «против» — < ½, «вне»). По каждому
 пути в L4 E — устоявшийся ток сомы, мВ: Σ вес × сила синапса × частота
 источника за окно → ток i_syn (τ_syn) × движущая сила:
-  сила синапса — как в engine._step: у пути таламуса — ресурс реле (stp_x,
+  сила синапса — как в engine._step, в начале окна (observe_pre): у пути
+  таламуса — ресурс реле (stp_x,
   депрессия), у синапсов коры — u·x/(1 − u)/U своей пары типов (stp_u4,
   stp_x4), торможение × усиление клетки (inh_gain);
   отдельно — внешний фон колонки (шум движка), ток недостающих соседей
@@ -30,7 +31,7 @@ import torch
 
 from brain.engine import KINDS
 from brain.session import Session
-from tools.reading_bench import build
+from tools.reading_bench import build, observe_pre
 
 WIN = 10.0
 
@@ -70,7 +71,7 @@ def main(opts: dict) -> None:
                     "мембрана, мВ", "частота, Гц", "частота реле-входов, Гц", "ресурс реле-входов"]
 
     def window(view: torch.Tensor) -> torch.Tensor:
-        r = b.observe(WIN, view)
+        r, st = observe_pre(b, WIN, view)
         v = b.v[sl]
         excite = ((cfg.ampa_reversal_mv - v) / (cfg.ampa_reversal_mv - cfg.epsp_holding_mv)).clamp(min=0.0)
         force = ((v - cfg.gaba_reversal_mv) / (cfg.ipsp_holding_mv - cfg.gaba_reversal_mv)).clamp(min=0.0)
@@ -80,12 +81,12 @@ def main(opts: dict) -> None:
             pre = p.pre.long()
             w = p.weight.float()
             if p is tc:
-                g = b.stp_x[pre]
+                g = st["x"][pre]
             else:
                 typed = b.typed_pre[pre]
                 slot = pre * len(KINDS) + e_type
-                u = b.stp_u4.view(-1)[slot]
-                x = b.stp_x4.view(-1)[slot]
+                u = st["u4"].view(-1)[slot]
+                x = st["x4"].view(-1)[slot]
                 U = b.stp_U4.view(-1)[slot]
                 nxt = u + U * (1.0 - u)      # сила следующего спайка (как у среднего поля)
                 g = torch.where(typed, nxt * x / U, 1.0)
@@ -102,7 +103,7 @@ def main(opts: dict) -> None:
         e_true = (b.i_syn[sl] + b.dc_mv[sl]) * excite
         i_true = (b.i_inh[sl] + b.i_ngf[sl] + b.dc_inh_mv[sl]) * force
         rows += [noise, mf_e, mf_i, b.bias[sl].expand_as(v), -b.adapt[sl], exc, inh, e_true, i_true, v.clone(),
-                 r[sl], r[lgn.slice][tc_pre].mean(1), b.stp_x[lgn.start + tc_pre].mean(1)]
+                 r[sl], r[lgn.slice][tc_pre].mean(1), st["x"][lgn.start + tc_pre].mean(1)]
         return torch.stack([x.float().expand_as(v) for x in rows]).cpu()   # [величин, клеток]
 
     s.line, s.gaze = "", 0.0

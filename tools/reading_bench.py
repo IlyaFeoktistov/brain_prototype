@@ -41,6 +41,19 @@ from brain.session import Session
 WIN = 10.0
 
 
+def observe_pre(b, ms: float, view):
+    """
+    Частоты окна (b.observe) и состояние кратковременной пластичности до
+    окна: stp_x (пути ядер), stp_u4, stp_x4 (синапсы колонок). Силу синапса
+    для «частота × сила» брать отсюда: состояние в конце окна уже истощено
+    спайками, которые входят в частоту того же окна (у реле LGN при 8 Гц ток
+    таламус → L4 выходит вдвое ниже точного).
+    """
+
+    state = {"x": b.stp_x.clone(), "u4": b.stp_u4.clone(), "x4": b.stp_x4.clone()}
+    return b.observe(ms, view), state
+
+
 def build(opts: dict):
     cfg = BrainConfig()
     cfg.size = "small"

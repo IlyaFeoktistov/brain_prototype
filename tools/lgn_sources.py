@@ -26,7 +26,7 @@ import sys
 import torch
 
 from brain.session import Session
-from tools.reading_bench import build
+from tools.reading_bench import build, observe_pre
 
 WIN = 10.0
 
@@ -67,7 +67,7 @@ def main(opts: dict) -> None:
                     "мембрана v, мВ", "частота реле, Гц"] + [f"частота источника «{n}», Гц" for n in names]
     groups = ("штрих", "рядом", "пусто")
 
-    def sample(r: torch.Tensor, rec_rate: torch.Tensor, masks: dict) -> dict:
+    def sample(r: torch.Tensor, st: dict, rec_rate: torch.Tensor, masks: dict) -> dict:
         v = b.v[lgn.slice]
         excite = ((cfg.ampa_reversal_mv - v) / (cfg.ampa_reversal_mv - cfg.epsp_holding_mv)).clamp(min=0.0)
         force = ((v - cfg.gaba_reversal_mv) / (cfg.ipsp_holding_mv - cfg.gaba_reversal_mv)).clamp(min=0.0)
@@ -81,7 +81,7 @@ def main(opts: dict) -> None:
             else:
                 src = r[pre]
                 if p.name in stp_paths:
-                    src = src * b.stp_x[pre]
+                    src = src * st["x"][pre]
             drives.append((p.weight.float() * src).sum(1))
             src_hz.append(src.mean(1) if p.source == "net" else rec_rate[pre - off].mean(1))
         drives = torch.stack(drives)                                  # [путей, клеток]
@@ -132,15 +132,15 @@ def main(opts: dict) -> None:
             s.line = ""
             for t in range(n_rest):
                 view = s._blank(WIN)
-                r = b.observe(WIN, view)
+                r, st = observe_pre(b, WIN, view)
                 if t >= n_rest - 20:
-                    add("пауза", sample(r, retina_hz(view), masks))
+                    add("пауза", sample(r, st, retina_hz(view), masks))
             s.line = ch
             for t in range(n_show):
                 view = s._view(WIN)
-                r = b.observe(WIN, view)
+                r, st = observe_pre(b, WIN, view)
                 rec = retina_hz(view)
-                add("0–50 мс" if t < early else f"50–{int(show)} мс", sample(r, rec, masks))
+                add("0–50 мс" if t < early else f"50–{int(show)} мс", sample(r, st, rec, masks))
             s.line = ""
 
     wins = ("пауза", "0–50 мс", f"50–{int(show)} мс")

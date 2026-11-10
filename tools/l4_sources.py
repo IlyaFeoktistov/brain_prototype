@@ -21,7 +21,7 @@ import sys
 import torch
 
 from brain.session import Session
-from tools.reading_bench import build
+from tools.reading_bench import build, observe_pre
 
 WIN = 10.0
 
@@ -61,12 +61,12 @@ def main(opts: dict) -> None:
     keys = [p.name for p in paths] + ["среднее поле AMPA", "ток i_syn", "фон bias", "LGN зрячие Гц", "L4 поле Гц",
                                       "L6 E Гц", "L2/3 E Гц"]
 
-    def sample(r: torch.Tensor, see: torch.Tensor, field: torch.Tensor) -> torch.Tensor:
+    def sample(r: torch.Tensor, st: dict, see: torch.Tensor, field: torch.Tensor) -> torch.Tensor:
         drives = []
         for p in paths:
             src = r[p.pre.long()]
             if p is tc:
-                src = src * b.stp_x[p.pre.long()]
+                src = src * st["x"][p.pre.long()]
             drives.append((p.weight.float() * src).sum(1)[field].mean())
         drives = torch.stack(drives)
         cur = b.i_syn[E.slice][field].float().mean()
@@ -87,8 +87,8 @@ def main(opts: dict) -> None:
             s.line = ""
             b.run(300.0, s._blank(300.0))
             for _ in range(20):
-                r = b.observe(WIN, s._blank(WIN))
-                acc["покой"] = acc["покой"] + sample(r, see0, field0)
+                r, st = observe_pre(b, WIN, s._blank(WIN))
+                acc["покой"] = acc["покой"] + sample(r, st, see0, field0)
                 counts["покой"] += 1
             for i, g in enumerate(points):
                 if i:
@@ -98,9 +98,9 @@ def main(opts: dict) -> None:
                 field = see[tc_pre].float().mean(1) > 0.5
                 s.line, s.gaze = line, g
                 for t in range(n_win):
-                    r = b.observe(WIN, s._view(WIN))
+                    r, st = observe_pre(b, WIN, s._view(WIN))
                     k = "0–50 мс" if t < early else f"50–{int(fix)} мс"
-                    acc[k] = acc[k] + sample(r, see, field)
+                    acc[k] = acc[k] + sample(r, st, see, field)
                     counts[k] += 1
 
     print(f"\n=== Возбуждение поля V1 L4 E по источникам, мВ (доля пути × i_syn); неподвижно, по {n_rep} показов A и B")

@@ -61,7 +61,7 @@ if torch.cuda.is_available() and os.environ.get("BRAIN_KERNELS", "1") == "1":
             typed_pre: torch.Tensor, cell_type: torch.Tensor, kinds: int,
             stp_u4: torch.Tensor, stp_x4: torch.Tensor, stp_U4: torch.Tensor,
             is_lamp5: torch.Tensor, ngf_d: torch.Tensor, lamp5_scale: float, lamp5_kind: int,
-            stp_x: torch.Tensor, inh_gain: torch.Tensor,
+            stp_x: torch.Tensor, stp_u_cell: torch.Tensor, inh_gain: torch.Tensor,
             dendrite: torch.Tensor, drive: torch.Tensor, glutamate: torch.Tensor | None,
             inhibition: torch.Tensor, ngf: torch.Tensor,
             path_delay: torch.Tensor, tick: torch.Tensor, ring: torch.Tensor, dend_ring: torch.Tensor,
@@ -69,7 +69,7 @@ if torch.cuda.is_available() and os.environ.get("BRAIN_KERNELS", "1") == "1":
             _ext.deliver(fired, n, start, count, perm, path_post, path_fanin, net_weight, path_start, path_flags, ach_paths,
                          ach_suppression, acetylcholine, dendrite_pre, dendrite_post, net_branch, branches,
                          typed_pre, cell_type, kinds, stp_u4, stp_x4, stp_U4, is_lamp5, ngf_d,
-                         lamp5_scale, lamp5_kind, stp_x, inh_gain, dendrite, drive, glutamate, inhibition, ngf,
+                         lamp5_scale, lamp5_kind, stp_x, stp_u_cell, inh_gain, dendrite, drive, glutamate, inhibition, ngf,
                          path_delay, tick, ring, dend_ring)
 
         @deliver.register_fake

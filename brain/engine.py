@@ -2857,7 +2857,7 @@ class SpikingBrain:
                 self.typed_pre, self.cell_type, len(KINDS),
                 self.stp_u4, self.stp_x4, self.stp_U4,
                 self.is_lamp5, self.ngf_d, 1.0 / (1.0 - cfg.lamp5_desens_u), KINDS.index("LAMP5"),
-                self.stp_x, self.inh_gain,
+                self.stp_x, self.stp_u_cell, self.inh_gain,
                 self.i_dend, drive, glutamate, inhibition, ngf,
                 self.path_delay, self.tick, self.ring, self.dend_ring,
             )
@@ -2914,8 +2914,9 @@ class SpikingBrain:
             weight = torch.where(typed, weight * gain, weight)
 
             # Истощение путей ядер (nucleus_stp): синапс отдаёт долю
-            # оставшегося ресурса пресинапса (у клеток колонок — своё, выше).
-            depletion = self.stp_x.index_select(0, pre_of)
+            # ресурса пресинапса до выброса (у клеток колонок — своё, выше).
+            # Ресурс уже потрачен в конце шага спайка: x_до = x / (1 − U).
+            depletion = self.stp_x.index_select(0, pre_of) / (1.0 - self.stp_u_cell.index_select(0, pre_of))
 
             if self.stp_free is not None:
                 depletion = torch.where(self.stp_free.index_select(0, synapses), 1.0, depletion)

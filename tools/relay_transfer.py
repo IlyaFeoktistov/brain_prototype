@@ -16,7 +16,7 @@
 Условия: пустой экран (поддерживаемая частота сетчатки) и буква по центру
 ямки — по каждому показу пауза rest мс, буква show мс.
 
-    PYTHONPATH=. .venv/bin/python tools/relay_transfer.py [letters=абвгд] [rest=300] [show=350] [win=5] [seed=1] [homeo=lgn-b-s1] [off=noise|l6|trn|in]
+    PYTHONPATH=. .venv/bin/python tools/relay_transfer.py [letters=абвгд] [rest=300] [show=350] [win=5] [seed=1] [homeo=lgn-c-s1] [off=noise|l6|trn|in]
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from tools.reading_bench import build  # noqa: E402
 
 def main(opts: dict) -> None:
     seed = int(opts.get("seed", 1))
-    opts = {"fit": "lgn-a", "homeo": f"lgn-b-s{seed}", "relay_v_t_mv": "-59", "trn_scale": "0.1", **opts}
+    opts = {"fit": "lgn-a", "homeo": f"lgn-c-s{seed}", "relay_v_t_mv": "-59", "trn_scale": "0.1", **opts}
     mind, b = build(opts)
     s = Session(mind, window_ms=10.0)
     cfg = b.cfg

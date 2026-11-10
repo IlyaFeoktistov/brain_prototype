@@ -83,7 +83,7 @@ __global__ void deliver_kernel(
     const bool* __restrict__ typed_pre, const int64_t* __restrict__ cell_type, int64_t kinds,
     const float* __restrict__ stp_u4, const float* __restrict__ stp_x4, const float* __restrict__ stp_U4,
     const bool* __restrict__ is_lamp5, const float* __restrict__ ngf_d, float lamp5_scale, int64_t lamp5_kind,
-    const float* __restrict__ stp_x, const float* __restrict__ inh_gain,
+    const float* __restrict__ stp_x, const float* __restrict__ stp_u_cell, const float* __restrict__ inh_gain,
     float* __restrict__ dendrite, float* __restrict__ drive, float* __restrict__ glutamate,
     float* __restrict__ inhibition, float* __restrict__ ngf,
     const int32_t* __restrict__ path_delay, const int64_t* __restrict__ tick, int64_t delay_slots,
@@ -125,7 +125,9 @@ __global__ void deliver_kernel(
       w *= gain;
     } else if (!(flags & 4)) {
       // Бит 2 — путь без истощения (другой выход клетки с депрессией пути).
-      w *= stp_x[pre];
+      // Сила спайка — ресурс до выброса: ресурс тратится в конце шага
+      // спайка (engine._step), доставка — на следующем, x_до = x / (1 − U).
+      w *= stp_x[pre] / (1.0f - stp_u_cell[pre]);
     }
     if (w < 0.0f) {
       w *= inh_gain[post];
@@ -193,7 +195,7 @@ void deliver(torch::Tensor fired, int64_t n, torch::Tensor start, torch::Tensor 
              torch::Tensor typed_pre, torch::Tensor cell_type, int64_t kinds,
              torch::Tensor stp_u4, torch::Tensor stp_x4, torch::Tensor stp_U4,
              torch::Tensor is_lamp5, torch::Tensor ngf_d, double lamp5_scale, int64_t lamp5_kind,
-             torch::Tensor stp_x, torch::Tensor inh_gain,
+             torch::Tensor stp_x, torch::Tensor stp_u_cell, torch::Tensor inh_gain,
              torch::Tensor dendrite, torch::Tensor drive, c10::optional<torch::Tensor> glutamate,
              torch::Tensor inhibition, torch::Tensor ngf,
              torch::Tensor path_delay, torch::Tensor tick, torch::Tensor ring, torch::Tensor dend_ring) {
@@ -208,7 +210,7 @@ void deliver(torch::Tensor fired, int64_t n, torch::Tensor start, torch::Tensor 
       typed_pre.data_ptr<bool>(), cell_type.data_ptr<int64_t>(), kinds,
       stp_u4.data_ptr<float>(), stp_x4.data_ptr<float>(), stp_U4.data_ptr<float>(),
       is_lamp5.data_ptr<bool>(), ngf_d.data_ptr<float>(), (float)lamp5_scale, lamp5_kind,
-      stp_x.data_ptr<float>(), inh_gain.data_ptr<float>(),
+      stp_x.data_ptr<float>(), stp_u_cell.data_ptr<float>(), inh_gain.data_ptr<float>(),
       dendrite.data_ptr<float>(), drive.data_ptr<float>(),
       glutamate.has_value() ? glutamate->data_ptr<float>() : nullptr,
       inhibition.data_ptr<float>(), ngf.data_ptr<float>(),
@@ -258,7 +260,7 @@ __global__ void deliver_buf_kernel(
     const bool* __restrict__ typed_pre, const int64_t* __restrict__ cell_type, int64_t kinds,
     const float* __restrict__ stp_u4, const float* __restrict__ stp_x4, const float* __restrict__ stp_U4,
     const bool* __restrict__ is_lamp5, const float* __restrict__ ngf_d, float lamp5_scale, int64_t lamp5_kind,
-    const float* __restrict__ stp_x, const float* __restrict__ inh_gain,
+    const float* __restrict__ stp_x, const float* __restrict__ stp_u_cell, const float* __restrict__ inh_gain,
     float* __restrict__ dendrite, float* __restrict__ drive, float* __restrict__ glutamate,
     float* __restrict__ inhibition, float* __restrict__ ngf) {
   const int64_t end = events_total(total, capacity);
@@ -288,7 +290,9 @@ __global__ void deliver_buf_kernel(
       w *= gain;
     } else if (!(flags & 4)) {
       // Бит 2 — путь без истощения (другой выход клетки с депрессией пути).
-      w *= stp_x[pre];
+      // Сила спайка — ресурс до выброса: ресурс тратится в конце шага
+      // спайка (engine._step), доставка — на следующем, x_до = x / (1 − U).
+      w *= stp_x[pre] / (1.0f - stp_u_cell[pre]);
     }
     if (w < 0.0f) {
       w *= inh_gain[post];
@@ -351,7 +355,7 @@ void deliver_buf(torch::Tensor synapses, torch::Tensor pre_of, torch::Tensor tot
              torch::Tensor typed_pre, torch::Tensor cell_type, int64_t kinds,
              torch::Tensor stp_u4, torch::Tensor stp_x4, torch::Tensor stp_U4,
              torch::Tensor is_lamp5, torch::Tensor ngf_d, double lamp5_scale, int64_t lamp5_kind,
-             torch::Tensor stp_x, torch::Tensor inh_gain,
+             torch::Tensor stp_x, torch::Tensor stp_u_cell, torch::Tensor inh_gain,
              torch::Tensor dendrite, torch::Tensor drive, c10::optional<torch::Tensor> glutamate,
              torch::Tensor inhibition, torch::Tensor ngf) {
   auto stream = at::cuda::getCurrentCUDAStream();
@@ -365,7 +369,7 @@ void deliver_buf(torch::Tensor synapses, torch::Tensor pre_of, torch::Tensor tot
       typed_pre.data_ptr<bool>(), cell_type.data_ptr<int64_t>(), kinds,
       stp_u4.data_ptr<float>(), stp_x4.data_ptr<float>(), stp_U4.data_ptr<float>(),
       is_lamp5.data_ptr<bool>(), ngf_d.data_ptr<float>(), (float)lamp5_scale, lamp5_kind,
-      stp_x.data_ptr<float>(), inh_gain.data_ptr<float>(),
+      stp_x.data_ptr<float>(), stp_u_cell.data_ptr<float>(), inh_gain.data_ptr<float>(),
       dendrite.data_ptr<float>(), drive.data_ptr<float>(),
       glutamate.has_value() ? glutamate->data_ptr<float>() : nullptr,
       inhibition.data_ptr<float>(), ngf.data_ptr<float>());

@@ -7,7 +7,7 @@ homeostasis_update): мозг живёт с пустым экраном окна
 на замерах выключен — сдвиг заморожен).
 
     PYTHONPATH=. python tools/develop.py [seconds=60] [win=1000] [seed=42] [fit=lgn-a]
-        [relay_v_t_mv=-59] [trn_scale=0.5] [out=lgn-b-s1] [every=10] [scope=cell|population]
+        [relay_v_t_mv=-59] [trn_scale=0.5] [out=lgn-c-s1] [every=10] [scope=cell|population]
 
 scope=population — общий шаг популяции (cfg.homeostasis_scope): разброс
 клеток остаётся от проводки; в отчёте — распределение частот клеток зрительных

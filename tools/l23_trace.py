@@ -1,6 +1,6 @@
 """
 Где буква теряется между V1 L4 и V1 L2/3 мозга (замер, без вмешательства;
-мозг как в letters_dc: LGN A, гомеостаз lgn-b, без пластичности). На каждом
+мозг как в letters_dc: LGN A, гомеостаз lgn-c, без пластичности). На каждом
 показе буквы для каждой клетки V1 L2/3 E копятся:
   - вход каждого пути в клетку (Σ вес × частота источника за окно, мВ·Гц
     — мера поставки, без кратковременной пластичности коры);
@@ -32,7 +32,7 @@ WIN = 10.0
 
 def main(opts: dict) -> None:
     seed = int(opts.get("seed", 1))
-    opts = {"fit": "lgn-a", "homeo": f"lgn-b-s{seed}", "relay_v_t_mv": "-59", "trn_scale": "0.1", **opts}
+    opts = {"fit": "lgn-a", "homeo": f"lgn-c-s{seed}", "relay_v_t_mv": "-59", "trn_scale": "0.1", **opts}
     mind, b = build(opts)
     cfg = b.cfg
     s = Session(mind, window_ms=WIN)

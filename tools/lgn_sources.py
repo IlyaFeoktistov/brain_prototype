@@ -33,7 +33,7 @@ WIN = 10.0
 
 def main(opts: dict) -> None:
     seed = int(opts.get("seed", 1))
-    opts = {"fit": "lgn-a", "homeo": f"lgn-b-s{seed}", "relay_v_t_mv": "-59",
+    opts = {"fit": "lgn-a", "homeo": f"lgn-c-s{seed}", "relay_v_t_mv": "-59",
             "trn_scale": "0.1", **opts}
     mind, b = build(opts)
     cfg = b.cfg

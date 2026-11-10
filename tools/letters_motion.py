@@ -1,6 +1,6 @@
 """
 Движение глаза при фиксации и буквы (замер, мозг не меняется; мозг как в
-letters_dc, гомеостаз lgn-b). Вопрос (DESIGN, l4_inputs): ответ V1 L4 на
+letters_dc, гомеостаз lgn-c). Вопрос (DESIGN, l4_inputs): ответ V1 L4 на
 неподвижную букву — всплеск 0–50 мс, дальше вход гасит депрессия таламус →
 L4; у приматов при фиксации картинку сдвигают дрейф и микросаккады, и ответ
 V1 держится (Snodderly, Kagan & Gur 2001, https://doi.org/10.1017/S0952523801182118).
@@ -39,7 +39,7 @@ WIN = 10.0
 
 def main(opts: dict) -> None:
     seed = int(opts.get("seed", 1))
-    opts = {"fit": "lgn-a", "homeo": f"lgn-b-s{seed}", "relay_v_t_mv": "-59", "trn_scale": "0.1", **opts}
+    opts = {"fit": "lgn-a", "homeo": f"lgn-c-s{seed}", "relay_v_t_mv": "-59", "trn_scale": "0.1", **opts}
     mind, b = build(opts)
     s = Session(mind, window_ms=WIN)
     letters = opts.get("letters", "абвгдежзик")

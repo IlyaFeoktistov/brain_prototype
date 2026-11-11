@@ -1,6 +1,6 @@
 """
 Почему V1 L2/3 E слабо передаёт букву (замер, без вмешательства; мозг как в
-letters_dc: LGN A, гомеостаз lgn-c, без пластичности). Буква занимает малую
+letters_dc: LGN A, гомеостаз lgn-d, без пластичности). Буква занимает малую
 часть поля V1 (экран 16 × 56, буква ~6 × 10 px), поэтому доли считаются по
 месту поля клетки: «на букве» — в квадрате 3 × 3 px вокруг места клетки
 есть чернила (на этом показе), «рядом» — чернила в 7 × 7, но не в 3 × 3,
@@ -39,7 +39,7 @@ PARTS = ("пауза", "0–50", "50–350")
 
 def main(opts: dict) -> None:
     seed = int(opts.get("seed", 1))
-    opts = {"fit": "lgn-a", "homeo": f"lgn-c-s{seed}", "relay_v_t_mv": "-59", "trn_scale": "0.1", **opts}
+    opts = {"fit": "lgn-a", "homeo": f"lgn-d-s{seed}", "relay_v_t_mv": "-59", "trn_scale": "0.1", **opts}
     mind, b = build(opts)
     cfg = b.cfg
     s = Session(mind, window_ms=WIN)

@@ -9,7 +9,8 @@
 доставленный ток в V1 L4 E — прирост i_syn за шаг (/ syn_scale). Сила
 спайка = ток / Σ w входов от этих клеток; сверка — ресурс до выброса,
 посчитанный отдельно (x += (1 − x)·dt/τ каждый шаг; на спайке записать x,
-затем x −= U·x). Старый счёт (ресурс после выброса) дал бы ×(1 − U).
+затем x −= U·x; у пути из cfg.nucleus_ca — точное решение модели с кальцием,
+tools/tc_calcium.exact_ca). Старый счёт (ресурс после выброса) дал бы ×(1 − U).
 
     PYTHONPATH=. .venv/bin/python tools/nucleus_delivery.py [device=cuda|cpu] [path=torch] [pause=1000] [warm=200] [n=50] [save=файл]
 """
@@ -56,10 +57,15 @@ def main(opts: dict) -> None:
     b.clamp_mask.fill_(True)
     b.clamp_now.zero_()
     b.stp_x.fill_(1.0)
+    if b.ca_on:
+        b.stp_ca.copy_(b.ca_params[:, 0])
     b.recompile()
     for _ in range(int(opts.get("warm", 200))):
         b._step(torch.zeros_like(b.ear_input[0]), False)
     b.stp_x.fill_(1.0)
+    if b.ca_on:
+        b.stp_ca.copy_(b.ca_params[:, 0])
+    ca = next(((p0, kmax, k0r, tca) for s, d, p0, kmax, k0r, tca in cfg.nucleus_ca if (s, d) == ("lgn", "visual")), None)
 
     dt = cfg.dt_ms
     gap = round(20.0 / dt)
@@ -84,6 +90,13 @@ def main(opts: dict) -> None:
         if abs(arrived) > 1e-6 * W:
             got.append((t, arrived / W))
 
+    if ca is not None:
+        # Восстановление с кальцием (cfg.nucleus_ca): сверка — точное решение
+        # между спайками (tools/tc_calcium.exact_ca, Cimenser & Miller 2014, уравнения 9–10).
+        from tools import tc_calcium
+        tc_calcium.CA.update(p0=ca[0], kmax=ca[1] / 1000.0, k0_ratio=ca[2], tau_ca=ca[3])
+        expect = tc_calcium.exact_ca([t * dt for t in fire])
+        print(f"кальций: p0 {ca[0]}, k_max {ca[1]} с⁻¹, k0/k_max {ca[2]}, τ_Ca {ca[3]} мс")
     print(f"U {U}, τ {tau:.0f} мс; Σ w входов от {n} клеток в L4 E {W:.2f} мВ")
     print("спайк: шаг выстрела → шаг прихода, сила по движку / ресурс до выброса (отношение)")
     for k, (t_f, e) in enumerate(zip(fire, expect)):

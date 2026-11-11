@@ -1,6 +1,6 @@
 """
 Из чего ответ клетки V1 L4 E на штрих в своём поле (замер, без
-вмешательства; мозг как в letters_dc, гомеостаз lgn-c). Продолжение
+вмешательства; мозг как в letters_dc, гомеостаз lgn-d). Продолжение
 tools/l4_response.py: клетка со штрихом в поле прибавляет ~1 Гц — какой
 вход гасит ответ.
 
@@ -38,7 +38,7 @@ WIN = 10.0
 
 def main(opts: dict) -> None:
     seed = int(opts.get("seed", 1))
-    opts = {"fit": "lgn-a", "homeo": f"lgn-c-s{seed}", "relay_v_t_mv": "-59", "trn_scale": "0.1", **opts}
+    opts = {"fit": "lgn-a", "homeo": f"lgn-d-s{seed}", "relay_v_t_mv": "-59", "trn_scale": "0.1", **opts}
     mind, b = build(opts)
     cfg = b.cfg
     s = Session(mind, window_ms=WIN)

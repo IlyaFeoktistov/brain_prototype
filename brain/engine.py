@@ -692,6 +692,40 @@ class SpikingBrain:
                 cells = self.areas[src].E.slice
                 self.stp_u_cell[cells] = U
                 self.stp_recover[cells] = dt / tau_rec
+        # Восстановление, ускоряемое кальцием (cfg.nucleus_ca): у клеток этих
+        # источников U = p0, постоянного восстановления нет — его считает
+        # _step по кальцию (точное решение за шаг, Cimenser & Miller 2014,
+        # уравнение 10). Кальций в единицах прироста на спайк.
+        stp_paths = {(src, dst): (U, tau) for src, dst, U, tau in cfg.nucleus_stp}
+        ca_cells, ca_params = [], []
+
+        for src, dst, p0, kmax_hz, k0_ratio, tau_ca in cfg.nucleus_ca:
+            if (src, dst) not in stp_paths:
+                raise ValueError(f"nucleus_ca: путь {src} -> {dst} не в nucleus_stp")
+
+            if sum(1 for s, *_ in cfg.nucleus_stp if s == src) != 1:
+                # Состояние — у клетки-источника: разные пути одной клетки
+                # с разной депрессией так не описать.
+                raise ValueError(f"nucleus_ca: у {src} несколько путей с депрессией — ресурс у клетки один")
+
+            if src in self.areas:
+                cells = self.areas[src].E
+                self.stp_u_cell[cells.slice] = p0
+                self.stp_recover[cells.slice] = 0.0
+                rest = 1.0 / (1.0 / k0_ratio - 1.0)
+                kmax = kmax_hz / 1000.0
+                k0 = kmax * rest / (rest + 1.0)
+                ca_cells.append(torch.arange(cells.start, cells.start + cells.size, device=self.device))
+                ca_params.append(torch.tensor([[rest, k0 * dt, tau_ca * (kmax - k0), math.exp(-dt / tau_ca)]],
+                                              device=self.device).expand(cells.size, 4))
+
+        self.ca_on = bool(ca_cells)
+
+        if self.ca_on:
+            self.ca_cells = torch.cat(ca_cells)
+            # Столбцы: Ca покоя, k0·dt, τ_Ca·(k_max − k0), спад за шаг.
+            self.ca_params = torch.cat(ca_params).contiguous()
+            self.stp_ca = self.ca_params[:, 0].clone()
         self.decay_inh_gain = math.exp(-dt / cfg.inh_gain_tau_ms)
         self.decay_adapt = math.exp(-dt / cfg.e_adapt_tau)
         self.decay_plus = math.exp(-dt / cfg.stdp_tau_plus)
@@ -3123,6 +3157,16 @@ class SpikingBrain:
         self.adapt.mul_(self.decay_adapt).add_(self.adapt_b * self.spikes)
         # Ресурс путей ядер с депрессией восстанавливается к 1, спайк тратит
         # долю stp_u_cell (nucleus_stp).
+        if self.ca_on:
+            # Восстановление, ускоряемое кальцием (cfg.nucleus_ca): за шаг
+            # 1 − x множится на exp(−k0·dt − τ_Ca·(k_max − k0)·ln((1 + Ca)/(1 + Ca′))),
+            # Ca′ — кальций в конце шага; затем выброс (ниже, U = p0) и +1 Ca на спайк.
+            rest, k0dt, gain, decay = self.ca_params.unbind(1)
+            ca_next = rest + (self.stp_ca - rest) * decay
+            x = self.stp_x.index_select(0, self.ca_cells)
+            x = 1.0 - (1.0 - x) * torch.exp(-k0dt - gain * torch.log((1.0 + self.stp_ca) / (1.0 + ca_next)))
+            self.stp_x.index_copy_(0, self.ca_cells, x)
+            self.stp_ca.copy_(ca_next + self.spikes.index_select(0, self.ca_cells))
         self.stp_x.add_((1.0 - self.stp_x) * self.stp_recover)
         self.stp_x.sub_(self.stp_u_cell * self.stp_x * self.spikes)
         # Усиление торможения: каждый спайк E поднимает, медленно
@@ -3669,7 +3713,7 @@ class SpikingBrain:
     _DYNAMIC = (
         "v", "i_syn", "i_inh", "i_ngf", "ngf_mf", "i_nmda", "nmda_mf", "i_dend", "adapt", "refractory", "spikes",
         "trace_pre", "trace_pre_rise", "ltp_kernel", "trace_post", "counts", "eligibility",
-        "eligibility_scale", "dropped", "bias", "t_h", "kick_current", "kick_left", "stp_x", "stp_u4", "stp_x4", "inh_gain",
+        "eligibility_scale", "dropped", "bias", "t_h", "kick_current", "kick_left", "stp_x", "stp_ca", "stp_u4", "stp_x4", "inh_gain",
         "chemistry", "tick", "mf_rate", "v_t", "dc_pre", "dc_post1", "dc_post2",
     )
 

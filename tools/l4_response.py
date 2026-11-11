@@ -1,6 +1,6 @@
 """
 Ответ клеток V1 L4 E мозга на штрих в своём поле (замер, без вмешательства;
-мозг как в letters_dc, гомеостаз lgn-c). Вопрос: L4 отвечает на букву
+мозг как в letters_dc, гомеостаз lgn-d). Вопрос: L4 отвечает на букву
 слабо или кодирует её разреженно (какие клетки, а не сколько спайков).
 
 Поле клетки L4 — её входы от реле LGN (путь lgn -> visual.L4.E), у реле —
@@ -33,7 +33,7 @@ from tools.reading_bench import build
 
 def main(opts: dict) -> None:
     seed = int(opts.get("seed", 1))
-    opts = {"fit": "lgn-a", "homeo": f"lgn-c-s{seed}", "relay_v_t_mv": "-59", "trn_scale": "0.1", **opts}
+    opts = {"fit": "lgn-a", "homeo": f"lgn-d-s{seed}", "relay_v_t_mv": "-59", "trn_scale": "0.1", **opts}
     mind, b = build(opts)
     cfg = b.cfg
     s = Session(mind, window_ms=10.0)

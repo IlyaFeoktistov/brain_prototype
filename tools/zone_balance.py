@@ -16,7 +16,7 @@ inh_gain. Пути — по группам: таламус (ядра с депр
 i_inh, i_ngf; среднее поле — та же оценка). У таламических путей — частота
 и ресурс источника, входов на клетку, средний вес.
 
-    PYTHONPATH=. .venv/bin/python tools/zone_balance.py [pops=…] [seconds=2] [seed=1] [homeo=lgn-c-s1]
+    PYTHONPATH=. .venv/bin/python tools/zone_balance.py [pops=…] [seconds=2] [seed=1] [homeo=lgn-d-s1]
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ def population(b, key: str):
 
 def main(opts: dict) -> None:
     seed = int(opts.get("seed", 1))
-    opts = {"fit": "lgn-a", "homeo": f"lgn-c-s{seed}", "relay_v_t_mv": "-59", "trn_scale": "0.1", **opts}
+    opts = {"fit": "lgn-a", "homeo": f"lgn-d-s{seed}", "relay_v_t_mv": "-59", "trn_scale": "0.1", **opts}
     mind, b = build(opts)
     cfg = b.cfg
     s = Session(mind, window_ms=WIN)

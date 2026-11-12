@@ -1636,6 +1636,8 @@ class SpikingBrain:
         # Входы клетки колонки, которые в модели есть явно (таламус, другие
         # колонки): их вычитают из внешнего входа (_external_minus_modeled).
         self.modeled_inputs: dict[str, float] = {}
+        # Недостающие таламические входы своими событиями (cfg.tc_missing_independent): (популяция, реле [n, k], недостающих, вес).
+        self.tc_missing: list = []
 
         # ---- проводящие пути между зонами ----
         # Сколько врождённых путей между колонками входит в каждую популяцию:
@@ -1887,7 +1889,12 @@ class SpikingBrain:
                     built = pre.shape[1]
                     w = psp / self._psp_peak(pop)
 
-                    if sensor.wiring in ("oriented", "tonotopic"):
+                    if sensor.wiring == "oriented" and cfg.tc_missing_independent:
+                        # Недостающие — своими событиями (cfg.tc_missing_independent):
+                        # построенные с весом по данным, остальное — _tc_missing.
+                        self.tc_missing.append((pop, (pre + relay.E.start).long(), max(0.0, k_data - built), w))
+                        scale = 1.0
+                    elif sensor.wiring in ("oriented", "tonotopic"):
                         # Все таламические входы клетки — из её места поля (у слуха — её полосы)
                         # (ретинотопия): недостающие видят то же, что её
                         # построенные, — их несут сами построенные (вес ×
@@ -2746,6 +2753,8 @@ class SpikingBrain:
         z = lambda: torch.zeros(self.n_slots, device=self.device)
 
         self.v = cfg.v_rest + self._uniform((self.n_slots,), 0.0, 10.0)
+        # Сглаженная частота (1/мс) — начало с частоты реле in vivo (anatomy.RATES_HZ, LGN 10 Гц).
+        self.tc_rate = torch.full((self.n_slots,), 0.01, device=self.device) if self.tc_missing else None
         if getattr(self, "bg_mode", "independent") in ("network", "network_local", "network_gray"):
             # Частоты E группы (Гц): начало — одинаковое, множитель 1.
             self.bg_fast = torch.full((self.bg_groups + 1,), 2.0, device=self.device)
@@ -3137,6 +3146,15 @@ class SpikingBrain:
                     (ltd * (sign / self.eligibility_scale)).to(self.eligibility.dtype),
                 )
 
+        if self.tc_missing:
+            # Недостающие таламические входы (cfg.tc_missing_independent):
+            # независимый пуассон каждой клетки, частота — её построенных реле
+            # (сглажена), сила — вес × ресурс реле.
+            for pop, pre, n_missing, w in self.tc_missing:
+                rate = self.tc_rate.index_select(0, pre.flatten()).view(pre.shape).mean(1)
+                resource = self.stp_x.index_select(0, pre.flatten()).view(pre.shape).mean(1)
+                count = torch.poisson(n_missing * rate * cfg.dt_ms)
+                drive[pop.slice] += count * w * resource
         self.i_syn.mul_(self.decay_syn).add_(drive * self.syn_scale)
         self.i_inh.mul_(self.decay_syn_inh).add_(inhibition * self.syn_scale_inh)
         self.i_ngf.mul_(self.decay_ngf).add_(ngf * self.ngf_scale)
@@ -3279,6 +3297,9 @@ class SpikingBrain:
             x = 1.0 - (1.0 - x) * torch.exp(-k0dt - gain * torch.log((1.0 + self.stp_ca) / (1.0 + ca_next)))
             self.stp_x.index_copy_(0, self.ca_cells, x)
             self.stp_ca.copy_(ca_next + self.spikes.index_select(0, self.ca_cells))
+        if self.tc_missing:
+            # Сглаженная частота клеток (1/мс) — для недостающих таламических входов.
+            self.tc_rate.add_((self.spikes.float() / cfg.dt_ms - self.tc_rate) * (cfg.dt_ms / cfg.tc_missing_tau_ms))
         self.stp_x.add_((1.0 - self.stp_x) * self.stp_recover)
         self.stp_x.sub_(self.stp_u_cell * self.stp_x * self.spikes)
         # Усиление торможения: каждый спайк E поднимает, медленно

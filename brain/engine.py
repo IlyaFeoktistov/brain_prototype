@@ -2307,6 +2307,11 @@ class SpikingBrain:
         self.clopath = [p for p in self.projections if p.name in self.cfg.clopath_paths]
         for p in self.clopath:
             p.plastic = False
+        # Пути с обучением по учителю (cfg.us_paths): веса меняет _us, STDP их не трогает.
+        self.us = [p for p in self.projections if p.name in self.cfg.us_paths]
+        for p in self.us:
+            p.plastic = False
+            p.us_mean = float(p.weight.mean())
         # Пути блока Diehl & Cook (cfg.dc_paths): веса меняет _dc, STDP их не трогает.
         self.dc = [p for p in self.projections if p.name in self.cfg.dc_paths]
         for p in self.dc:
@@ -2782,6 +2787,12 @@ class SpikingBrain:
                 self.dc_post[p.post.slice] = True
             self.v_t_base = self.v_t.clone()
         self.dc_on = False
+        # Обучение с учителем (cfg.us_*, _us) и сам учитель (зажим спайков группы).
+        self.us_on = False
+        self.teach_on = False
+        self.teach_pop = torch.zeros(self.n_slots, dtype=torch.bool, device=self.device)
+        self.teach_target = torch.zeros(self.n_slots, dtype=torch.bool, device=self.device)
+        self.us_x = z() if getattr(self, "us", None) else None
         branches = max(1, cfg.dendrite_branches)
         self.tick = torch.zeros(1, dtype=torch.long, device=self.device)
         # Кольцо задержек путей (cfg.path_delays): [шаг, вход (возб, торм,
@@ -3272,6 +3283,12 @@ class SpikingBrain:
 
         if self.clamp_on:
             fired = torch.where(self.clamp_mask, self.clamp_now, fired)
+
+        if self.teach_on:
+            # Учитель (Legenstein et al. 2005; Urbanczik & Senn 2014 — ток на сому):
+            # группа буквы стреляет пуассоном teacher_hz, прочие учимые — молчат.
+            taught = self.teach_target & (torch.rand(self.n_slots, device=self.device) < cfg.teacher_hz * cfg.dt_ms / 1000.0)
+            fired = torch.where(self.teach_pop, taught, fired)
         self.spikes.copy_(fired)
         # Выброс веществ ядрами: доля выстреливших клеток каждого ядра.
         released = (self.chemistry_source @ self.spikes).to(torch.float64)
@@ -3353,6 +3370,9 @@ class SpikingBrain:
 
         if self.dc_on:
             self._dc()
+
+        if self.us_on:
+            self._us()
 
         self.trace_pre.mul_(self.decay_plus).add_(self.spikes)
         self.trace_pre_rise.mul_(self.decay_rise).add_(self.spikes)
@@ -3449,6 +3469,25 @@ class SpikingBrain:
             self.cl_ltp.add_(up.sum() * p.innate_mean)
             self.cl_ltd.add_(down.sum() * p.innate_mean)
             p.weight.add_((up - down) * p.innate_mean).clamp_(0.0, p.cap)
+
+    def _us(self) -> None:
+        """
+        Шаг обучения с учителем на путях self.us (cfg.us_*): ΔW = η · mean_w ·
+        (S − φ(V)·dt) · x_пре; S — спайк клетки на этом шаге (на учёбе —
+        навязанный учителем), φ(V) = us_max / (1 + exp(−(V − v_t)/наклон)),
+        x_пре — след спайков входа (τ us_tau_pre_ms); вес в [0, cap].
+        """
+
+        cfg = self.cfg
+        dt = cfg.dt_ms
+        self.us_x.mul_(math.exp(-dt / cfg.us_tau_pre_ms)).add_(self.spikes)
+
+        for p in self.us:
+            post = slice(p.post.start, p.post.stop)
+            phi = cfg.us_max_khz * torch.sigmoid((self.v[post] - self.v_t[post]) / cfg.us_slope_mv)
+            err = self.spikes[post] - phi * dt
+            x = self.us_x.index_select(0, p.pre.flatten()).view(p.pre.shape)
+            p.weight.add_((cfg.us_eta * p.us_mean) * err[:, None] * x).clamp_(0.0, p.cap)
 
     def _dc(self) -> None:
         """
@@ -3562,7 +3601,7 @@ class SpikingBrain:
         use_graph = self.device.type == "cuda"
         self.set_clock()
 
-        key = (self.plasticity, self.dc_on)
+        key = (self.plasticity, self.dc_on, self.us_on, self.teach_on)
 
         if use_graph and key not in self._graphs:
             self._graphs[key] = self._capture(self.plasticity)

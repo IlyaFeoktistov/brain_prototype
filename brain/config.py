@@ -795,6 +795,24 @@ class BrainConfig:
     dc_tau_post2_ms: float = 40.0
     dc_theta_mv: float = 0.05
     dc_theta_tau_ms: float = 1e7
+    # Обучение с учителем на путях us_paths (engine._us): ΔW = η (S − φ(V)) ·
+    # след пре — точечная форма правила (Pfister, Toyoizumi, Barber & Gerstner
+    # 2006, https://doi.org/10.1162/neco.2006.18.6.1318), из которой Urbanczik &
+    # Senn 2014 (https://doi.org/10.1016/j.neuron.2013.11.030) вывели
+    # дендритную: S — спайки клетки (на учёбе навязаны учителем), φ(V) —
+    # частота, предсказанная её мембраной (сигмоида у порога v_t, наклон
+    # us_slope_mv, максимум us_max_khz на мс), след пре τ us_tau_pre_ms; шаг
+    # us_eta — доля среднего врождённого веса пути. Офлайн на записях V1
+    # (letters_offline rule=us, DESIGN 2026-11-12): учит буквы без учителя на
+    # проверке; η 0.03 — скорость (300 показов вместо 900), не подбор под
+    # точность. Включается us_on движка; учитель — teach_on (teach_pop:
+    # кого учат, teach_target: кому стрелять teacher_hz, прочим teach_pop — молчать).
+    us_paths: tuple[str, ...] = ()
+    us_eta: float = 0.03
+    us_max_khz: float = 0.1
+    us_slope_mv: float = 2.0
+    us_tau_pre_ms: float = 20.0
+    teacher_hz: float = 40.0
     # След для третьего фактора живёт ~1 с: дофамин действует, если пришёл
     # в 0.3–2 с после пары спайков (Yagishita et al. 2014).
     eligibility_tau: float = 1000.0

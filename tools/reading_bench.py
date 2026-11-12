@@ -79,6 +79,10 @@ def build(opts: dict):
         # tc_indep=0 — прежняя проводка как контроль; tc_tau — сглаживание частоты).
         cfg.tc_missing_independent = opts["tc_indep"] != "0"
         cfg.tc_missing_tau_ms = float(opts.get("tc_tau", cfg.tc_missing_tau_ms))
+    if opts.get("us"):
+        # Обучение с учителем на путях (cfg.us_paths, engine._us); шаг — us_eta.
+        cfg.us_paths = tuple(opts["us"].split(","))
+        cfg.us_eta = float(opts.get("us_eta", cfg.us_eta))
     if opts.get("tonic"):
         # Постоянная тормозная проводимость (cfg.tonic_inh_g): зона.слой.тип:g, через запятую.
         cfg.tonic_inh_g = tuple((*k.split("."), float(g)) for k, g in (e.split(":") for e in opts["tonic"].split(",")))

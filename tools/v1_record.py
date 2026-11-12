@@ -11,8 +11,12 @@
 Пишет: по показу спайки [n, 2] (шаг от начала окна, индекс клетки V1 L2/3 E),
 метки, сдвиги; входы пути visual -> letters (источники V1 L2/3 E на клетку букв
 L4 E, врождённые веса, мВ) и место клеток букв на карте (столбец поля).
+chain=1 — те же показы ещё для реле LGN и V1 L4 E (extra[имя]: спайки по
+показам, как spikes) и пустой экран blank с до показов (blank[имя]: счёт
+спайков клеток) — для сверки цепочки LGN → V1 L4 → L2/3 (tools/v1_response.py
+pop=).
 
-    PYTHONPATH=. .venv/bin/python tools/v1_record.py [letters=абвгдежзик] [trials=30] [rest=150] [show=350] [seed=1] out=файл.pt
+    PYTHONPATH=. .venv/bin/python tools/v1_record.py [letters=абвгдежзик] [trials=30] [rest=150] [show=350] [seed=1] [chain=0] [blank=20] out=файл.pt
 """
 
 from __future__ import annotations
@@ -48,28 +52,49 @@ def main(opts: dict) -> None:
     pre = path.pre.long().cpu() - src.start
     assert int(pre.min()) >= 0 and int(pre.max()) < src.size
 
-    def step_run(view: torch.Tensor) -> list[torch.Tensor]:
-        out = []
+    chain = opts.get("chain", "0") == "1"
+    pops = {"V1 L2/3": src}
+    if chain:
+        pops.update({"LGN": b.areas["lgn"].E, "V1 L4": b.areas["visual"].layers["L4"]["E"]})
+
+    def step_run(view: torch.Tensor) -> dict[str, list[torch.Tensor]]:
+        out = {k: [] for k in pops}
         for t in range(view.shape[0]):
             b.run(cfg.dt_ms, view[t:t + 1])
-            out.append(b.spikes[src.slice].nonzero()[:, 0].cpu())
+            for k, pop in pops.items():
+                out[k].append(b.spikes[pop.slice].nonzero()[:, 0].cpu())
         return out
 
     s.line, s.gaze = "", 0.0
     t0 = time.time()
     b.run(2500.0, s._blank(2500.0))
+    blank = {}
+    if chain:
+        # Пустой экран: счёт спайков каждой клетки за blank с (молчащие).
+        sec = float(opts.get("blank", 20))
+        b.counts.zero_()
+        b.run(sec * 1000.0, s._blank(sec * 1000.0))
+        blank = {k: b.counts[pop.slice].cpu().clone() for k, pop in pops.items()}
+        blank["seconds"] = sec
+        print(f"пустой экран {sec:.0f} с: " + ", ".join(
+            f"{k} молчат {float((v == 0).float().mean()):.1%}, медиана {float(v.median()) / sec:.2f} Гц"
+            for k, v in blank.items() if k != "seconds"), flush=True)
     order = torch.arange(len(letters)).repeat(trials)
     order = order[torch.randperm(len(order), generator=gen)]
     spikes, shifts = [], []
+    extra = {k: [] for k in pops if k != "V1 L2/3"}
     for j, k in enumerate(order.tolist()):
         s.line = ""
         steps = step_run(s._blank(rest))
         shift = int(torch.randint(-1, 2, (1,), generator=gen))
         s.line, s.gaze = letters[k], s.screen.width(letters[k]) / 2 + shift
-        steps += step_run(s._view(show))
+        more = step_run(s._view(show))
         s.line = ""
-        rows = [torch.stack([torch.full_like(c, t), c], 1) for t, c in enumerate(steps) if len(c)]
-        spikes.append((torch.cat(rows) if rows else torch.zeros(0, 2, dtype=torch.long)).to(torch.int32))
+        for name in pops:
+            seq = steps[name] + more[name]
+            rows = [torch.stack([torch.full_like(c, t), c], 1) for t, c in enumerate(seq) if len(c)]
+            x = (torch.cat(rows) if rows else torch.zeros(0, 2, dtype=torch.long)).to(torch.int32)
+            (spikes if name == "V1 L2/3" else extra[name]).append(x)
         shifts.append(shift)
         if (j + 1) % 20 == 0:
             n_rest = int(round(rest / cfg.dt_ms))
@@ -81,7 +106,8 @@ def main(opts: dict) -> None:
                 "dt_ms": cfg.dt_ms, "rest_ms": rest, "show_ms": show, "n_src": src.size,
                 "pre": pre.to(torch.int32), "weight": path.weight.float().cpu(), "cap": float(path.cap),
                 "field_col": b.field_cols[post.name].cpu(), "fovea_col": float(cfg.fovea_col),
-                "seed": seed}, opts["out"])
+                "seed": seed, "extra": extra, "sizes": {k: p.size for k, p in pops.items()}, "blank": blank,
+                "homeo": opts["homeo"]}, opts["out"])
     print(f"записано {len(order)} показов → {opts['out']}, {time.time() - t0:.0f} с", flush=True)
 
 

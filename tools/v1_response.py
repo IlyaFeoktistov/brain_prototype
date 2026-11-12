@@ -20,7 +20,11 @@
 - различение 10 букв по окнам (корреляция с центром буквы; центры — те же
   2/3 показов, проверка — оставшаяся 1/3).
 
-    PYTHONPATH=. .venv/bin/python tools/v1_response.py rec=файл.pt
+pop=LGN | V1 L4 | V1 L2/3 — популяция из записи v1_record chain=1 (по
+умолчанию V1 L2/3); если в записи есть пустой экран — доля клеток без
+единого спайка за него и медиана частоты.
+
+    PYTHONPATH=. .venv/bin/python tools/v1_response.py rec=файл.pt [pop="V1 L2/3"]
 """
 
 from __future__ import annotations
@@ -33,7 +37,16 @@ import torch
 def main(opts: dict) -> None:
     torch.set_num_threads(1)
     rec = torch.load(opts["rec"])
+    pop = opts.get("pop", "V1 L2/3")
+    if pop != "V1 L2/3":
+        rec["spikes"], rec["n_src"] = rec["extra"][pop], rec["sizes"][pop]
     n, L, dt = rec["n_src"], len(rec["letters"]), rec["dt_ms"]
+    blank = rec.get("blank") or {}
+    if pop in blank:
+        c, sec = blank[pop].float(), blank["seconds"]
+        q = torch.quantile(c / sec, torch.tensor([0.1, 0.5, 0.9]))
+        print(f"{pop}: пустой экран {sec:.0f} с — без единого спайка {float((c == 0).float().mean()):.1%}, "
+              f"частота 10/50/90% {float(q[0]):.2f} / {float(q[1]):.2f} / {float(q[2]):.2f} Гц")
     rest, show = rec["rest_ms"], rec["show_ms"]
     nr = int(round(rest / dt))
     y, shifts = rec["labels"], rec["shifts"]
@@ -46,7 +59,7 @@ def main(opts: dict) -> None:
 
     bg = torch.stack([torch.bincount(s[s[:, 0] < nr][:, 1].long(), minlength=n).float() for s in rec["spikes"]])
     bg_hz = bg.mean(0) / (rest / 1000)
-    print(f"V1 L2/3 E {n} клеток, {len(y)} показов; фон: медиана {float(bg_hz.median()):.2f} Гц, среднее "
+    print(f"{pop} {n} клеток, {len(y)} показов; фон: медиана {float(bg_hz.median()):.2f} Гц, среднее "
           f"{float(bg_hz.mean()):.2f}, без спайков за все паузы ({len(y) * rest / 1000:.0f} с) "
           f"{float((bg.sum(0) == 0).float().mean()):.1%}")
 

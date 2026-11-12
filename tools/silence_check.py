@@ -71,7 +71,9 @@ def main(opts: dict) -> None:
     # Проводимость входа в долях утечки: ток модели нормирован к точке замера PSP,
     # g_E/g_L = I_E / (E_AMPA − V_замера EPSP), g_I/g_L = |I_I| / (V_замера IPSP − E_ГАМК);
     # τ_эфф = τ_m / (1 + g_E + g_I). NMDA и плато дендрита не входят.
-    cond = {k: [torch.zeros(p.size, device=b.device) for _ in range(3)] for k, p in pops.items()}
+    # По каждой клетке: Σg_E, Σg_I, Σфон, Σg_E², Σg_I², Σg_E·g_I — среднее, СКО и корреляция E/I во времени.
+    cond = {k: [torch.zeros(p.size, device=b.device) for _ in range(6)] for k, p in pops.items()}
+    g_tr = {k: torch.zeros(steps, 2, n_tr, device=b.device) for k in pops}
     e_span = cfg.ampa_reversal_mv - cfg.epsp_holding_mv
     i_span = cfg.ipsp_holding_mv - cfg.gaba_reversal_mv
     view = s._blank(steps * dt)
@@ -98,9 +100,15 @@ def main(opts: dict) -> None:
             ge = (b.i_syn[p.slice] + b.last_dc_e[p.slice]) / e_span
             gi = (b.i_inh[p.slice] + b.i_ngf[p.slice] + b.last_dc_i[p.slice]).abs() / i_span
             bg = b.noise_mean[p.slice] / dt * b.noise_gain[p.slice] * b.tau_m[p.slice] / e_span
-            cond[k][0] += ge
-            cond[k][1] += gi
-            cond[k][2] += bg
+            c = cond[k]
+            c[0] += ge
+            c[1] += gi
+            c[2] += bg
+            c[3] += ge * ge
+            c[4] += gi * gi
+            c[5] += ge * gi
+            g_tr[k][t, 0] = ge[traced[k]]
+            g_tr[k][t, 1] = gi[traced[k]]
             traces[k][t] = v[traced[k]]
             fired[k][t] = b.spikes[p.slice][traced[k]]
     print(f"пустой экран {steps * dt / 1000:.1f} с, {time.time() - t0:.0f} с", flush=True)
@@ -170,9 +178,40 @@ def main(opts: dict) -> None:
         print(f"  корреляция частоты с близостью к порогу (−z): {float(r):+.2f}")
         print(f"  постоянные части, мВ (медиана; разброс 10–90%): внешний фон {q(ext_mean)} (СКО шага {float(ext_sd.median()):.2f}), "
               f"dc соседей {q(b.dc_mv[p.slice])}, bias+гомеостаз {q(b.bias[p.slice])}, v_t {q(vt)}")
-        ge, gi, gb = (c / steps for c in cond[k])
-        print(f"  проводимость входа / g_L (медиана; 10–90%): g_E {q(ge)} (из них внешний фон {q(gb)}), g_I {q(gi)}, "
-              f"g_I/g_E {q(gi / ge.clamp_min(1e-6))}; полная / покоя {q(1 + ge + gi)}, τ_эфф {q(tau / (1 + ge + gi))} мс (τ_m {tau:.1f})")
+        ge, gi, gb, ge2, gi2, gei = (c / steps for c in cond[k])
+        sde = (ge2 - ge ** 2).clamp_min(0).sqrt()
+        sdi = (gi2 - gi ** 2).clamp_min(0).sqrt()
+        rei = (gei - ge * gi) / (sde * sdi).clamp_min(1e-9)
+        q5 = lambda x: " / ".join(f"{float(v):.2f}" for v in torch.quantile(x.float(), torch.tensor([0.05, 0.5, 0.95], device=x.device)))
+        print(f"  проводимость входа / g_L по клеткам (5 / 50 / 95%): g_E среднее {q5(ge)} (внешний фон {q5(gb)}), СКО {q5(sde)}; "
+              f"g_I среднее {q5(gi)}, СКО {q5(sdi)}")
+        print(f"    g_I/g_E {q5(gi / ge.clamp_min(1e-6))}, СКО_I/СКО_E {q5(sdi / sde.clamp_min(1e-9))} "
+              f"(σ_e/σ_i ниже √((V_t−E_I)/(E_E−V_t)) = {((-50 - cfg.gaba_reversal_mv) / (cfg.ampa_reversal_mv + 50)) ** 0.5:.2f} — спайк по спаду торможения, Piwkowska 2008); "
+              f"корр. g_E–g_I во времени {q5(rei)}")
+        print(f"    полная / покоя {q5(1 + ge + gi)}, τ_эфф {q5(tau / (1 + ge + gi))} мс (τ_m {tau:.1f}); "
+              f"среднее по клеткам: g_E {float(ge.mean()):.2f}, g_I {float(gi.mean()):.2f}, СКО {float(sde.mean()):.3f} / {float(sdi.mean()):.3f}")
+        # STA проводимостей за 50 мс до спайка (traced клетки; спайки после ≥ 100 мс тишины, как Rudolph 2007),
+        # в долях g_L относительно своего среднего клетки.
+        gt, fr_t = g_tr[k], fired[k]
+        win = int(50 / dt)
+        quiet = int(100 / dt)
+        sums, n_sp = torch.zeros(win, 2, device=b.device), 0
+        mean_c = gt.mean(0)
+        idx = fr_t.nonzero()
+        last = torch.full((n_tr,), -10 ** 9, device=b.device, dtype=torch.long)
+        for t_s, c_s in idx.tolist():
+            ok_sp = t_s - int(last[c_s]) >= quiet and t_s >= win
+            last[c_s] = t_s
+            if ok_sp:
+                sums += gt[t_s - win:t_s, :, c_s] - mean_c[:, c_s]
+                n_sp += 1
+        if n_sp:
+            sta = sums / n_sp
+            pts = [50, 20, 10, 5, 2, 1]
+            row = lambda j: " ".join(f"{float(sta[win - int(ms / dt), j]):+.3f}" for ms in pts)
+            tot = sta[:, 0] + sta[:, 1]
+            print(f"    STA за {'/'.join(str(x) for x in pts)} мс до спайка ({n_sp} спайков после ≥100 мс тишины), Δ от среднего клетки: "
+                  f"g_E {row(0)}; g_I {row(1)}; полная {' '.join(f'{float(tot[win - int(ms / dt)]):+.3f}' for ms in pts)}")
 
 
 if __name__ == "__main__":

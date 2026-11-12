@@ -53,6 +53,16 @@ rule:
             перед показом; торможение как у авторов — спайк E тормозит все
             прочие E (dc_inh мВ), PV нет.
 
+Контроль реализации (pixels=1, DESIGN 2026-11-12): вместо записи V1 — цифры
+MNIST как у Diehl & Cook 2015: 784 пикселя → n_post клеток, все входы,
+пуассон с частотой яркость/8 × интенсивность (начало 2: яркость/4, до
+63.75 Гц), показ 350 мс, пауза 150 мс, начальные веса U(0, 0.3), сумма
+строки 78; если за показ меньше 5 спайков — интенсивность +1 и повтор (у
+авторов так и в учёбе, и в проверке). Правило — то же rule=dc этого файла.
+Опции условий авторов: tau_m (у них 100 мс), noise=0, fit=0 (без подбора
+сдвига), dc_inh (их торможение почти «победитель забирает всё»).
+
+    PYTHONPATH=. .venv/bin/python tools/letters_offline.py pixels=1 [images=6000] [post=400] rule=dc [tau_m=20] [noise=0] [fit=0] [dc_inh=…]
     PYTHONPATH=. .venv/bin/python tools/letters_offline.py rec=файл.pt [rule=native|vogels|clopath|dc] [shows=3000] [every=200] [noise=2.0] [seed=1] [threads=2] [device=cpu|cuda]
 """
 
@@ -77,11 +87,46 @@ def bins(spikes: torch.Tensor, steps: int, n: int, ratio: int) -> torch.Tensor:
     return x
 
 
+class _Lazy:
+    """Список показов, собираемых по запросу (пуассон пикселей заново при каждом обращении)."""
+
+    def __init__(self, fn, n: int):
+        self.fn, self.n = fn, n
+
+    def __getitem__(self, i: int) -> torch.Tensor:
+        return self.fn(int(i))
+
+    def __len__(self) -> int:
+        return self.n
+
+
+def mnist_rec(images: int, n_post: int, seed: int) -> dict:
+    """Запись в формате v1_record для контроля на MNIST (Diehl & Cook 2015): ~/.brain/mnist."""
+
+    import gzip
+    import os
+
+    root = os.path.expanduser("~/.brain/mnist")
+    with gzip.open(f"{root}/train-images-idx3-ubyte.gz") as f:
+        img = torch.frombuffer(bytearray(f.read()[16:]), dtype=torch.uint8).view(-1, 784)[:images].clone()
+    with gzip.open(f"{root}/train-labels-idx1-ubyte.gz") as f:
+        lab = torch.frombuffer(bytearray(f.read()[8:]), dtype=torch.uint8)[:images].long().clone()
+    g = torch.Generator().manual_seed(seed)
+    w = torch.rand(n_post, 784, generator=g) * 0.3
+    w = w * (78.0 / w.sum(1, keepdim=True))
+    return {"n_src": 784, "pre": torch.arange(784).expand(n_post, 784).clone(), "weight": w,
+            "dt_ms": 1.0, "rest_ms": 150.0, "show_ms": 350.0, "labels": lab, "letters": [str(k) for k in range(10)],
+            "spikes": None, "pixels": img, "cap": 1.0,
+            "field_col": torch.arange(n_post), "fovea_col": 0}
+
+
 def main(opts: dict) -> None:
     torch.set_num_threads(int(opts.get("threads", 2)))
     dev = opts.get("device", "cpu")
     torch.set_default_device(dev)
-    rec = torch.load(opts["rec"], map_location=dev)
+    rec = mnist_rec(int(opts.get("images", 6000)), int(opts.get("post", 400)), seed=int(opts.get("seed", 1))) \
+        if opts.get("pixels") else torch.load(opts["rec"], map_location=dev)
+    tau_m = float(opts.get("tau_m", TAU_M))
     rule = opts.get("rule", "native")
     seed = int(opts.get("seed", 1))
     gen = torch.Generator(device=dev).manual_seed(seed)
@@ -96,6 +141,20 @@ def main(opts: dict) -> None:
     labels, letters = rec["labels"], rec["letters"]
     L = len(letters)
     X = rec["spikes"]  # матрица показа собирается на лету (bins): плотные все — ~3 ГБ
+    pixels = rec.get("pixels")
+    intensity = [2.0]
+
+    def sample(i: int) -> torch.Tensor:
+        """Пуассон пикселей показа i (pixels=1): [k, 2] (мс, пиксель), только во время показа."""
+
+        rate = pixels[i].float() / 8.0 * intensity[0] / 1000.0  # на мс
+        n_show = int(rec["show_ms"])
+        hit = torch.rand(n_show, len(rate), generator=gen) < rate[None, :]
+        t, c = hit.nonzero().unbind(1)
+        return torch.stack([t + int(rec["rest_ms"]), c], 1)
+
+    if pixels is not None:
+        X = _Lazy(sample, len(labels))
 
     # Учёба / метки / проверка — свои записи у каждой буквы.
     split = {"train": [], "label": [], "test": []}
@@ -199,7 +258,7 @@ def main(opts: dict) -> None:
                 pv_count += spv.sum()
             elif rule == "dc" and len(fired):
                 inh = dc_inh * (len(fired) - s.float())
-            v = v + (V_REST + bias - v) * (DT / TAU_M) + noise * torch.randn(n_post) + drive - inh
+            v = v + (V_REST + bias - v) * (DT / tau_m) + noise * torch.randn(n_post) + drive - inh
             v = torch.where(ref > 0, torch.full_like(v, V_RESET), v)
             s = v >= V_TH + theta
             v[s] = V_RESET
@@ -265,7 +324,7 @@ def main(opts: dict) -> None:
     t0 = time.time()
     tr = split["train"]
     mix = torch.tensor(tr)[torch.randperm(len(tr), generator=gen)].tolist()
-    for it in range(15):
+    for it in range(15 if opts.get("fit", "1") != "0" else 0):
         c = torch.stack([run(X[mix[(it * 4 + q) % len(mix)]], False) for q in range(4)])
         hz = float(c.mean()) / (rec["show_ms"] / 1000)
         bias += 3.0 * math.log(1.7 / max(hz, 0.05))
@@ -275,10 +334,22 @@ def main(opts: dict) -> None:
             msg += f"; PV {pv_hz[0]:.1f} Гц, сдвиг {float(pv_bias):.1f} мВ"
         print(msg, flush=True)
 
+    def show(i: int, learn: bool) -> torch.Tensor:
+        """Показ i; у пикселей — правило авторов: меньше 5 спайков — ярче и повтор."""
+
+        if pixels is None:
+            return run(X[i], learn)
+        intensity[0] = 2.0
+        while True:
+            c = run(X[i], learn)
+            if c.sum() >= 5 or intensity[0] >= 12.0:
+                return c
+            intensity[0] += 1.0
+
     def measure(n_seen: int) -> None:
-        r_lab = torch.stack([run(X[i], False) for i in split["label"]])
+        r_lab = torch.stack([show(i, False) for i in split["label"]])
         y_lab = labels[split["label"]]
-        r_test = torch.stack([run(X[i], False) for i in split["test"]])
+        r_test = torch.stack([show(i, False) for i in split["test"]])
         y_test = labels[split["test"]]
         shuffle = y_lab[torch.randperm(len(y_lab), generator=gen)]
         z = lambda a: (a - a.mean(-1, keepdim=True)) / a.std(-1, keepdim=True).clamp_min(1e-9)
@@ -334,7 +405,7 @@ def main(opts: dict) -> None:
     for j in range(shows):
         if j % len(tr) == 0:
             order = torch.tensor(tr)[torch.randperm(len(tr), generator=gen)].tolist()
-        run(X[order[j % len(tr)]], True)
+        show(order[j % len(tr)], True)
         if (j + 1) % every == 0:
             measure(j + 1)
 

@@ -2665,6 +2665,16 @@ class SpikingBrain:
         self.bg_mode = cfg.background_mode
         dev = self.device
 
+        if cfg.background_scale != 1.0:
+            # Доза внешнего фона в зонах background_areas.
+            for name in cfg.background_areas:
+                area = self.areas.get(name)
+                if area is None or area.layers is None:
+                    continue
+                for _, pop in area.populations:
+                    self.noise_mean[pop.slice] *= cfg.background_scale
+            self.noise_std = self.noise_mean.sqrt()
+
         if self.bg_mode == "independent":
             return
 

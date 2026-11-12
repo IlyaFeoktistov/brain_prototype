@@ -74,6 +74,9 @@ def build(opts: dict):
         # Структура фона недостающих входов (cfg.background_mode; bg_patch — участок, px).
         cfg.background_mode = opts["bg"]
         cfg.background_patch_px = float(opts.get("bg_patch", cfg.background_patch_px))
+    if opts.get("bg_scale"):
+        # Доза внешнего фона (cfg.background_scale).
+        cfg.background_scale = float(opts["bg_scale"])
     if opts.get("ee_skip"):
         # Зоны без человеческой связности E → E (cfg.column_ee_human_skip).
         cfg.column_ee_human_skip = tuple(opts["ee_skip"].split(","))

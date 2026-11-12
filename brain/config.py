@@ -917,6 +917,10 @@ class BrainConfig:
     #               остальной мозг) — независимый фон, как "independent".
     # Зоны — background_areas; доля общей части в shared/local — background_shared.
     background_mode: str = "independent"
+    # Множитель средней частоты внешнего фона колонок зон background_areas
+    # (дозовый стенд, DESIGN 2026-11-12; разброс счёта — пуассоновский, ×√).
+    # 1 — как Potjans; флаг, не подбор.
+    background_scale: float = 1.0
     background_areas: tuple[str, ...] = ("visual",)
     background_shared: float = 1.0
     # Участок карты для "local", px [допущение: масштаб общих колебаний у

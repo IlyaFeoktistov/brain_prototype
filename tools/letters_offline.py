@@ -377,6 +377,10 @@ def main(opts: dict) -> None:
         f, f0 = F(r_lab, y_lab), F(r_lab, shuffle)
         sel = float((f > torch.quantile(f0, 0.95)).float().mean())
         (av, ac), (sv, sc) = acc(y_lab), acc(shuffle)
+        # Контроль случая: 100 перемешиваний меток (одно — слишком шумно: группа → метка
+        # совпадает случайно, каждое совпадение даёт ~1/L точности).
+        null = torch.tensor([acc(y_lab[torch.randperm(len(y_lab), generator=gen)])[0] for _ in range(100)])
+        null_msg = f", перемешано×100: среднее {float(null.mean()):.2f}, 95% {float(null.quantile(0.95)):.2f}"
         dw = float(((W - W0).abs() * mask).sum() / W0.sum())
         d = (W - W0)[:, near].T
         d = d[:, d.abs().sum(0) > 0]
@@ -390,7 +394,7 @@ def main(opts: dict) -> None:
                   f"частая буква у {share:.0%} клеток")
         print(f"после {n_seen} показов ({time.time() - t0:.0f} с): точность {av:.2f} / {ac:.2f} "
               f"(перемешано {sv:.2f} / {sc:.2f}), избирательных {sel:.0%}, спайков на показ "
-              f"{float(r_test.sum(1).mean()):.0f}, |Δw| {dw:.1%}, корр. Δw у ямки {float(off.median()):.2f}{extra}", flush=True)
+              f"{float(r_test.sum(1).mean()):.0f}, |Δw| {dw:.1%}, корр. Δw у ямки {float(off.median()):.2f}{extra}{null_msg}", flush=True)
 
     # Потолок входа: корреляция по счёту V1 L2/3 за букву (как letters_dc).
     v1 = lambda ids: torch.stack([bins(X[i], steps, n_src, ratio)[n_rest:].sum(0) for i in ids])
@@ -408,6 +412,9 @@ def main(opts: dict) -> None:
         show(order[j % len(tr)], True)
         if (j + 1) % every == 0:
             measure(j + 1)
+    if opts.get("out"):
+        # Веса и пороги после учёбы — для пересчёта оценки без новой учёбы.
+        torch.save({"W": W.cpu(), "theta": theta.cpu(), "bias": bias.cpu(), "opts": opts}, opts["out"])
 
 
 if __name__ == "__main__":

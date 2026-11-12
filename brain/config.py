@@ -895,6 +895,32 @@ class BrainConfig:
     # [сверить DOI]); аксоны LGN ветвятся и в L6. (доля клеток L6 E со входом,
     # входов построено, входов по данным) — доля и число не мерены [гипотеза
     # опыта]; синапс — как LGN → L4 (thalamic_psp_mv, депрессия nucleus_stp).
+    # Структура фона недостающих входов колонок (стенд «фон L2/3», DESIGN
+    # 2026-11-12) — флаг, умолчание "independent" (как Potjans & Diesmann
+    # 2014, https://doi.org/10.1093/cercor/bhs358: независимый пуассон у
+    # каждой клетки). У V1 85% входящих клеток — из самой V1 (Markov et al.
+    # 2011, https://doi.org/10.1093/cercor/bhq201), в малой зоне мозга фон
+    # заменяет в основном соседей; у них общие колебания (Arroyo et al. 2018,
+    # https://doi.org/10.1016/j.neuron.2018.08.009, мышь; Tan et al. 2014,
+    # https://doi.org/10.1038/nn.3684, макака). Режимы — меняют только
+    # структуру входа; средний ток и разброс счёта у каждой клетки прежние:
+    #   "shared"  — общий счёт на зону (один общий источник, как фон Billeh
+    #               et al. 2020, https://doi.org/10.1016/j.neuron.2020.01.040);
+    #   "local"   — общий счёт на участок карты background_patch_px × px;
+    #   "network" — частота фона × (быстрая / медленная частота смоделированных
+    #               E зоны): недостающие соседи колеблются так же, как
+    #               смоделированные (в среднем множитель ≈ 1).
+    # Зоны — background_areas; доля общей части в shared/local — background_shared.
+    background_mode: str = "independent"
+    background_areas: tuple[str, ...] = ("visual",)
+    background_shared: float = 1.0
+    # Участок карты для "local", px [допущение: масштаб общих колебаний у
+    # примата не найден; у мыши ЛФП коррелирует с константой ~500 мкм].
+    background_patch_px: float = 4.0
+    # "network": быстрая частота — время синаптической интеграции сети,
+    # медленная — опорный уровень [допущение].
+    background_fast_ms: float = 20.0
+    background_slow_ms: float = 2000.0
     lgn_l6: tuple[float, int, float] = (0.0, 20, 85.0)
     thalamic_pv_ratio: float = 2.0
     # Каждый спайк E зоны с AreaSpec.inhibition_adapts усиливает приходящее

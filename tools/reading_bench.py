@@ -70,6 +70,10 @@ def build(opts: dict):
     if opts.get("dc"):
         # Пути с правилом блока Diehl & Cook (cfg.dc_paths) вместо STDP.
         cfg.dc_paths = tuple(opts["dc"].split(","))
+    if opts.get("bg"):
+        # Структура фона недостающих входов (cfg.background_mode; bg_patch — участок, px).
+        cfg.background_mode = opts["bg"]
+        cfg.background_patch_px = float(opts.get("bg_patch", cfg.background_patch_px))
     if opts.get("ee_skip"):
         # Зоны без человеческой связности E → E (cfg.column_ee_human_skip).
         cfg.column_ee_human_skip = tuple(opts["ee_skip"].split(","))

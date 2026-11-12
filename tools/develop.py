@@ -64,6 +64,10 @@ def main(opts: dict) -> None:
     cfg.autosave = False
     cfg.homeostasis = True
     cfg.homeostasis_scope = opts.get("scope", cfg.homeostasis_scope)
+    if opts.get("bg"):
+        # Структура фона недостающих входов (cfg.background_mode).
+        cfg.background_mode = opts["bg"]
+        cfg.background_patch_px = float(opts.get("bg_patch", cfg.background_patch_px))
     if opts.get("ee_skip"):
         cfg.column_ee_human_skip = tuple(opts["ee_skip"].split(","))
     if opts.get("nmda"):

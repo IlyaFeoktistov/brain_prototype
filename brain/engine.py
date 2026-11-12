@@ -421,6 +421,7 @@ class SpikingBrain:
         self._init_areas()
         self._init_neurons()
         self._init_projections()
+        self._init_background()
         self._init_state()
 
         self.sensory_spikes = torch.zeros(
@@ -2653,11 +2654,73 @@ class SpikingBrain:
         if self.device.type == "cuda":
             torch.cuda.empty_cache()
 
+    def _init_background(self) -> None:
+        """
+        Группы фона недостающих входов (cfg.background_mode): у клетки зон
+        background_areas — номер группы (общий счёт или общая частота), у
+        прочих — фиктивная группа (свой независимый счёт, множитель 1).
+        """
+
+        cfg = self.cfg
+        self.bg_mode = cfg.background_mode
+        dev = self.device
+
+        if self.bg_mode == "independent":
+            return
+
+        group = torch.full((self.n_slots,), -1, dtype=torch.long, device=dev)
+        n = 0
+
+        for name in cfg.background_areas:
+            area = self.areas.get(name)
+
+            if area is None or area.layers is None:
+                continue
+
+            if self.bg_mode in ("shared", "network"):
+                for _, pop in area.populations:
+                    group[pop.slice] = n
+                n += 1
+                continue
+
+            # "local": участки карты background_patch_px × px (строка, столбец поля).
+            w = cfg.background_patch_px
+            keys = {}
+            for _, pop in area.populations:
+                pos = self.map_pos[pop.name]
+                cell = torch.stack([(pos[:, 0] // w).long(), (pos[:, 1] // w).long()], 1).cpu()
+                ids = []
+                for r, c in cell.tolist():
+                    ids.append(keys.setdefault((r, c), n + len(keys)))
+                group[pop.slice] = torch.tensor(ids, device=dev)
+            n += len(keys)
+
+        self.bg_groups = n
+        self.bg_group = torch.where(group < 0, n, group)
+        member = group >= 0
+        c = cfg.background_shared
+        self.bg_keep = torch.where(member, math.sqrt(1.0 - c), 1.0)
+        self.bg_share = torch.where(member, math.sqrt(c), 0.0)
+        self.bg_dummy = torch.zeros(n + 1, dtype=torch.bool, device=dev)
+        self.bg_dummy[n] = True
+
+        if self.bg_mode == "network":
+            is_e = (self.cell_type == KINDS.index("E")) & member
+            self.bg_e = is_e.float()
+            size = torch.zeros(n + 1, device=dev).index_add_(0, self.bg_group, self.bg_e)
+            self.bg_size = size.clamp(min=1.0)
+            self.bg_fast_decay = math.exp(-cfg.dt_ms / cfg.background_fast_ms)
+            self.bg_slow_decay = math.exp(-cfg.dt_ms / cfg.background_slow_ms)
+
     def _init_state(self) -> None:
         cfg = self.cfg
         z = lambda: torch.zeros(self.n_slots, device=self.device)
 
         self.v = cfg.v_rest + self._uniform((self.n_slots,), 0.0, 10.0)
+        if getattr(self, "bg_mode", "independent") == "network":
+            # Частоты E группы (Гц): начало — одинаковое, множитель 1.
+            self.bg_fast = torch.full((self.bg_groups + 1,), 2.0, device=self.device)
+            self.bg_slow = torch.full((self.bg_groups + 1,), 2.0, device=self.device)
         if getattr(self, "clopath", None):
             # Следы правила по напряжению (_clopath): ū₋, ū₊ — мембрана
             # поста, ū — средняя деполяризация, x̄ — след спайков пре, шаги
@@ -2865,7 +2928,23 @@ class SpikingBrain:
 
         # ---- фоновый шум: Poisson ≈ Гаусс с той же дисперсией ----
         drive = torch.randn(self.n_slots, device=self.device)
-        drive.mul_(self.noise_std).add_(self.noise_mean).clamp_(min=0.0)
+
+        if self.bg_mode in ("shared", "local"):
+            # Общая часть счёта группы: среднее и разброс у клетки прежние.
+            common = torch.randn(self.bg_groups + 1, device=self.device).index_select(0, self.bg_group)
+            drive.mul_(self.bg_keep).add_(common * self.bg_share)
+
+        if self.bg_mode == "network":
+            # Частота фона × (быстрая / медленная частота E своей группы).
+            count = torch.zeros(self.bg_groups + 1, device=self.device).index_add_(0, self.bg_group, self.spikes * self.bg_e)
+            inst = count / self.bg_size / (cfg.dt_ms / 1000.0)
+            self.bg_fast.mul_(self.bg_fast_decay).add_(inst * (1.0 - self.bg_fast_decay))
+            self.bg_slow.mul_(self.bg_slow_decay).add_(inst * (1.0 - self.bg_slow_decay))
+            scale = torch.where(self.bg_dummy, 1.0, self.bg_fast / self.bg_slow.clamp(min=1e-3)).index_select(0, self.bg_group)
+            drive.mul_(self.noise_std * scale.sqrt()).add_(self.noise_mean * scale).clamp_(min=0.0)
+        else:
+            drive.mul_(self.noise_std).add_(self.noise_mean).clamp_(min=0.0)
+
         drive.mul_(self.noise_gain)
 
         # ---- синаптический вход от спайков прошлого шага ----
@@ -3714,7 +3793,7 @@ class SpikingBrain:
         "v", "i_syn", "i_inh", "i_ngf", "ngf_mf", "i_nmda", "nmda_mf", "i_dend", "adapt", "refractory", "spikes",
         "trace_pre", "trace_pre_rise", "ltp_kernel", "trace_post", "counts", "eligibility",
         "eligibility_scale", "dropped", "bias", "t_h", "kick_current", "kick_left", "stp_x", "stp_ca", "stp_u4", "stp_x4", "inh_gain",
-        "chemistry", "tick", "mf_rate", "v_t", "dc_pre", "dc_post1", "dc_post2",
+        "chemistry", "tick", "mf_rate", "v_t", "dc_pre", "dc_post1", "dc_post2", "bg_fast", "bg_slow",
     )
 
     def _snapshot(self) -> dict:

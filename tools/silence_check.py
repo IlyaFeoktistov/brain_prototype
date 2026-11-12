@@ -25,7 +25,7 @@ https://doi.org/10.1038/nn.3684, PMC4067243). Поэтому ещё: асимм�
 секунду). Порог в мозге — v_t экспоненты AdEx, в данных — начало спайка
 (сопоставимо с точностью до нескольких мВ).
 
-    PYTHONPATH=. .venv/bin/python tools/silence_check.py [pops=visual.L4E,visual.L23E] [seconds=3] [traced=300] [seed=1]
+    PYTHONPATH=. .venv/bin/python tools/silence_check.py [pops=visual.L4E,visual.L23E] [seconds=3] [traced=300] [seed=1] [bg=independent|shared|local|network] [bg_patch=4]
 """
 
 from __future__ import annotations
@@ -58,6 +58,10 @@ def main(opts: dict) -> None:
     b.run(2500.0, s._blank(2500.0))
     steps = int(float(opts.get("seconds", 3)) * 1000 / dt)
     acc = {k: [torch.zeros(p.size, device=b.device) for _ in range(4)] for k, p in pops.items()}
+    # Как у Tan et al.: без спайка — без подъёма к нему (V > v_t), рефрактерности и 3 мс после.
+    clean = {k: [torch.zeros(p.size, device=b.device) for _ in range(4)] for k, p in pops.items()}
+    after = {k: torch.zeros(p.size, device=b.device) for k, p in pops.items()}
+    tail = int(round(3.0 / dt))
     n_tr = int(opts.get("traced", 300))
     traced = {k: (b.field_cols[p.name] - cfg.fovea_col).abs().argsort()[:n_tr].to(b.device) if p.name in b.field_cols
               else torch.arange(n_tr, device=b.device) for k, p in pops.items()}
@@ -76,6 +80,14 @@ def main(opts: dict) -> None:
             a[1] += v * free
             a[2] += v * v * free
             a[3] += v * v * v * free
+            ref = b.refractory[p.slice] > 0
+            after[k] = torch.where(ref, float(tail), (after[k] - 1).clamp(min=0))
+            ok = ((~ref) & (after[k] <= 0) & (v <= b.v_t[p.slice])).float()
+            cl = clean[k]
+            cl[0] += ok
+            cl[1] += v * ok
+            cl[2] += v * v * ok
+            cl[3] += v * v * v * ok
             spikes[k] += b.spikes[p.slice]
             traces[k][t] = v[traced[k]]
             fired[k][t] = b.spikes[p.slice][traced[k]]
@@ -100,7 +112,12 @@ def main(opts: dict) -> None:
             if m.any():
                 print(f"  z {lo if lo > -99 else '−∞'}…{hi if hi < 99 else '∞'}: клеток {float(m.float().mean()):.0%}, "
                       f"частота медиана {float(hz[m].median()):.2f} Гц, молчат {float((hz[m] == 0).float().mean()):.0%}")
-        print(f"  асимметрия потенциала {q(skew)} (макака на пустом экране: медиана +0.72)")
+        m0, m1, m2, m3 = clean[k]
+        cmean = m1 / m0.clamp_min(1)
+        csd = (m2 / m0.clamp_min(1) - cmean ** 2).clamp_min(1e-9).sqrt()
+        cskew = (m3 / m0.clamp_min(1) - 3 * cmean * csd ** 2 - cmean ** 3) / csd ** 3
+        print(f"  асимметрия потенциала {q(skew)}; без спайков (как Tan) {q(cskew)}, до порога без спайков {q(vt - cmean)} мВ "
+              f"(макака на пустом экране: асимметрия +0.72, до порога 13.9 мВ)")
         # Соседи у ямки: корреляция потенциала (без шагов спайка/рефрактерности — как есть) и счёта за 50 мс.
         tr, fr = traces[k], fired[k]
         zt = (tr - tr.mean(0)) / tr.std(0).clamp_min(1e-6)
@@ -113,6 +130,27 @@ def main(opts: dict) -> None:
         offc = cc[~torch.eye(int(ok.sum()), dtype=torch.bool, device=cc.device)]
         high = tr > (tr.mean(0) + 2 * tr.std(0))
         starts = (high[1:] & ~high[:-1]).float().sum(0) / (steps * dt / 1000)
+        # По расстоянию на карте (px) и общий ритм: спектр суммарного счёта traced клеток.
+        if p.name in b.map_pos:
+            pos = b.map_pos[p.name][traced[k]]
+            dist = torch.cdist(pos, pos)
+            eye = torch.eye(n_tr, dtype=torch.bool, device=cv.device)
+            parts = []
+            for lo, hi in ((0, 1), (1, 2), (2, 4), (4, 8), (8, 99)):
+                m = (dist >= lo) & (dist < hi) & ~eye
+                if m.any():
+                    parts.append(f"{lo}–{hi if hi < 99 else '…'} px {float(cv[m].median()):+.2f}")
+            print("  корреляция потенциала по расстоянию: " + ", ".join(parts))
+        pop_rate = fr.sum(1)
+        pop_rate = pop_rate[: len(pop_rate) // 2 * 2].view(-1, 2).sum(1)  # шаги по 1 мс
+        spec = torch.fft.rfft(pop_rate - pop_rate.mean()).abs() ** 2
+        freq = torch.fft.rfftfreq(len(pop_rate), d=0.001).to(spec.device)
+        band = (freq >= 1) & (freq <= 100)
+        peak = float(freq[band][spec[band].argmax()])
+        share = float(spec[band][(freq[band] - peak).abs() <= 2].sum() / spec[band].sum())
+        cv_pop = float(pop_rate.float().std() / pop_rate.float().mean().clamp_min(1e-9))
+        print(f"  общий ритм: пик спектра суммарного счёта {peak:.1f} Гц, доля мощности ±2 Гц у пика {share:.0%}; "
+              f"CV суммарного счёта за 1 мс {cv_pop:.2f}")
         print(f"  {n_tr} клеток у ямки: корреляция потенциала соседей медиана {float(off.median()):+.3f}, "
               f"счёта за 50 мс {float(offc.nanmedian()):+.3f}; выше среднего + 2 СКО {float(high.float().mean()):.1%} времени, "
               f"событий {float(starts.median()):.1f} в с")

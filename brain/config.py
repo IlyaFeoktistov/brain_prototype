@@ -656,7 +656,7 @@ class BrainConfig:
     # Гц, Fano 0.55 против 0.69; DESIGN «Гомеостаз популяции»), но молчащих
     # клеток по-прежнему почти нет — выбор мотивирован данными, не доказан.
     # "cell" — каждая клетка к частоте своего типа (сжимает разброс: фон 2.2–
-    # 3.8 Гц без молчащих) — контроль для сравнений. Сдвиги: lgn-d-pop-s{seed}.
+    # 3.8 Гц без молчащих) — контроль для сравнений. Сдвиги: lgn-d-pop-tcind-s{seed} (прежняя проводка LGN → L4 — lgn-d-pop-s{seed}).
     homeostasis_scope: str = "population"
     e_delta_t: float = 2.0
     # Адаптация: e_adapt_b мВ за спайк при индексе E мыши (e_adaptation_index),
@@ -900,7 +900,9 @@ class BrainConfig:
     # et al. 2019, https://doi.org/10.7554/eLife.41925) и группы L4 на общем
     # реле; меньше входов × больше вес меняет корреляции (van Albada,
     # Helias & Diesmann 2015, https://doi.org/10.1371/journal.pcbi.1004490 [сверить DOI]).
-    tc_missing_independent: bool = False
+    # Умолчание с 2026-11-12 (зёрна 1–2: синхрон L4 снят, буква в V1 L2/3 лучше);
+    # прежняя проводка — контроль (стенды tc_indep=0, гомеостаз lgn-d-pop-s{seed}).
+    tc_missing_independent: bool = True
     tc_missing_tau_ms: float = 50.0
     # Прямой вход LGN → V1 L6 E (флаг; доля 0 — выкл): у макаки часть
     # кортикогеникулярных клеток L6 получает от LGN прямой вход, способный

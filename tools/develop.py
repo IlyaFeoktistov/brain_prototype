@@ -68,9 +68,10 @@ def main(opts: dict) -> None:
         # Структура фона недостающих входов (cfg.background_mode).
         cfg.background_mode = opts["bg"]
         cfg.background_patch_px = float(opts.get("bg_patch", cfg.background_patch_px))
-    if opts.get("tc_indep"):
-        # Недостающие входы LGN → L4 своими событиями (cfg.tc_missing_independent; tc_tau — сглаживание частоты).
-        cfg.tc_missing_independent = True
+    if "tc_indep" in opts:
+        # Недостающие входы LGN → L4 своими событиями (cfg.tc_missing_independent, умолчание вкл.;
+        # tc_indep=0 — прежняя проводка как контроль; tc_tau — сглаживание частоты).
+        cfg.tc_missing_independent = opts["tc_indep"] != "0"
         cfg.tc_missing_tau_ms = float(opts.get("tc_tau", cfg.tc_missing_tau_ms))
     if opts.get("tonic"):
         # Постоянная тормозная проводимость (cfg.tonic_inh_g): зона.слой.тип:g, через запятую.

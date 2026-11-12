@@ -22,7 +22,7 @@ from tools.reading_bench import build
 
 def main(opts: dict) -> None:
     seed = int(opts.get("seed", 1))
-    opts = {"fit": "lgn-a", "homeo": f"lgn-d-pop-s{seed}", "relay_v_t_mv": "-59", "trn_scale": "0.1", **opts}
+    opts = {"fit": "lgn-a", "homeo": f"lgn-d-pop{'' if opts.get('tc_indep') == '0' else '-tcind'}-s{seed}", "relay_v_t_mv": "-59", "trn_scale": "0.1", **opts}
     mind, b = build(opts)
     s = Session(mind, window_ms=10.0)
     vis = b.areas["visual"].layers

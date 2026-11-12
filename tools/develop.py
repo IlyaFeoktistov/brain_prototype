@@ -7,7 +7,7 @@ homeostasis_update): мозг живёт с пустым экраном окна
 на замерах выключен — сдвиг заморожен).
 
     PYTHONPATH=. python tools/develop.py [seconds=60] [win=1000] [seed=42] [fit=lgn-a]
-        [relay_v_t_mv=-59] [trn_scale=0.1] [out=lgn-d-s1] [every=10] [scope=cell|population]
+        [relay_v_t_mv=-59] [trn_scale=0.1] [out=lgn-d-pop-s1] [every=10] [scope=population|cell]
 
 scope=population — общий шаг популяции (cfg.homeostasis_scope): разброс
 клеток остаётся от проводки; в отчёте — распределение частот клеток зрительных
@@ -63,7 +63,7 @@ def main(opts: dict) -> None:
     cfg.seed = int(opts.get("seed", 42))
     cfg.autosave = False
     cfg.homeostasis = True
-    cfg.homeostasis_scope = opts.get("scope", "cell")
+    cfg.homeostasis_scope = opts.get("scope", cfg.homeostasis_scope)
     if opts.get("ee_skip"):
         cfg.column_ee_human_skip = tuple(opts["ee_skip"].split(","))
     if opts.get("nmda"):

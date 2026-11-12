@@ -46,7 +46,7 @@ from tools.reading_bench import build
 
 def main(opts: dict) -> None:
     native = opts.get("rule", "dc") == "native"
-    opts = {"fit": "lgn-a", "homeo": f"lgn-d-s{opts.get('seed', 1)}", "relay_v_t_mv": "-59",
+    opts = {"fit": "lgn-a", "homeo": f"lgn-d-pop-s{opts.get('seed', 1)}", "relay_v_t_mv": "-59",
             "trn_scale": "0.1", **({} if native else {"dc": "visual -> letters"}), **opts}
     mind, b = build(opts)
     s = Session(mind, window_ms=10.0)

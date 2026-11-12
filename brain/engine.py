@@ -2677,13 +2677,14 @@ class SpikingBrain:
             if area is None or area.layers is None:
                 continue
 
-            if self.bg_mode in ("shared", "network"):
+            if self.bg_mode in ("shared", "network", "network_gray"):
+                # Одна группа на зону.
                 for _, pop in area.populations:
                     group[pop.slice] = n
                 n += 1
                 continue
 
-            # "local": участки карты background_patch_px × px (строка, столбец поля).
+            # "local", "network_local": участки карты background_patch_px × px (строка, столбец поля).
             w = cfg.background_patch_px
             keys = {}
             for _, pop in area.populations:
@@ -2704,7 +2705,19 @@ class SpikingBrain:
         self.bg_dummy = torch.zeros(n + 1, dtype=torch.bool, device=dev)
         self.bg_dummy[n] = True
 
-        if self.bg_mode == "network":
+        if self.bg_mode in ("network", "network_local", "network_gray"):
+            # Доля фона, идущая за сетью: вся ("network", "network_local") или
+            # «серое вещество» своего слоя ("network_gray").
+            self.bg_follow = torch.where(member, 1.0, 0.0)
+            if self.bg_mode == "network_gray":
+                gray = dict(cfg.background_gray)
+                for name in cfg.background_areas:
+                    area = self.areas.get(name)
+                    if area is None or area.layers is None:
+                        continue
+                    for layer, group_ in area.layers.items():
+                        for pop in group_.values():
+                            self.bg_follow[pop.slice] = gray.get(layer, 0.0)
             is_e = (self.cell_type == KINDS.index("E")) & member
             self.bg_e = is_e.float()
             size = torch.zeros(n + 1, device=dev).index_add_(0, self.bg_group, self.bg_e)
@@ -2717,7 +2730,7 @@ class SpikingBrain:
         z = lambda: torch.zeros(self.n_slots, device=self.device)
 
         self.v = cfg.v_rest + self._uniform((self.n_slots,), 0.0, 10.0)
-        if getattr(self, "bg_mode", "independent") == "network":
+        if getattr(self, "bg_mode", "independent") in ("network", "network_local", "network_gray"):
             # Частоты E группы (Гц): начало — одинаковое, множитель 1.
             self.bg_fast = torch.full((self.bg_groups + 1,), 2.0, device=self.device)
             self.bg_slow = torch.full((self.bg_groups + 1,), 2.0, device=self.device)
@@ -2934,13 +2947,14 @@ class SpikingBrain:
             common = torch.randn(self.bg_groups + 1, device=self.device).index_select(0, self.bg_group)
             drive.mul_(self.bg_keep).add_(common * self.bg_share)
 
-        if self.bg_mode == "network":
-            # Частота фона × (быстрая / медленная частота E своей группы).
+        if self.bg_mode in ("network", "network_local", "network_gray"):
+            # Частота фона × (быстрая / медленная частота E своей группы) — на долю bg_follow.
             count = torch.zeros(self.bg_groups + 1, device=self.device).index_add_(0, self.bg_group, self.spikes * self.bg_e)
             inst = count / self.bg_size / (cfg.dt_ms / 1000.0)
             self.bg_fast.mul_(self.bg_fast_decay).add_(inst * (1.0 - self.bg_fast_decay))
             self.bg_slow.mul_(self.bg_slow_decay).add_(inst * (1.0 - self.bg_slow_decay))
             scale = torch.where(self.bg_dummy, 1.0, self.bg_fast / self.bg_slow.clamp(min=1e-3)).index_select(0, self.bg_group)
+            scale = 1.0 + self.bg_follow * (scale - 1.0)
             drive.mul_(self.noise_std * scale.sqrt()).add_(self.noise_mean * scale).clamp_(min=0.0)
         else:
             drive.mul_(self.noise_std).add_(self.noise_mean).clamp_(min=0.0)

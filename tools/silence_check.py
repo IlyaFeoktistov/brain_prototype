@@ -14,7 +14,18 @@ z: z < 1 — постоянный ток держит у порога; z ≥ 3 �
 гомеостаза — и их разброс по клеткам (у одинаковых для всех клеток частей
 разброса нет — молчащих они не создают).
 
-    PYTHONPATH=. .venv/bin/python tools/silence_check.py [pops=visual.L4E,visual.L23E] [seconds=3] [seed=1]
+Сверка: у бодрствующей макаки на пустом экране (фиксация, whole-cell, 31
+клетка V1) медиана расстояния мембраны до порога спайка 13.9 мВ, медиана
+асимметрии распределения потенциала +0.72 — хвост в деполяризацию, спайки от
+редких крупных коррелированных событий (Tan et al. 2014,
+https://doi.org/10.1038/nn.3684, PMC4067243). Поэтому ещё: асимметрия
+потенциала каждой клетки; для traced клеток у ямки — полная запись мембраны:
+корреляция потенциала и счёта спайков (окна 50 мс) между соседями, крупные
+деполяризации (выше среднего клетки на 2 СКО: доля времени, событий в
+секунду). Порог в мозге — v_t экспоненты AdEx, в данных — начало спайка
+(сопоставимо с точностью до нескольких мВ).
+
+    PYTHONPATH=. .venv/bin/python tools/silence_check.py [pops=visual.L4E,visual.L23E] [seconds=3] [traced=300] [seed=1]
 """
 
 from __future__ import annotations
@@ -46,7 +57,12 @@ def main(opts: dict) -> None:
     s.line, s.gaze = "", 0.0
     b.run(2500.0, s._blank(2500.0))
     steps = int(float(opts.get("seconds", 3)) * 1000 / dt)
-    acc = {k: [torch.zeros(p.size, device=b.device) for _ in range(3)] for k, p in pops.items()}
+    acc = {k: [torch.zeros(p.size, device=b.device) for _ in range(4)] for k, p in pops.items()}
+    n_tr = int(opts.get("traced", 300))
+    traced = {k: (b.field_cols[p.name] - cfg.fovea_col).abs().argsort()[:n_tr].to(b.device) if p.name in b.field_cols
+              else torch.arange(n_tr, device=b.device) for k, p in pops.items()}
+    traces = {k: torch.zeros(steps, n_tr, device=b.device) for k in pops}
+    fired = {k: torch.zeros(steps, n_tr, device=b.device) for k in pops}
     spikes = {k: torch.zeros(p.size, device=b.device) for k, p in pops.items()}
     view = s._blank(steps * dt)
     t0 = time.time()
@@ -59,12 +75,16 @@ def main(opts: dict) -> None:
             a[0] += free
             a[1] += v * free
             a[2] += v * v * free
+            a[3] += v * v * v * free
             spikes[k] += b.spikes[p.slice]
+            traces[k][t] = v[traced[k]]
+            fired[k][t] = b.spikes[p.slice][traced[k]]
     print(f"пустой экран {steps * dt / 1000:.1f} с, {time.time() - t0:.0f} с", flush=True)
     for k, p in pops.items():
-        n, s1, s2 = acc[k]
+        n, s1, s2, s3 = acc[k]
         mean = s1 / n.clamp_min(1)
         sd = (s2 / n.clamp_min(1) - mean ** 2).clamp_min(1e-9).sqrt()
+        skew = (s3 / n.clamp_min(1) - 3 * mean * sd ** 2 - mean ** 3) / sd ** 3
         vt = b.v_t[p.slice]
         gap = vt - mean
         z = gap / sd
@@ -80,6 +100,22 @@ def main(opts: dict) -> None:
             if m.any():
                 print(f"  z {lo if lo > -99 else '−∞'}…{hi if hi < 99 else '∞'}: клеток {float(m.float().mean()):.0%}, "
                       f"частота медиана {float(hz[m].median()):.2f} Гц, молчат {float((hz[m] == 0).float().mean()):.0%}")
+        print(f"  асимметрия потенциала {q(skew)} (макака на пустом экране: медиана +0.72)")
+        # Соседи у ямки: корреляция потенциала (без шагов спайка/рефрактерности — как есть) и счёта за 50 мс.
+        tr, fr = traces[k], fired[k]
+        zt = (tr - tr.mean(0)) / tr.std(0).clamp_min(1e-6)
+        cv = (zt.T @ zt) / len(zt)
+        off = cv[~torch.eye(n_tr, dtype=torch.bool, device=cv.device)]
+        w = int(50 / dt)
+        cnt = fr[: len(fr) // w * w].view(-1, w, n_tr).sum(1)
+        ok = cnt.std(0) > 0
+        cc = torch.corrcoef(cnt[:, ok].T)
+        offc = cc[~torch.eye(int(ok.sum()), dtype=torch.bool, device=cc.device)]
+        high = tr > (tr.mean(0) + 2 * tr.std(0))
+        starts = (high[1:] & ~high[:-1]).float().sum(0) / (steps * dt / 1000)
+        print(f"  {n_tr} клеток у ямки: корреляция потенциала соседей медиана {float(off.median()):+.3f}, "
+              f"счёта за 50 мс {float(offc.nanmedian()):+.3f}; выше среднего + 2 СКО {float(high.float().mean()):.1%} времени, "
+              f"событий {float(starts.median()):.1f} в с")
         r = torch.corrcoef(torch.stack([hz, -z]))[0, 1]
         print(f"  корреляция частоты с близостью к порогу (−z): {float(r):+.2f}")
         print(f"  постоянные части, мВ (медиана; разброс 10–90%): внешний фон {q(ext_mean)} (СКО шага {float(ext_sd.median()):.2f}), "

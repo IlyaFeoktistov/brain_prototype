@@ -127,6 +127,10 @@ def main(opts: dict) -> None:
     rec = mnist_rec(int(opts.get("images", 6000)), int(opts.get("post", 400)), seed=int(opts.get("seed", 1))) \
         if opts.get("pixels") else torch.load(opts["rec"], map_location=dev)
     tau_m = float(opts.get("tau_m", TAU_M))
+    if not opts.get("pixels") and opts.get("post"):
+        # Подвыборка клеток букв у ямки (короткий прогон): post ближайших к центру поля.
+        keep = (rec["field_col"].float() - rec["fovea_col"]).abs().argsort()[:int(opts["post"])]
+        rec = {**rec, "pre": rec["pre"][keep], "weight": rec["weight"][keep], "field_col": rec["field_col"][keep]}
     rule = opts.get("rule", "native")
     seed = int(opts.get("seed", 1))
     gen = torch.Generator(device=dev).manual_seed(seed)
@@ -180,6 +184,14 @@ def main(opts: dict) -> None:
     field = rec["field_col"].float()
     near = (field - rec["fovea_col"]).abs().argsort()[:20]
     use_pv = rule in ("native", "vogels", "clopath")
+    # Учитель (rule=teacher): клетки поделены на группы по буквам, current — буква показа.
+    L_ = len(rec["letters"])
+    group_of = torch.arange(n_post) * L_ // n_post
+    current = [0]
+    teach_hz = float(opts.get("teach_hz", 40.0))
+    teach_a = float(opts.get("teach_a", 0.005))
+    us_eta = float(opts.get("us_eta", 0.01))
+    us_max = float(opts.get("us_max", 0.1))
     from brain.config import BrainConfig
     cc = BrainConfig()
     cl_ltp_sum, cl_ltd_sum = [0.0], [0.0]
@@ -261,6 +273,12 @@ def main(opts: dict) -> None:
             v = v + (V_REST + bias - v) * (DT / tau_m) + noise * torch.randn(n_post) + drive - inh
             v = torch.where(ref > 0, torch.full_like(v, V_RESET), v)
             s = v >= V_TH + theta
+            if learn and rule in ("teacher", "us"):
+                # Принуждение учителем (Legenstein et al. 2005): во время буквы группа
+                # её клеток стреляет пуассоном teach_hz, прочие молчат; в паузе — сами.
+                if t >= n_rest:
+                    s = group_of == current[0]
+                    s = s & (torch.rand(n_post, generator=gen) < teach_hz * DT / 1000.0)
             v[s] = V_RESET
             ref = torch.where(s, torch.full_like(ref, REFRACT), (ref - 1).clamp_min(0))
             if t >= n_rest:
@@ -303,6 +321,29 @@ def main(opts: dict) -> None:
                     up = xbar[:, None] * ltp[None, hot] * mask[:, hot] * mean_w
                     W[:, hot] = torch.minimum(W[:, hot] + up, cap[:, hot])
                     cl_ltp_sum[0] += float(up.sum())
+            elif rule == "teacher":
+                # Парное STDP (Song, Miller & Abbott 2000; у Legenstein 2005 — оно же):
+                # спайк пре — w −= A⁻ · след поста, спайк поста — w += A⁺ · след пре,
+                # следы τ 20 мс, A⁻ = 1.05 A⁺, вес в [0, cap].
+                xp.mul_(d20).add_(x[t])
+                if len(active):
+                    W[active] = (W[active] - (1.05 * teach_a * mean_w) * y1[None, :] * mask[active]).clamp_min(0.0)
+                if len(post):
+                    W[:, post] = torch.minimum(W[:, post] + (teach_a * mean_w) * xp[:, None] * mask[:, post], cap[:, post])
+                y1.mul_(d20).add_(s.float())
+            elif rule == "us":
+                # Urbanczik & Senn 2014 (https://doi.org/10.1016/j.neuron.2013.11.030):
+                # ΔW = η (S_сома − φ(V_дендрит)) · PSP входа. V_дендрит — вклад зрительных
+                # входов (W · след пре, мВ к покою со сдвигом клетки), φ — частота
+                # (сигмоида у порога, максимум us_max на мс), S_сома — спайки,
+                # навязанные учителем (группа буквы — teach_hz, прочие молчат).
+                xp.mul_(d20).add_(x[t])
+                if t >= n_rest:
+                    vd = V_REST + bias + (W * mask).T @ xp * (DT / TAU_M) * 20.0
+                    phi = us_max / (1.0 + torch.exp(-(vd - V_TH) / 2.0))
+                    err = s.float() - phi
+                    W.add_((us_eta * mean_w) * xp[:, None] * err[None, :] * mask).clamp_(0.0)
+                    torch.minimum(W, cap, out=W)
             else:  # dc: следы ставятся в 1
                 xp.mul_(d20)
                 if len(active):
@@ -337,6 +378,7 @@ def main(opts: dict) -> None:
     def show(i: int, learn: bool) -> torch.Tensor:
         """Показ i; у пикселей — правило авторов: меньше 5 спайков — ярче и повтор."""
 
+        current[0] = int(labels[i])
         if pixels is None:
             return run(X[i], learn)
         intensity[0] = 2.0
@@ -392,6 +434,17 @@ def main(opts: dict) -> None:
                   if rule == "clopath" else "")
         extra += (f"; веса 1/50/99% {float(wq[0]):.2f}/{float(wq[1]):.2f}/{float(wq[2]):.2f}, у потолка {at_cap:.2%}, "
                   f"частая буква у {share:.0%} клеток")
+        if rule in ("teacher", "us"):
+            # Без учителя: буква — группа с наибольшим числом спайков (только зрительный вход);
+            # и по одним весам: счёт входов за показ × W, сумма по группе.
+            g = torch.stack([r_test[:, group_of == k].sum(1) for k in range(L)], 1)
+            g_acc = float((g.argmax(1) == y_test).float().mean())
+            silent = float((g.sum(1) == 0).float().mean())
+            xin = torch.stack([bins(X[i], steps, n_src, ratio)[n_rest:].sum(0) for i in split["test"]])
+            dw_ = xin @ W
+            wg = torch.stack([dw_[:, group_of == k].sum(1) for k in range(L)], 1)
+            wd = wg - wg.mean(1, keepdim=True)
+            extra += f"; БЕЗ УЧИТЕЛЯ по группам {g_acc:.2f} (без спайков {silent:.0%}), по весам {float((wd.argmax(1) == y_test).float().mean()):.2f}"
         print(f"после {n_seen} показов ({time.time() - t0:.0f} с): точность {av:.2f} / {ac:.2f} "
               f"(перемешано {sv:.2f} / {sc:.2f}), избирательных {sel:.0%}, спайков на показ "
               f"{float(r_test.sum(1).mean()):.0f}, |Δw| {dw:.1%}, корр. Δw у ямки {float(off.median()):.2f}{extra}{null_msg}", flush=True)

@@ -2675,6 +2675,12 @@ class SpikingBrain:
                     self.noise_mean[pop.slice] *= cfg.background_scale
             self.noise_std = self.noise_mean.sqrt()
 
+        for area_name, layer, kind, g in cfg.tonic_inh_g:
+            # Постоянная тормозная проводимость g (в g_L): ток в нормировке
+            # к точке замера IPSP — g · (V_IPSP − E_ГАМК), со знаком торможения.
+            pop = self.areas[area_name].layers[layer][kind]
+            self.dc_inh_mv[pop.slice] -= g * (cfg.ipsp_holding_mv - cfg.gaba_reversal_mv)
+
         if self.bg_mode == "independent":
             return
 

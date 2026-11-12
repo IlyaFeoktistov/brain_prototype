@@ -74,6 +74,9 @@ def build(opts: dict):
         # Структура фона недостающих входов (cfg.background_mode; bg_patch — участок, px).
         cfg.background_mode = opts["bg"]
         cfg.background_patch_px = float(opts.get("bg_patch", cfg.background_patch_px))
+    if opts.get("tonic"):
+        # Постоянная тормозная проводимость (cfg.tonic_inh_g): зона.слой.тип:g, через запятую.
+        cfg.tonic_inh_g = tuple((*k.split("."), float(g)) for k, g in (e.split(":") for e in opts["tonic"].split(",")))
     if opts.get("bg_scale"):
         # Доза внешнего фона (cfg.background_scale).
         cfg.background_scale = float(opts["bg_scale"])

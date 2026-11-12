@@ -72,7 +72,7 @@ def main(opts: dict) -> None:
     # g_E/g_L = I_E / (E_AMPA − V_замера EPSP), g_I/g_L = |I_I| / (V_замера IPSP − E_ГАМК);
     # τ_эфф = τ_m / (1 + g_E + g_I). NMDA и плато дендрита не входят.
     # По каждой клетке: Σg_E, Σg_I, Σфон, Σg_E², Σg_I², Σg_E·g_I — среднее, СКО и корреляция E/I во времени.
-    cond = {k: [torch.zeros(p.size, device=b.device) for _ in range(6)] for k, p in pops.items()}
+    cond = {k: [torch.zeros(p.size, device=b.device) for _ in range(8)] for k, p in pops.items()}
     g_tr = {k: torch.zeros(steps, 2, n_tr, device=b.device) for k in pops}
     e_span = cfg.ampa_reversal_mv - cfg.epsp_holding_mv
     i_span = cfg.ipsp_holding_mv - cfg.gaba_reversal_mv
@@ -107,6 +107,9 @@ def main(opts: dict) -> None:
             c[3] += ge * ge
             c[4] += gi * gi
             c[5] += ge * gi
+            # Доли без импульсов: недостающие соседи (среднее поле + постоянная часть) — у E и у I.
+            c[6] += b.last_dc_e[p.slice] / e_span if torch.is_tensor(b.last_dc_e) else 0.0
+            c[7] += b.last_dc_i[p.slice].abs() / i_span if torch.is_tensor(b.last_dc_i) else 0.0
             g_tr[k][t, 0] = ge[traced[k]]
             g_tr[k][t, 1] = gi[traced[k]]
             traces[k][t] = v[traced[k]]
@@ -178,13 +181,14 @@ def main(opts: dict) -> None:
         print(f"  корреляция частоты с близостью к порогу (−z): {float(r):+.2f}")
         print(f"  постоянные части, мВ (медиана; разброс 10–90%): внешний фон {q(ext_mean)} (СКО шага {float(ext_sd.median()):.2f}), "
               f"dc соседей {q(b.dc_mv[p.slice])}, bias+гомеостаз {q(b.bias[p.slice])}, v_t {q(vt)}")
-        ge, gi, gb, ge2, gi2, gei = (c / steps for c in cond[k])
+        ge, gi, gb, ge2, gi2, gei, gde, gdi = (c / steps for c in cond[k])
         sde = (ge2 - ge ** 2).clamp_min(0).sqrt()
         sdi = (gi2 - gi ** 2).clamp_min(0).sqrt()
         rei = (gei - ge * gi) / (sde * sdi).clamp_min(1e-9)
         q5 = lambda x: " / ".join(f"{float(v):.2f}" for v in torch.quantile(x.float(), torch.tensor([0.05, 0.5, 0.95], device=x.device)))
         print(f"  проводимость входа / g_L по клеткам (5 / 50 / 95%): g_E среднее {q5(ge)} (внешний фон {q5(gb)}), СКО {q5(sde)}; "
               f"g_I среднее {q5(gi)}, СКО {q5(sdi)}")
+        print(f"    без импульсов (среднее поле недостающих соседей + постоянная часть): g_E {q5(gde)}, g_I {q5(gdi)}")
         print(f"    g_I/g_E {q5(gi / ge.clamp_min(1e-6))}, СКО_I/СКО_E {q5(sdi / sde.clamp_min(1e-9))} "
               f"(σ_e/σ_i ниже √((V_t−E_I)/(E_E−V_t)) = {((-50 - cfg.gaba_reversal_mv) / (cfg.ampa_reversal_mv + 50)) ** 0.5:.2f} — спайк по спаду торможения, Piwkowska 2008); "
               f"корр. g_E–g_I во времени {q5(rei)}")

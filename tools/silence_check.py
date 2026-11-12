@@ -68,6 +68,12 @@ def main(opts: dict) -> None:
     traces = {k: torch.zeros(steps, n_tr, device=b.device) for k in pops}
     fired = {k: torch.zeros(steps, n_tr, device=b.device) for k in pops}
     spikes = {k: torch.zeros(p.size, device=b.device) for k, p in pops.items()}
+    # Проводимость входа в долях утечки: ток модели нормирован к точке замера PSP,
+    # g_E/g_L = I_E / (E_AMPA − V_замера EPSP), g_I/g_L = |I_I| / (V_замера IPSP − E_ГАМК);
+    # τ_эфф = τ_m / (1 + g_E + g_I). NMDA и плато дендрита не входят.
+    cond = {k: [torch.zeros(p.size, device=b.device) for _ in range(3)] for k, p in pops.items()}
+    e_span = cfg.ampa_reversal_mv - cfg.epsp_holding_mv
+    i_span = cfg.ipsp_holding_mv - cfg.gaba_reversal_mv
     view = s._blank(steps * dt)
     t0 = time.time()
     for t in range(steps):
@@ -89,6 +95,12 @@ def main(opts: dict) -> None:
             cl[2] += v * v * ok
             cl[3] += v * v * v * ok
             spikes[k] += b.spikes[p.slice]
+            ge = (b.i_syn[p.slice] + b.last_dc_e[p.slice]) / e_span
+            gi = (b.i_inh[p.slice] + b.i_ngf[p.slice] + b.last_dc_i[p.slice]).abs() / i_span
+            bg = b.noise_mean[p.slice] / dt * b.noise_gain[p.slice] * b.tau_m[p.slice] / e_span
+            cond[k][0] += ge
+            cond[k][1] += gi
+            cond[k][2] += bg
             traces[k][t] = v[traced[k]]
             fired[k][t] = b.spikes[p.slice][traced[k]]
     print(f"пустой экран {steps * dt / 1000:.1f} с, {time.time() - t0:.0f} с", flush=True)
@@ -158,6 +170,9 @@ def main(opts: dict) -> None:
         print(f"  корреляция частоты с близостью к порогу (−z): {float(r):+.2f}")
         print(f"  постоянные части, мВ (медиана; разброс 10–90%): внешний фон {q(ext_mean)} (СКО шага {float(ext_sd.median()):.2f}), "
               f"dc соседей {q(b.dc_mv[p.slice])}, bias+гомеостаз {q(b.bias[p.slice])}, v_t {q(vt)}")
+        ge, gi, gb = (c / steps for c in cond[k])
+        print(f"  проводимость входа / g_L (медиана; 10–90%): g_E {q(ge)} (из них внешний фон {q(gb)}), g_I {q(gi)}, "
+              f"g_I/g_E {q(gi / ge.clamp_min(1e-6))}; полная / покоя {q(1 + ge + gi)}, τ_эфф {q(tau / (1 + ge + gi))} мс (τ_m {tau:.1f})")
 
 
 if __name__ == "__main__":

@@ -3206,6 +3206,9 @@ class SpikingBrain:
             block = 1.0 / (1.0 + cfg.mg_mm / 3.57 * torch.exp(-0.062 * self.v)) if self.nmda_mg else 1.0
             synaptic = synaptic + (self.i_nmda + self.nmda_r * self.nmda_mf) * block
 
+        # Для замеров (tools/silence_check.py: проводимость входа) — ссылки,
+        # без копий; на счёт не влияют.
+        self.last_dc_e, self.last_dc_i = dc_e, dc_i
         synaptic = (synaptic + dc_e) * excite + (self.i_inh + self.i_ngf + dc_i) * force
 
         # Плато на дендрите — на самой горячей ветке, если её ток выше порога:

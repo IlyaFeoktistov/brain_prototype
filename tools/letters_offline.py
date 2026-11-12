@@ -35,6 +35,16 @@ rule:
             поста − α), спайк E — w += η · след PV, α = 2 · 1 Гц · 20 мс
             (норма cfg.inhibitory_target_hz), потолок 4 мВ (cfg.vogels_cap),
             η vogels_eta мВ [подбор, не по данным].
+    clopath правило по напряжению как в движке (engine._clopath, числа —
+            cfg.clopath_* из BrainConfig, Clopath et al. 2010,
+            https://doi.org/10.1038/nn.2479): u — мембрана, во время спайка
+            clopath_spike_mv на clopath_spike_ms; ū₋, ū₊ — фильтры u (τ 10 / 7
+            мс), ū — деполяризация от покоя клетки за 1 с, x̄ пре += спайк/τx;
+            на спайк пре w −= A_LTD·ū²/u_ref²·(ū₋ − θ₋)₊, каждый шаг w +=
+            A_LTP·dt·x̄·(u − θ₊)₊·(ū₊ − θ₋)₊; θ₋ — покой клетки (V_REST +
+            сдвиг), θ₊ абсолютный; вес в долях среднего врождённого, [0, cap];
+            сохранения суммы нет (как в движке). Торможение — PV, как native.
+            Отличие от мозга: клетка LIF, а не AdEx (выше θ₊ — только спайк).
     dc      Diehl & Cook 2015 (https://doi.org/10.3389/fncom.2015.00099, числа
             cfg.dc_*): следы пре τ 20, поста τ 20 / 40, ставятся в 1; спайк
             пре w −= ltd · пост₁, спайк поста w += ltp · пре · пост₂, в долях
@@ -43,7 +53,7 @@ rule:
             перед показом; торможение как у авторов — спайк E тормозит все
             прочие E (dc_inh мВ), PV нет.
 
-    PYTHONPATH=. .venv/bin/python tools/letters_offline.py rec=файл.pt [rule=native|vogels|dc] [shows=3000] [every=200] [noise=2.0] [seed=1] [threads=2] [device=cpu|cuda]
+    PYTHONPATH=. .venv/bin/python tools/letters_offline.py rec=файл.pt [rule=native|vogels|clopath|dc] [shows=3000] [every=200] [noise=2.0] [seed=1] [threads=2] [device=cpu|cuda]
 """
 
 from __future__ import annotations
@@ -110,7 +120,10 @@ def main(opts: dict) -> None:
     # PV (native, vogels): E:PV 4:1, связи местные — в пределах ±3 столбцов поля.
     field = rec["field_col"].float()
     near = (field - rec["fovea_col"]).abs().argsort()[:20]
-    use_pv = rule in ("native", "vogels")
+    use_pv = rule in ("native", "vogels", "clopath")
+    from brain.config import BrainConfig
+    cc = BrainConfig()
+    cl_ltp_sum, cl_ltd_sum = [0.0], [0.0]
     if use_pv:
         n_pv = n_post // 4
         pv_field = field[torch.randperm(n_post, generator=gen)[:n_pv]]
@@ -138,6 +151,8 @@ def main(opts: dict) -> None:
     bias = torch.zeros(1)
     pv_bias = torch.zeros(1)
     theta = torch.zeros(n_post)
+    # ū — средняя деполяризация за ~1 с — живёт между показами (как у мозга).
+    cl_ubar = torch.full((n_post,), math.sqrt(cc.clopath_u_ref2))  # как engine: начало — √u_ref²
 
     pv_hz = [0.0]
 
@@ -158,6 +173,14 @@ def main(opts: dict) -> None:
             pv_count = torch.zeros(())
         if learn and rule == "dc":
             W.mul_(target / W.sum(0).clamp_min(1e-9))
+        if rule == "clopath":
+            rest = V_REST + bias
+            th_minus = rest + (cc.clopath_theta_minus_mv - cc.clopath_rest_mv)
+            u_minus, u_plus = v.clone(), v.clone()
+            ubar = cl_ubar
+            xbar = torch.zeros(n_src)
+            left = torch.zeros(n_post)
+            spike_steps = round(cc.clopath_spike_ms / DT)
         for t in range(steps):
             active = x[t].nonzero()[:, 0]
             drive = (W.index_select(0, active) * x[t, active][:, None]).sum(0) if len(active) else 0.0
@@ -203,6 +226,24 @@ def main(opts: dict) -> None:
                         P[k] = ((P[k] + eta * (y1[None, :] - alpha)).clamp(0.0, 4.0)) * P_mask[k]
                     if len(post):
                         P[:, post] = ((P[:, post] + eta * xpv[:, None]).clamp(0.0, 4.0)) * P_mask[:, post]
+            elif rule == "clopath":
+                left = (left - 1).clamp_min(0) + s.float() * spike_steps
+                u = torch.where(left > 0, torch.full_like(v, cc.clopath_spike_mv), v)
+                u_minus += (u - u_minus) * (DT / cc.clopath_tau_minus_ms)
+                u_plus += (u - u_plus) * (DT / cc.clopath_tau_plus_ms)
+                ubar += ((u - rest).clamp_min(0.0) - ubar) * (DT / cc.clopath_tau_ubar_ms)
+                xbar += (x[t] - xbar * DT) / cc.clopath_tau_x_ms
+                if len(active):
+                    ltd = cc.clopath_a_ltd * ubar ** 2 / cc.clopath_u_ref2 * (u_minus - th_minus).clamp_min(0.0)
+                    down = ltd[None, :] * x[t, active][:, None] * mask[active] * mean_w
+                    W[active] = (W[active] - down).clamp_min(0.0)
+                    cl_ltd_sum[0] += float(down.sum())
+                ltp = cc.clopath_a_ltp * DT * (u - cc.clopath_theta_plus_mv).clamp_min(0.0) * (u_plus - th_minus).clamp_min(0.0)
+                hot = (ltp > 0).nonzero()[:, 0]
+                if len(hot):
+                    up = xbar[:, None] * ltp[None, hot] * mask[:, hot] * mean_w
+                    W[:, hot] = torch.minimum(W[:, hot] + up, cap[:, hot])
+                    cl_ltp_sum[0] += float(up.sum())
             else:  # dc: следы ставятся в 1
                 xp.mul_(d20)
                 if len(active):
@@ -242,6 +283,13 @@ def main(opts: dict) -> None:
         shuffle = y_lab[torch.randperm(len(y_lab), generator=gen)]
         z = lambda a: (a - a.mean(-1, keepdim=True)) / a.std(-1, keepdim=True).clamp_min(1e-9)
 
+        mean_lab = torch.stack([r_lab[y_lab == k].mean(0) for k in range(L)])
+        resp = mean_lab.max(0).values > 0
+        share = float(torch.bincount(mean_lab.argmax(0)[resp], minlength=L).max()) / max(int(resp.sum()), 1)
+        wn = (W[mask] / mean_w)
+        wq = torch.quantile(wn[torch.randperm(len(wn), generator=gen)[:1_000_000]], torch.tensor([0.01, 0.5, 0.99]))
+        at_cap = float((W[mask] >= 0.99 * cap[mask]).float().mean())
+
         def acc(ylab: torch.Tensor) -> tuple[float, float]:
             mean = torch.stack([r_lab[ylab == k].mean(0) for k in range(L)])
             lab = mean.argmax(0)
@@ -265,6 +313,10 @@ def main(opts: dict) -> None:
         off = c[~torch.eye(len(near), dtype=torch.bool)]
         extra = f", PV→E среднее {float(P[P_mask].mean()):.2f} мВ" if rule == "vogels" else ""
         extra += f", θ {float(theta.mean()):.2f} мВ" if rule == "dc" else ""
+        extra += (f", LTP {cl_ltp_sum[0] / mean_w:.0f} / LTD {cl_ltd_sum[0] / mean_w:.0f} ср. весов, ū {float(cl_ubar.mean()):.1f} мВ"
+                  if rule == "clopath" else "")
+        extra += (f"; веса 1/50/99% {float(wq[0]):.2f}/{float(wq[1]):.2f}/{float(wq[2]):.2f}, у потолка {at_cap:.2%}, "
+                  f"частая буква у {share:.0%} клеток")
         print(f"после {n_seen} показов ({time.time() - t0:.0f} с): точность {av:.2f} / {ac:.2f} "
               f"(перемешано {sv:.2f} / {sc:.2f}), избирательных {sel:.0%}, спайков на показ "
               f"{float(r_test.sum(1).mean()):.0f}, |Δw| {dw:.1%}, корр. Δw у ямки {float(off.median()):.2f}{extra}", flush=True)

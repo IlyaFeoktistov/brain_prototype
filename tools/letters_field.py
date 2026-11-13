@@ -16,7 +16,11 @@ V1 → буквы 12 px): своя группа стреляет teacher_hz, п�
 группа с наибольшей средней частотой среди клеток той же полосы; точность
 всего и по местам (7 корзин по 7 px), контроль — перемешанные метки ×100.
 
-    PYTHONPATH=. .venv/bin/python tools/letters_field.py [train=50] [test=10] [seed=1] [band=6] [out=…] [load=…] [learn=1] [shows=N]
+places=10,28,46 — только эти места (±1 px, как у ямки в letters_us); проверка
+— по каждому месту отдельно. Для проверки версии «сдвиги в поле клетки»
+(DESIGN 2026-11-14): узкая полоса учителя (band=1.5) в немногих местах.
+
+    PYTHONPATH=. .venv/bin/python tools/letters_field.py [train=50] [test=10] [seed=1] [band=6] [out=…] [load=…] [learn=1] [shows=N] [places=…]
 """
 
 from __future__ import annotations
@@ -61,6 +65,15 @@ def main(opts: dict) -> None:
     s.line, s.gaze = "", 0.0
     b.run(2500.0, s._blank(2500.0))
     lo, hi = 4.0, width - 4.0
+    fixed = [float(x) for x in opts["places"].split(",")] if opts.get("places") else None
+
+    def draw(n: int, g: torch.Generator) -> torch.Tensor:
+        """Места центров букв: равномерно по строке или фиксированные ±1 px."""
+
+        if fixed is None:
+            return lo + torch.rand(n, generator=g) * (hi - lo)
+        k = torch.randint(0, len(fixed), (n,), generator=g)
+        return torch.tensor(fixed)[k] + torch.randint(-1, 2, (n,), generator=g).float()
 
     def show(k: int, centre: float, train: bool) -> torch.Tensor:
         """Буква k с центром в месте centre строки; частоты клеток полосы по группам."""
@@ -84,13 +97,13 @@ def main(opts: dict) -> None:
     t0 = time.time()
     order = torch.arange(L).repeat(n_train)
     order = order[torch.randperm(len(order), generator=gen)]
-    places = lo + torch.rand(len(order), generator=gen) * (hi - lo)
+    places = draw(len(order), gen)
     if "shows" in opts:
         # Другие показы учёбы (места и порядок) при продолжении; генератор
         # зерна израсходован как прежде — проверка та же, что у прежних кусков.
         tg = torch.Generator().manual_seed(int(opts["shows"]))
         order = order[torch.randperm(len(order), generator=tg)]
-        places = lo + torch.rand(len(order), generator=tg) * (hi - lo)
+        places = draw(len(order), tg)
     if n_train and learn:
         for j, (k, c) in enumerate(zip(order.tolist(), places.tolist())):
             show(k, c, True)
@@ -102,7 +115,7 @@ def main(opts: dict) -> None:
 
     idx = torch.arange(L).repeat(n_test)
     idx = idx[torch.randperm(len(idx), generator=gen)]
-    where = lo + torch.rand(len(idx), generator=gen) * (hi - lo)
+    where = draw(len(idx), gen)
     G = torch.stack([show(k, c, False) for k, c in zip(idx.tolist(), where.tolist())]).cpu()
     pred = G.argmax(1)
     ok = (pred == idx).float()
@@ -110,9 +123,14 @@ def main(opts: dict) -> None:
     print(f"\nпроверка {n_test} показов каждой в случайных местах (случайно {1 / L:.2f}; перемешано×100: 95% {float(null.quantile(0.95)):.2f}):")
     print(f"  буква по группам полосы {float(ok.mean()):.2f}; |Δw| {float((path.weight - w0).abs().mean() / w0.mean()):.1%}; "
           f"частота полосы на букве {float(G.mean()):.2f} Гц")
-    bins = torch.clamp(((where - lo) / (hi - lo) * 7).long(), max=6)
-    print("  по местам (центр корзины, px: верно/показов): " + "  ".join(
-        f"{float(lo + (i + 0.5) * (hi - lo) / 7):.0f}: {int(ok[bins == i].sum())}/{int((bins == i).sum())}" for i in range(7)))
+    if fixed is None:
+        bins = torch.clamp(((where - lo) / (hi - lo) * 7).long(), max=6)
+        print("  по местам (центр корзины, px: верно/показов): " + "  ".join(
+            f"{float(lo + (i + 0.5) * (hi - lo) / 7):.0f}: {int(ok[bins == i].sum())}/{int((bins == i).sum())}" for i in range(7)))
+    else:
+        near = torch.tensor([min(range(len(fixed)), key=lambda i: abs(fixed[i] - float(c))) for c in where])
+        print("  по местам: " + "  ".join(
+            f"{fixed[i]:.0f} px {float(ok[near == i].mean()):.2f} ({int((near == i).sum())} показов)" for i in range(len(fixed))))
     conf = torch.zeros(L, L, dtype=torch.long)
     for a, p_ in zip(idx.tolist(), pred.tolist()):
         conf[a, p_] += 1

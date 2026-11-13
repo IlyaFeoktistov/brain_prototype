@@ -3480,7 +3480,7 @@ class SpikingBrain:
         """
         Шаг обучения с учителем на путях self.us (cfg.us_*): ΔW = η · mean_w ·
         (S − φ(V)·dt) · x_пре; S — спайк клетки на этом шаге (на учёбе —
-        навязанный учителем), φ(V) = us_max / (1 + exp(−(V − v_t)/наклон)),
+        навязанный учителем), φ(V) = us_max / (1 + exp(−(V − v_t − us_center)/наклон)),
         x_пре — след спайков входа (τ us_tau_pre_ms); вес в [0, cap].
         """
 
@@ -3490,7 +3490,7 @@ class SpikingBrain:
 
         for p in self.us:
             post = slice(p.post.start, p.post.stop)
-            phi = cfg.us_max_khz * torch.sigmoid((self.v[post] - self.v_t[post]) / cfg.us_slope_mv)
+            phi = cfg.us_max_khz * torch.sigmoid((self.v[post] - self.v_t[post] - cfg.us_center_mv) / cfg.us_slope_mv)
             err = self.spikes[post] - phi * dt
             x = self.us_x.index_select(0, p.pre.flatten()).view(p.pre.shape)
             p.weight.add_((cfg.us_eta * p.us_mean) * err[:, None] * x).clamp_(0.0, p.cap)

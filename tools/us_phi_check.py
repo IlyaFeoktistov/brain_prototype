@@ -60,7 +60,7 @@ def main(opts: dict) -> None:
             r = b.observe(chunk, part)
             spikes += r[cells] * (chunk / 1000.0)
             dv = b.v[cells] - vt
-            phi += cfg.us_max_khz * 1000.0 * torch.sigmoid(dv / cfg.us_slope_mv)
+            phi += cfg.us_max_khz * 1000.0 * torch.sigmoid((dv - cfg.us_center_mv) / cfg.us_slope_mv)
             above += (dv > 0).float()
             vs.append(dv)
         return {"rate": spikes / (ms / 1000.0), "phi": phi / n, "above": above / n, "dv": torch.stack(vs)}
@@ -95,7 +95,7 @@ def main(opts: dict) -> None:
                 f"{letters[k]} {float(rate[group == k].mean()):.1f}/{float(phi[group == k].mean()):.1f}/{float(err[group == k].mean()):+.1f}"
                 for k in range(L)))
 
-    print(f"φ: us_max {cfg.us_max_khz * 1000:.0f} Гц, наклон {cfg.us_slope_mv} мВ, центр v_t; v_t клеток "
+    print(f"φ: us_max {cfg.us_max_khz * 1000:.0f} Гц, наклон {cfg.us_slope_mv} мВ, центр v_t{cfg.us_center_mv:+.2f}; v_t клеток "
           f"{float(vt.mean()):.1f} мВ; v_reset {cfg.v_reset}; кусок замера {chunk} мс", flush=True)
     measure("врождённые веса (начало учёбы)")
     if os.path.exists(load):

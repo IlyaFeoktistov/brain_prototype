@@ -16,7 +16,7 @@ Urbanczik & Senn 2014), учитель — зажим спайков (engine.tea
               сумма по группе (без динамики клеток букв).
 Сохранение: out=файл — веса пути после учёбы (повторная проверка — load=файл).
 
-    PYTHONPATH=. .venv/bin/python tools/letters_us.py [train=30] [test=10] [learn=1] [seed=1] [out=…] [load=…]
+    PYTHONPATH=. .venv/bin/python tools/letters_us.py [train=30] [test=10] [learn=1] [seed=1] [out=…] [load=…] [detail=1]
 """
 
 from __future__ import annotations
@@ -61,6 +61,8 @@ def main(opts: dict) -> None:
     b.teach_pop.zero_()
     b.teach_pop[cells] = True
 
+    blank: list[torch.Tensor] = []                            # частоты учимых на паузе после показа, Гц
+
     def show(k: int, train: bool) -> tuple[torch.Tensor, torch.Tensor]:
         s.line = letters[k]
         s.gaze = s.screen.width(letters[k]) / 2 + float(torch.randint(-1, 2, (1,), generator=gen))
@@ -70,7 +72,8 @@ def main(opts: dict) -> None:
         r = b.observe(show_ms, s._view(show_ms)) * (show_ms / 1000.0)
         b.teach_on = b.us_on = False
         s.line = ""
-        b.observe(rest_ms, s._blank(rest_ms))
+        rb = b.observe(rest_ms, s._blank(rest_ms))
+        blank.append(rb[cells].float())
         return r[cells].float(), r[v1.slice].float()
 
     t0 = time.time()
@@ -90,6 +93,7 @@ def main(opts: dict) -> None:
         torch.save({"weight": path.weight.cpu(), "opts": opts}, opts["out"])
 
     # Проверка без учителя.
+    blank.clear()
     idx = torch.arange(L).repeat(n_test)
     idx = idx[torch.randperm(len(idx), generator=gen)]
     outs = [show(k, False) for k in idx.tolist()]
@@ -114,6 +118,34 @@ def main(opts: dict) -> None:
     for a, p_ in zip(y.tolist(), g.argmax(1).tolist()):
         conf[a, p_] += 1
     print("  верно по буквам: " + " ".join(f"{letters[k]} {int(conf[k, k])}/{int(conf[k].sum())}" for k in range(L)))
+    if opts.get("detail") == "1":
+        # Где перекос (DESIGN 2026-11-13): матрица путаницы, ответ групп на
+        # буквы, фон групп на паузе, ответ − фон, активность V1 L2/3 на букву.
+        print("\n  путаница (строка — показанная буква, столбец — ответ):")
+        print("     " + " ".join(f"{c:>3}" for c in letters))
+        for k in range(L):
+            print(f"  {letters[k]}  " + " ".join(f"{int(conf[k, j]):3d}" for j in range(L)))
+        rate = torch.stack([R[:, group == k].mean(1) for k in range(L)], 1) / (show_ms / 1000.0)   # [показ, группа], Гц на клетку
+        Bk = torch.stack(blank)
+        base = torch.stack([Bk[:, group == k].mean(1) for k in range(L)], 1).mean(0)               # [группа], Гц
+        M = torch.stack([rate[y == k].mean(0) for k in range(L)], 0).cpu()                         # [буква, группа]
+        print("\n  ответ групп, Гц на клетку (строка — буква, столбец — группа); последняя строка — фон на паузе:")
+        print("     " + " ".join(f"{c:>5}" for c in letters))
+        for k in range(L):
+            print(f"  {letters[k]}  " + " ".join(f"{float(M[k, j]):5.2f}" for j in range(L)))
+        print("  фон " + " ".join(f"{float(x):5.2f}" for x in base.cpu()))
+        D = M - base.cpu()[None, :]
+        print("\n  ответ − фон, Гц (строка — буква, столбец — группа); * — максимум строки:")
+        print("     " + " ".join(f"{c:>6}" for c in letters))
+        for k in range(L):
+            j = int(D[k].argmax())
+            print(f"  {letters[k]}  " + " ".join(f"{float(D[k, i]):+5.2f}{'*' if i == j else ' '}" for i in range(L)))
+        own = D.diagonal()
+        other = (D.sum(1) - own) / (L - 1)
+        print("  своя − средняя чужая (по буквам): " + " ".join(f"{letters[k]} {float(own[k] - other[k]):+.2f}" for k in range(L)))
+        print("  средний ответ группы на все буквы − фон: " + " ".join(f"{letters[k]} {float(D[:, k].mean()):+.2f}" for k in range(L)))
+        v1r = torch.stack([X[y == k].sum(1).mean() for k in range(L)]).cpu() / v1.size / (show_ms / 1000.0)
+        print("  V1 L2/3, средняя частота на букве, Гц: " + " ".join(f"{letters[k]} {float(v1r[k]):.2f}" for k in range(L)))
     print(f"всего {time.time() - t0:.0f} с")
 
 

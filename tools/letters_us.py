@@ -16,7 +16,13 @@ Urbanczik & Senn 2014), учитель — зажим спайков (engine.tea
               сумма по группе (без динамики клеток букв).
 Сохранение: out=файл — веса пути после учёбы (повторная проверка — load=файл).
 
-    PYTHONPATH=. .venv/bin/python tools/letters_us.py [train=30] [test=10] [learn=1] [seed=1] [out=…] [load=…] [detail=1]
+layer=L23 — учится выход зоны: путь L4 → L2/3 зоны букв (letters: L4.E->E),
+учитель — 200 клеток L2/3 E у ямки (по 20 на букву, так же чередуются);
+веса V1 → буквы L4 — после учёбы (l4=файл, по умолчанию
+~/.brain/letters_us_phi60_s{seed}.pt) и не меняются. Источник для «по весам» —
+L4 E зоны букв; опорно печатается буква по группам L4 (учимые прежде клетки).
+
+    PYTHONPATH=. .venv/bin/python tools/letters_us.py [train=30] [test=10] [learn=1] [seed=1] [out=…] [load=…] [detail=1] [layer=L23] [l4=…]
 """
 
 from __future__ import annotations
@@ -27,11 +33,18 @@ import time
 import torch
 
 from brain.session import Session
-from tools.reading_bench import build
+from tools.reading_bench import BRAIN_HOME, build
+
+
+def path_name(b) -> str:
+    return b.us[0].name
 
 
 def main(opts: dict) -> None:
     seed = int(opts.get("seed", 1))
+    out_layer = opts.get("layer", "L4") == "L23"
+    if out_layer:
+        opts = {"us": "letters: L4.E->E", **opts}
     opts = {"fit": "lgn-a", "homeo": f"lgn-d-pop{'' if opts.get('tc_indep') == '0' else '-tcind'}-s{seed}",
             "relay_v_t_mv": "-59", "trn_scale": "0.1", "us": "visual -> letters", **opts}
     mind, b = build(opts)
@@ -46,9 +59,42 @@ def main(opts: dict) -> None:
     path = b.us[0]
     L4 = path.post
     v1 = b.areas["visual"].layers["L23"]["E"]
+    src = b.areas["letters"].layers["L4"]["E"] if out_layer else v1    # источник учимого пути
     dev = b.device
+    l4ref = None
+    if out_layer:
+        f = opts.get("l4", str(BRAIN_HOME / f"letters_us_phi60_s{seed}.pt"))
+        vl = next(p for p in b.projections if p.name == "visual -> letters")
+        vl.weight.copy_(torch.load(f, map_location=dev)["weight"])
+        Lp = b.areas["letters"].layers["L4"]["E"]
+        l4ref = (b.field_cols[Lp.name] - b.cfg.fovea_col).abs().argsort()[:20 * len(opts.get("letters", "абвгдежзик"))].to(dev) + Lp.start
+        print(f"веса V1 → буквы L4: {f} (не учатся); учится {path_name(b)}", flush=True)
     near = (b.field_cols[L4.name] - b.cfg.fovea_col).abs().argsort()[:20 * L].to(dev)
     group = torch.arange(len(near), device=dev) % L          # чередование по расстоянию
+    if out_layer:
+        # Сортировка по расстоянию чередует стороны ямки: группы L4 (ранг % L)
+        # лежат чётные по одну сторону, нечётные — по другую, а клетка L2/3
+        # берёт ближайшие L4 своей стороны (у группы L2/3 по рангу — 0.8 входа
+        # своей буквы из 56; DESIGN 2026-11-13). Группа клетки L2/3 — та буква,
+        # от учимых клеток L4 которой у неё больше всего входов (по 20 на
+        # букву, по очереди из 2×200 ближайших к ямке).
+        cand = (b.field_cols[L4.name] - b.cfg.fovea_col).abs().argsort()[:40 * L].to(dev)
+        g4 = torch.full((src.size,), -1, device=dev, dtype=torch.long)
+        g4[l4ref - src.start] = torch.arange(len(l4ref), device=dev) % L
+        pg = g4[path.pre[cand].long() - src.start]
+        C = torch.stack([(pg == k).sum(1) for k in range(L)], 1).float()      # [клетка, буква]
+        free = torch.ones(len(cand), dtype=torch.bool, device=dev)
+        pick, lab = [], []
+        for _ in range(20):
+            for k in range(L):
+                i = int(torch.where(free, C[:, k], torch.tensor(-1.0, device=dev)).argmax())
+                free[i] = False
+                pick.append(i); lab.append(k)
+        near = cand[torch.tensor(pick, device=dev)]
+        group = torch.tensor(lab, device=dev)
+        own = C[torch.tensor(pick, device=dev), group]
+        print(f"группы L2/3 по входам: своих входов (от учимых L4 своей буквы) на клетку {float(own.mean()):.1f} "
+              f"(мин {float(own.min()):.0f}) из {path.pre.shape[1]}", flush=True)
     cells = near + L4.start
     if opts.get("load"):
         path.weight.copy_(torch.load(opts["load"], map_location=dev)["weight"])
@@ -74,14 +120,14 @@ def main(opts: dict) -> None:
         s.line = ""
         rb = b.observe(rest_ms, s._blank(rest_ms))
         blank.append(rb[cells].float())
-        return r[cells].float(), r[v1.slice].float()
+        return r[cells].float(), r[src.slice].float(), (r[l4ref].float() if l4ref is not None else None)
 
     t0 = time.time()
     order = torch.arange(L).repeat(n_train)
     order = order[torch.randperm(len(order), generator=gen)]
     if n_train and learn:
         for j, k in enumerate(order.tolist()):
-            r, _ = show(k, True)
+            r = show(k, True)[0]
             if (j + 1) % 50 == 0:
                 dw = float((path.weight - w0).abs().mean() / w0.mean())
                 own = float(r[group == k].sum()) / max(float(r.sum()), 1.0)
@@ -98,22 +144,28 @@ def main(opts: dict) -> None:
     idx = idx[torch.randperm(len(idx), generator=gen)]
     outs = [show(k, False) for k in idx.tolist()]
     R = torch.stack([o[0] for o in outs])                     # [показ, учимые клетки]
-    X = torch.stack([o[1] for o in outs])                     # [показ, V1 L2/3]
+    X = torch.stack([o[1] for o in outs])                     # [показ, источник пути]
     y = idx.to(dev)
     g = torch.stack([R[:, group == k].sum(1) for k in range(L)], 1)
     acc = float((g.argmax(1) == y).float().mean())
     silent = float((g.sum(1) == 0).float().mean())
-    # По весам: вход клетки = Σ w · счёт источника V1 L2/3 за показ.
-    pre = path.pre[near].long() - v1.start
-    ok = (pre >= 0) & (pre < v1.size)
+    # По весам: вход клетки = Σ w · счёт источника пути за показ.
+    pre = path.pre[near].long() - src.start
+    ok = (pre >= 0) & (pre < src.size)
     w = path.weight[near].float() * ok
-    drive = torch.stack([(w * X[i][pre.clamp(0, v1.size - 1)]).sum(1) for i in range(len(X))])
+    drive = torch.stack([(w * X[i][pre.clamp(0, src.size - 1)]).sum(1) for i in range(len(X))])
     gw = torch.stack([drive[:, group == k].sum(1) for k in range(L)], 1)
     acc_w = float(((gw - gw.mean(1, keepdim=True)).argmax(1) == y).float().mean())
     null = torch.tensor([float((g.argmax(1) == y[torch.randperm(len(y), device=dev)]).float().mean()) for _ in range(100)])
     print(f"\nпроверка {n_test} показов каждой, учитель ВЫКЛ (случайно {1 / L:.2f}; перемешано×100: 95% {float(null.quantile(0.95)):.2f}):")
     print(f"  буква по спайкам групп {acc:.2f} (без спайков {silent:.0%}), по весам {acc_w:.2f}; спайков учимых клеток на показ "
           f"{float(R.sum(1).mean()):.1f}; |Δw| {float((path.weight - w0).abs().mean() / w0.mean()):.1%}", flush=True)
+    if l4ref is not None:
+        R4 = torch.stack([o[2] for o in outs])
+        grp4 = torch.arange(R4.shape[1], device=dev) % L
+        g4 = torch.stack([R4[:, grp4 == k].sum(1) for k in range(L)], 1)
+        print(f"  опора — группы L4 зоны букв: {float((g4.argmax(1) == y).float().mean()):.2f}; "
+              f"частота учимых L2/3 на букве {float(R.mean()) / (show_ms / 1000.0):.2f} Гц", flush=True)
     conf = torch.zeros(L, L, dtype=torch.long)
     for a, p_ in zip(y.tolist(), g.argmax(1).tolist()):
         conf[a, p_] += 1
@@ -144,8 +196,8 @@ def main(opts: dict) -> None:
         other = (D.sum(1) - own) / (L - 1)
         print("  своя − средняя чужая (по буквам): " + " ".join(f"{letters[k]} {float(own[k] - other[k]):+.2f}" for k in range(L)))
         print("  средний ответ группы на все буквы − фон: " + " ".join(f"{letters[k]} {float(D[:, k].mean()):+.2f}" for k in range(L)))
-        v1r = torch.stack([X[y == k].sum(1).mean() for k in range(L)]).cpu() / v1.size / (show_ms / 1000.0)
-        print("  V1 L2/3, средняя частота на букве, Гц: " + " ".join(f"{letters[k]} {float(v1r[k]):.2f}" for k in range(L)))
+        v1r = torch.stack([X[y == k].sum(1).mean() for k in range(L)]).cpu() / src.size / (show_ms / 1000.0)
+        print(f"  {'буквы L4' if out_layer else 'V1 L2/3'}, средняя частота на букве, Гц: " + " ".join(f"{letters[k]} {float(v1r[k]):.2f}" for k in range(L)))
     print(f"всего {time.time() - t0:.0f} с")
 
 

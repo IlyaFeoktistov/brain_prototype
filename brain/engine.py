@@ -2312,6 +2312,12 @@ class SpikingBrain:
         for p in self.us:
             p.plastic = False
             p.us_mean = float(p.weight.mean())
+            p.us_phi = next(((m, c, s) for n, m, c, s in self.cfg.us_phi_paths if n == p.name),
+                            (self.cfg.us_max_khz, self.cfg.us_center_mv, self.cfg.us_slope_mv))
+            if p.cap <= 0:
+                # Врождённый путь без потолка (связи внутри колонки) — потолок
+                # обучаемого: learned_cap_psp средних весов пути (Song et al. 2005).
+                p.cap = self.cfg.learned_cap_psp * p.us_mean
         # Пути блока Diehl & Cook (cfg.dc_paths): веса меняет _dc, STDP их не трогает.
         self.dc = [p for p in self.projections if p.name in self.cfg.dc_paths]
         for p in self.dc:
@@ -3490,7 +3496,8 @@ class SpikingBrain:
 
         for p in self.us:
             post = slice(p.post.start, p.post.stop)
-            phi = cfg.us_max_khz * torch.sigmoid((self.v[post] - self.v_t[post] - cfg.us_center_mv) / cfg.us_slope_mv)
+            phi_max, centre, slope = p.us_phi
+            phi = phi_max * torch.sigmoid((self.v[post] - self.v_t[post] - centre) / slope)
             err = self.spikes[post] - phi * dt
             x = self.us_x.index_select(0, p.pre.flatten()).view(p.pre.shape)
             p.weight.add_((cfg.us_eta * p.us_mean) * err[:, None] * x).clamp_(0.0, p.cap)

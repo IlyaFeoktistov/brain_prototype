@@ -16,7 +16,7 @@ V1 → буквы 12 px): своя группа стреляет teacher_hz, п�
 группа с наибольшей средней частотой среди клеток той же полосы; точность
 всего и по местам (7 корзин по 7 px), контроль — перемешанные метки ×100.
 
-    PYTHONPATH=. .venv/bin/python tools/letters_field.py [train=50] [test=10] [seed=1] [band=6] [out=…] [load=…] [learn=1]
+    PYTHONPATH=. .venv/bin/python tools/letters_field.py [train=50] [test=10] [seed=1] [band=6] [out=…] [load=…] [learn=1] [shows=N]
 """
 
 from __future__ import annotations
@@ -85,6 +85,12 @@ def main(opts: dict) -> None:
     order = torch.arange(L).repeat(n_train)
     order = order[torch.randperm(len(order), generator=gen)]
     places = lo + torch.rand(len(order), generator=gen) * (hi - lo)
+    if "shows" in opts:
+        # Другие показы учёбы (места и порядок) при продолжении; генератор
+        # зерна израсходован как прежде — проверка та же, что у прежних кусков.
+        tg = torch.Generator().manual_seed(int(opts["shows"]))
+        order = order[torch.randperm(len(order), generator=tg)]
+        places = lo + torch.rand(len(order), generator=tg) * (hi - lo)
     if n_train and learn:
         for j, (k, c) in enumerate(zip(order.tolist(), places.tolist())):
             show(k, c, True)

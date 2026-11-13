@@ -28,7 +28,7 @@ L4, L2/3, L5, L6. Окна: каждая фиксация отдельно и в
 наборов перестановок (порядок букв при том же наборе) и внутри набора «одна
 буква».
 
-    PYTHONPATH=. .venv/bin/python tools/word_read.py [seed=1] [reps=8] [fix=350] [rest=300] [words=…] [load=…]
+    PYTHONPATH=. .venv/bin/python tools/word_read.py [seed=1] [reps=8] [fix=350] [rest=300] [words=…] [load=…] [l23=…]
 """
 
 from __future__ import annotations
@@ -85,6 +85,11 @@ def main(opts: dict) -> None:
 
     path = b.us[0]
     path.weight.copy_(torch.load(load, map_location=dev)["weight"])
+    if opts.get("l23"):
+        # Веса выхода зоны L4 → L2/3 после учёбы (letters_us layer=L23).
+        l23 = next(p for p in b.projections if p.name == "letters: L4.E->E")
+        l23.weight.copy_(torch.load(opts["l23"], map_location=dev)["weight"])
+        print(f"веса пути {l23.name}: {opts['l23']}", flush=True)
     L4 = path.post
     L = len(LETTERS)
     near = (b.field_cols[L4.name] - b.cfg.fovea_col).abs().argsort()[:20 * L].to(dev)

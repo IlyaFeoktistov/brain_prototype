@@ -3284,9 +3284,15 @@ class SpikingBrain:
         if self.clamp_on:
             fired = torch.where(self.clamp_mask, self.clamp_now, fired)
 
+        reset = fired
         if self.teach_on:
             # Учитель (Legenstein et al. 2005; Urbanczik & Senn 2014 — ток на сому):
             # группа буквы стреляет пуассоном teacher_hz, прочие учимые — молчат.
+            # Учитель задаёт только выход клетки; мембрана живёт по своим
+            # входам и сбрасывается по своему порогу — она и есть предсказание
+            # φ(V) правила (_us), как дендрит у Urbanczik & Senn, на который
+            # учитель не действует. Без этого молчащая клетка за порогом не
+            # сбрасывалась, φ стояла в максимуме, веса падали (2026-11-13).
             taught = self.teach_target & (torch.rand(self.n_slots, device=self.device) < cfg.teacher_hz * cfg.dt_ms / 1000.0)
             fired = torch.where(self.teach_pop, taught, fired)
         self.spikes.copy_(fired)
@@ -3299,8 +3305,8 @@ class SpikingBrain:
         self.chemistry.mul_(torch.where(asleep, ds, dw)).add_(released * torch.where(asleep, rs, rw) + torch.where(asleep, bs, bw))
         self.acetylcholine.copy_(occupancy[self.ach_chemistry : self.ach_chemistry + 1])
 
-        self.v.copy_(torch.where(fired, cfg.v_reset, v))
-        self.refractory.copy_(torch.where(fired, cfg.refractory_ms, self.refractory))
+        self.v.copy_(torch.where(reset, cfg.v_reset, v))
+        self.refractory.copy_(torch.where(reset, cfg.refractory_ms, self.refractory))
         self.adapt.mul_(self.decay_adapt).add_(self.adapt_b * self.spikes)
         # Ресурс путей ядер с депрессией восстанавливается к 1, спайк тратит
         # долю stp_u_cell (nucleus_stp).

@@ -49,7 +49,11 @@ def main(opts: dict) -> None:
             w = torch.load(opts[key], map_location=dev)["weight"]
             next(p for p in b.projections if p.name == name).weight.copy_(w)
             print(f"веса {name}: {opts[key]}", flush=True)
-    near = (b.field_cols[L4.name] - cfg.fovea_col).abs().argsort()[:20 * L].to(dev)
+    if L4.name in b.field_cols:
+        near = (b.field_cols[L4.name] - cfg.fovea_col).abs().argsort()[:20 * L].to(dev)
+    else:
+        # Зона без карты поля (смысл): случайные клетки, как в word_us.
+        near = torch.randperm(L4.size, generator=torch.Generator().manual_seed(2000 + seed))[:20 * L].to(dev)
     cells = near + L4.start
     vt = b.v_t[cells]
     chunk = b.CHUNK * cfg.dt_ms

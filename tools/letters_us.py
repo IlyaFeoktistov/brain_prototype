@@ -22,7 +22,7 @@ layer=L23 — учится выход зоны: путь L4 → L2/3 зоны б
 ~/.brain/letters_us_phi60_s{seed}.pt) и не меняются. Источник для «по весам» —
 L4 E зоны букв; опорно печатается буква по группам L4 (учимые прежде клетки).
 
-    PYTHONPATH=. .venv/bin/python tools/letters_us.py [train=30] [test=10] [learn=1] [seed=1] [out=…] [load=…] [detail=1] [layer=L23] [l4=…]
+    PYTHONPATH=. .venv/bin/python tools/letters_us.py [train=30] [test=10] [learn=1] [seed=1] [out=…] [load=…] [detail=1] [layer=L23] [l4=…] [shifts=0,3,…]
 """
 
 from __future__ import annotations
@@ -109,9 +109,10 @@ def main(opts: dict) -> None:
 
     blank: list[torch.Tensor] = []                            # частоты учимых на паузе после показа, Гц
 
-    def show(k: int, train: bool) -> tuple[torch.Tensor, torch.Tensor]:
+    def show(k: int, train: bool, shift: float = 0.0) -> tuple[torch.Tensor, torch.Tensor]:
         s.line = letters[k]
-        s.gaze = s.screen.width(letters[k]) / 2 + float(torch.randint(-1, 2, (1,), generator=gen))
+        # shift > 0 — буква левее ямки на shift px (центр = fovea_col − shift).
+        s.gaze = s.screen.width(letters[k]) / 2 + float(torch.randint(-1, 2, (1,), generator=gen)) + shift
         b.teach_target.zero_()
         b.teach_target[cells[group == k]] = True
         b.teach_on = b.us_on = train
@@ -137,6 +138,21 @@ def main(opts: dict) -> None:
             show(k, False)
     if opts.get("out"):
         torch.save({"weight": path.weight.cpu(), "opts": opts}, opts["out"])
+
+    if opts.get("shifts"):
+        # Допуск к месту (DESIGN 2026-11-15): та же проверка, буква сдвинута
+        # от ямки; группы — учимые у ямки клетки (ответ — по спайкам групп).
+        for sh in [float(x) for x in opts["shifts"].split(",")]:
+            idx = torch.arange(L).repeat(n_test)
+            idx = idx[torch.randperm(len(idx), generator=gen)]
+            R = torch.stack([show(k, False, sh)[0] for k in idx.tolist()])
+            g = torch.stack([R[:, group == k].sum(1) for k in range(L)], 1)
+            acc = float((g.argmax(1) == idx.to(dev)).float().mean())
+            null = torch.tensor([float((g.argmax(1) == idx.to(dev)[torch.randperm(len(idx), device=dev)]).float().mean()) for _ in range(100)])
+            print(f"  сдвиг {sh:+.0f} px: буква {acc:.2f} (перемешано 95% {float(null.quantile(0.95)):.2f}); "
+                  f"спайков учимых на показ {float(R.sum(1).mean()):.1f}; без спайков {float((g.sum(1) == 0).float().mean()):.0%}", flush=True)
+        print(f"всего {time.time() - t0:.0f} с")
+        return
 
     # Проверка без учителя.
     blank.clear()

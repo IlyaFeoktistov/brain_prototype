@@ -15,7 +15,7 @@ v_t и максимум 100 Гц завышают частоту ~×8 у все�
 и по клеткам, прежняя φ — рядом. Корзины V с < min_n наблюдений не
 показываются (экстраполяция туда — без опоры).
 
-    PYTHONPATH=. .venv/bin/python tools/us_phi_fit.py [shows=6] [seed=1] [min_n=500]
+    PYTHONPATH=. .venv/bin/python tools/us_phi_fit.py [shows=6] [seed=1] [min_n=500] [us=путь] [load=веса V1 → буквы] [l23=веса L4 → L2/3 букв]
 """
 
 from __future__ import annotations
@@ -42,6 +42,13 @@ def main(opts: dict) -> None:
     torch.manual_seed(seed)
     L4 = b.us[0].post
     dev = b.device
+    # Выученные веса пути V1 → буквы и выхода зоны букв (load=, l23=) — чтобы
+    # вход клеток был как в опыте (для путей дальше по цепи).
+    for key, name in (("load", "visual -> letters"), ("l23", "letters: L4.E->E")):
+        if opts.get(key):
+            w = torch.load(opts[key], map_location=dev)["weight"]
+            next(p for p in b.projections if p.name == name).weight.copy_(w)
+            print(f"веса {name}: {opts[key]}", flush=True)
     near = (b.field_cols[L4.name] - cfg.fovea_col).abs().argsort()[:20 * L].to(dev)
     cells = near + L4.start
     vt = b.v_t[cells]

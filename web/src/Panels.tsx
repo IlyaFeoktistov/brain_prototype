@@ -236,6 +236,8 @@ export function Menu({ status, actions }: { status: Status; actions: MenuActions
 export function Chooser({ brains, onClose, info }: { brains: Brains; onClose?: () => void; info: (text: string) => void }) {
   const [name, setName] = useState("");
   const [neurons, setNeurons] = useState(brains.minNeurons);
+  // По умолчанию — рабочий мозг (тот, с которым идут опыты), если его файлы на месте.
+  const [preset, setPreset] = useState<string>(brains.presets.find((p) => p.ready)?.name ?? "");
   const [preview, setPreview] = useState<{ total: number; min: number } | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -270,15 +272,21 @@ export function Chooser({ brains, onClose, info }: { brains: Brains; onClose?: (
       </section>
       <section>
         <h3>Создать новый</h3>
-        <form onSubmit={(e) => { e.preventDefault(); act(api.newBrain(name.trim(), neurons), `создаю ${name}`); }}>
+        <form onSubmit={(e) => { e.preventDefault(); act(api.newBrain(name.trim(), neurons, preset || null), `создаю ${name}`); }}>
           <label>имя <input value={name} onChange={(e) => setName(e.target.value)} placeholder="например, первый" /></label>
-          <label>нейронов <input type="number" min={1} step={10000} value={neurons} onChange={(e) => setNeurons(Number(e.target.value))} /></label>
-          <p className="muted">
+          <label>сборка <select value={preset} onChange={(e) => setPreset(e.target.value)}>
+            {brains.presets.map((p) => (
+              <option key={p.name} value={p.name} disabled={!p.ready}>{p.title}{p.ready ? "" : " — нет файлов"}</option>
+            ))}
+            <option value="">голый мозг заданного размера</option>
+          </select></label>
+          {!preset && <label>нейронов <input type="number" min={1} step={10000} value={neurons} onChange={(e) => setNeurons(Number(e.target.value))} /></label>}
+          {preset ? <p className="muted">Размер — наименьший мозг ({brains.minNeurons.toLocaleString("ru")} нейронов): подгонки посчитаны на нём.</p> : <p className="muted">
             Ядра получают клетки по данным и долям, остальное делится между колонками коры по их долям; колонка не меньше 20 тыс.
             клеток. Минимум — {brains.minNeurons.toLocaleString("ru")}.
             {preview && <> Получится <strong>{preview.total.toLocaleString("ru")}</strong> нейронов.</>}
-          </p>
-          <button type="submit" disabled={busy || !name.trim()} title="собрать новый мозг с нуля, без выученного, и сразу сохранить его">Создать</button>
+          </p>}
+          <button type="submit" disabled={busy || !name.trim()} title="собрать новый мозг (по сборке или голый) и сразу сохранить его">Создать</button>
         </form>
       </section>
     </div>

@@ -26,7 +26,8 @@ export const lesson = (kind: string, n: number, extra: { text?: string; first?: 
   post<{ text: string }>("/api/lesson", { kind, n, ...extra });
 
 export const load = (name: string) => post<{ brain: string }>("/api/load", { name });
-export const newBrain = (name: string, neurons: number) => post<{ brain: string }>("/api/new", { name, neurons });
+export const newBrain = (name: string, neurons: number, preset: string | null) =>
+  post<{ brain: string }>("/api/new", { name, neurons, preset });
 export const save = () => post<{ brain: string }>("/api/save");
 export const sizes = (neurons: number) => get<{ neurons: number; total: number; min: number }>(`/api/sizes?neurons=${neurons}`);
 

@@ -36,6 +36,7 @@ from pydantic import BaseModel
 
 from brain import anatomy, neuron
 from brain.config import BRAINS, BrainConfig, brain_path
+from brain.presets import PRESETS
 from brain.engine import KINDS
 from brain.mind import Mind, describe_saved
 from brain.session import Session
@@ -266,8 +267,9 @@ class BrainHost:
 
         # Только мозги нового формата (старые этим кодом не открываются).
         items = [d for d in (describe_saved(p) for p in files) if not d["old"]]
+        presets = [{"name": p.name, "title": p.title, "ready": not p.missing()} for p in PRESETS.values()]
         return {"type": "brains", "current": current, "items": items,
-                "minNeurons": anatomy.min_size()}
+                "minNeurons": anatomy.min_size(), "presets": presets}
 
     # ==============================================================
     # РАБОЧИЙ ПОТОК
@@ -401,18 +403,22 @@ class BrainHost:
         self.mind = Mind.load(name)
         return self.mind.cfg.save_path
 
-    def new(self, name: str, neurons: int) -> str:
+    def new(self, name: str, neurons: int, preset: str | None = None) -> str:
+        """Новый мозг: голый заданного размера или по пресету (brain/presets.py, размер — пресета)."""
+
         if self.mind is not None and self.mind.cfg.autosave:
             self.mind.save()
 
-        cfg = BrainConfig()
-        cfg.size = str(int(neurons))
+        chosen = PRESETS[preset] if preset else None
+        cfg = chosen.config() if chosen else BrainConfig()
+        if not chosen:
+            cfg.size = str(int(neurons))
         cfg.save_path = str(brain_path(name if name.endswith(".pt") else name + ".pt"))
 
         if Path(cfg.save_path).exists():
             raise ValueError(f"мозг {Path(cfg.save_path).name} уже есть")
 
-        self.mind = Mind(cfg)
+        self.mind = chosen.build(cfg=cfg) if chosen else Mind(cfg)
         self.mind.save()
         return cfg.save_path
 
@@ -463,6 +469,7 @@ class Load(BaseModel):
 class New(BaseModel):
     name: str
     neurons: int
+    preset: str | None = None
 
 
 class Lesson(BaseModel):
@@ -568,7 +575,7 @@ async def new(body: New) -> dict:
     if not name:
         raise HTTPException(400, "нужно имя")
 
-    return {"brain": await _run(lambda: host.new(name, body.neurons), "новый мозг")}
+    return {"brain": await _run(lambda: host.new(name, body.neurons, body.preset), "новый мозг")}
 
 
 @app.post("/api/save")

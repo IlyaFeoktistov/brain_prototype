@@ -71,6 +71,7 @@ export interface Brains {
   current: string | null;
   items: SavedBrain[];
   minNeurons: number;
+  presets: { name: string; title: string; ready: boolean }[];
 }
 
 export interface Spikes {

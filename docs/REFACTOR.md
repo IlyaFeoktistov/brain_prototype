@@ -1,0 +1,81 @@
+# План перестройки кода
+
+Отложен 2026-11-15 ради опытов. Находки по ходу — [ISSUES.md](ISSUES.md).
+
+Цель: логические блоки, без дублей, без магических строк и чисел (SOLID/KISS).
+Образец — слои симуляторов PyNN / BindsNET / GeNN:
+описание модели → сборка (connectors) → сеть → симулятор → правила
+пластичности как объекты → регистраторы → опыты.
+
+## Что есть (2026-11-15)
+- brain/engine.py — 4073 строки, один класс SpikingBrain (~110 методов):
+  SETUP 431–2966 (2500 строк: зоны, клетки, 8 способов проводки, фон, химия,
+  упаковка таблиц), SIMULATION 2966–3697 (_step 421 строка, run/observe,
+  CUDA Graph, правила _clopath/_us/_dc внутри шага), ПЛАСТИЧНОСТЬ 3697–3891,
+  состояние/гомеостаз/сохранение 3891–4073. ~270 числовых литералов,
+  проверки по именам зон.
+- Самые длинные методы: _step 421, _init_projections 367, _wire_column 214,
+  _pack 213, _init_state 212, _init_neurons 196, chemical_plasticity 102.
+- tools/ — 101 скрипт, ~15 тыс. строк; копии: настройки мозга "fit": "lgn-a"…
+  в 34 файлах, прогрев _blank(2500) — 25, manual_seed — 22, loo — 3.
+- Тестов не было; есть tests/golden.py (эталон).
+- Шапка engine.py описывает старую доставку («gather по фиксированному k») —
+  теперь события CSR; поправить при переносе.
+
+## Целевая раскладка
+brain/
+  spec/        config + anatomy: зоны, пути, числа со ссылками (без логики);
+               имена зон/путей — константы здесь (TRN_TO_LGN и т. п.)
+  build/       connectors — чистые функции: retinotopic, complex, topographic,
+               random, potjans, nearest, sheet, oriented; зоны и клетки; фон
+  net/         Population, Area, Projection
+  sim/         состояние, шаг, таблицы событий (EventTable, PrefixTable,
+               exact16), компиляция, CUDA Graph, run/observe
+  plasticity/  Rule (общий интерфейс): stdp3 (chemical), clopath,
+               urbanczik_senn (_us), diehl_cook (_dc), istdp (Vogels),
+               homeostasis, conserve, climbing (мозжечок)
+  chemistry/   вещества, рецепторы, часы
+  io/          state_dict, save/load, Mind
+  presets.py   готовые сборки (есть: WORKING) + ступени (см. ниже)
+  body/ world/ session/ server/ — как есть
+lab/           вместо tools: общая обвязка — мозг из пресета/ступени, показ
+               стимула (буква в месте, пусто), запись популяций, декодеры
+               (ближайший центр с выбросом одного, группы), нули
+               (перемешанные метки); опыты — тонкие файлы; режим опыта:
+               быстрый / интеграционный / контрольный
+
+## Эталон (tests/golden.py)
+- GPU, мозг small (как в опытах), зерно 1: пусто 200 мс → «а» у ямки 200 мс
+  с учителем и правилом US → пусто 100 мс с STDP → «б» 100 мс. Слепок:
+  частоты по окнам, все веса, state_dict (840 тензоров).
+- Ядра CUDA недетерминированы (atomicAdd во float, ISSUES 6): два прогона
+  расходятся в 59 из 840 тензоров уже в покое. Поэтому эталон —
+  BRAIN_KERNELS=0, BRAIN_COMPILE=0, torch.use_deterministic_algorithms(True),
+  CUBLAS_WORKSPACE_CONFIG=:4096:8 (так и написано в golden.py). Совпадение
+  ядер с путём PyTorch — tools/kernel_check.py.
+- Файл ~2.6 ГБ → ~/.brain/golden.pt (не в git).
+- НЕ ПРОВЕРЕНО: детерминирован ли путь PyTorch бит в бит (прогон прерван на
+  записи, >6.5 мин). Первым делом: write, затем сравнение; если расходится —
+  найти, где ещё плывёт (генераторы шума, index_add без детерминизма).
+- Время: путь PyTorch медленнее; гонять в очереди GPU за опытами.
+
+## Шаги (каждый — отдельный коммит, эталон бит в бит перед коммитом)
+1. Механический перенос: net.py, sim/events.py; методы SpikingBrain — в
+   модули build/, sim/, plasticity/, chemistry/, io/ как mixin-части класса,
+   тела не меняются; from brain.engine import SpikingBrain работает.
+2. Connectors — чистые функции (места клеток, окно, k → индексы); убрать
+   дубли _retinotopic_pre / _nearest_pre / _sheet_pre / _topographic_pre.
+3. Правила пластичности — объекты с общим интерфейсом вместо if-веток в _step.
+4. Литералы и имена зон — в spec со ссылками на источники.
+5. lab/: обвязка + перенос живых скриптов (letters_field, letters_us,
+   word_read, rf_map, reading_bench, v1_place, l4_decode, letters_offline…);
+   старые tools удалить (в git остаются; в DESIGN — пометка с коммитом).
+   reading_bench.build → presets.
+6. Ступени обученного мозга: полное состояние (Mind.save), отпечаток —
+   хеш модулей-зависимостей + своя часть конфига; устарела → опыт не идёт.
+7. docs/ARCHITECTURE.md — дописать раскладку кода (ISSUES 4).
+
+## Правила
+- При переносе находки НЕ исправлять — писать в docs/ISSUES.md (расчёт /
+  биология / устройство); исправлять потом по одной, запись удалять.
+- Коммиты без соавтора.

@@ -16,6 +16,7 @@
 - [docs/DESIGN.md](docs/DESIGN.md) — решения и замеры.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — устройство зон и колонки.
 - [docs/ISSUES.md](docs/ISSUES.md) — открытые находки (баги, расхождения с данными).
+- [docs/REFACTOR.md](docs/REFACTOR.md) — план перестройки кода (отложен).
 
 ## Как мозг общается с миром
 

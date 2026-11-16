@@ -5016,7 +5016,7 @@ va_bias=−76 — фон VA без подобранного тока, остал
 STN 22.2 ± 11.1, GPe 59.1 ± 26.0, GPi 66.2 ± 22.6 Гц (Iwamuro et al. 2017,
 https://pmc.ncbi.nlm.nih.gov/articles/PMC5725726/); GPe 66.6, STN 22.9,
 GPi 74.4 Гц (Bergman et al. 2022, https://doi.org/10.1152/jn.00265.2022);
-VLa без движения 10–30 Гц у 85% клеток (Anderson & Turner 1991,
+VLa без движения 10–30 Гц у 222 из 261 клеток (PMID 8120582,
 https://pubmed.ncbi.nlm.nih.gov/8120582/ [сверить авторов]); у
 бодрствующих макак пары GPi–VLa коррелируют слабо, паузы GPi не дают
 быстрого ответа VLa (Schwab et al. 2020, https://pmc.ncbi.nlm.nih.gov/articles/PMC7584254/).

@@ -2817,6 +2817,7 @@ class SpikingBrain:
         self.teach_on = False
         self.teach_pop = torch.zeros(self.n_slots, dtype=torch.bool, device=self.device)
         self.teach_target = torch.zeros(self.n_slots, dtype=torch.bool, device=self.device)
+        self.teach_hz: torch.Tensor | None = None
         self.us_x = z() if getattr(self, "us", None) else None
         branches = max(1, cfg.dendrite_branches)
         self.tick = torch.zeros(1, dtype=torch.long, device=self.device)
@@ -3318,7 +3319,11 @@ class SpikingBrain:
             # φ(V) правила (_us), как дендрит у Urbanczik & Senn, на который
             # учитель не действует. Без этого молчащая клетка за порогом не
             # сбрасывалась, φ стояла в максимуме, веса падали (2026-11-13).
-            taught = self.teach_target & (torch.rand(self.n_slots, device=self.device) < cfg.teacher_hz * cfg.dt_ms / 1000.0)
+            # teach_hz (Гц по клетке) — цель-частота вместо «группа teacher_hz,
+            # прочие молчат»: след собственного разряда с прошлой фиксации
+            # (правило следа, Földiák 1991) в форме правила с учителем.
+            hz = self.teach_hz if self.teach_hz is not None else self.teach_target * cfg.teacher_hz
+            taught = torch.rand(self.n_slots, device=self.device) < hz * (cfg.dt_ms / 1000.0)
             fired = torch.where(self.teach_pop, taught, fired)
         self.spikes.copy_(fired)
         # Выброс веществ ядрами: доля выстреливших клеток каждого ядра.

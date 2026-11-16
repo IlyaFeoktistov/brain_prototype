@@ -24,12 +24,19 @@ VisNet — Wallis & Rolls 1997, https://doi.org/10.1016/S0301-0082(96)00054-8);
              буква со сдвигом shift px — правило вкл, цель — след; пауза;
              swap=1 — контроль Li & DiCarlo: на сдвиге показана другая буква
              (пары по порядку: 1↔2, 3↔4, …), цель — след первой;
+    trace=wta — конкурентный след (у Földiák выход «победитель берёт всё»):
+             цель — группа с наибольшим числом спайков у ямки из всех 10
+             (выбирает активность сети, показанную букву стенд не знает)
+             стреляет cfg.teacher_hz, прочие молчат; shuffle=1 — контроль:
+             цель отдаётся случайной группе вместо победителя (связь «прошлая
+             фиксация → нынешняя» разорвана). Выбор группы-победителя
+             стендом — КОСТЫЛЬ (как учитель, ISSUES 7);
     проверка до и после учёбы: test показов каждой на сдвигах 0, +shift,
              −shift (необученная сторона); буква = группа с наибольшим числом
              спайков среди показываемых букв.
 
     PYTHONPATH=. .venv/bin/python tools/letters_continuity.py [letters=бгжк] [shift=3] [train=15] [test=8]
-        [seed=1] [swap=0] [fix=350] [rest=150] [load=…] [out=…]
+        [seed=1] [swap=0] [trace=rate|wta] [shuffle=0] [fix=350] [rest=150] [load=…] [out=…]
 """
 
 from __future__ import annotations
@@ -56,6 +63,8 @@ def main(opts: dict) -> None:
     shift = float(opts.get("shift", 3))
     n_train, n_test = int(opts.get("train", 15)), int(opts.get("test", 8))
     swap = opts.get("swap", "0") == "1"
+    wta = opts.get("trace", "rate") == "wta"
+    shuffle = opts.get("shuffle", "0") == "1"
     fix_ms, rest_ms = float(opts.get("fix", 350)), float(opts.get("rest", 150))
     gen = torch.Generator().manual_seed(seed)
     torch.manual_seed(seed)
@@ -72,6 +81,7 @@ def main(opts: dict) -> None:
     cells = near + P.start
     partner = [i ^ 1 if (i ^ 1) < L else i for i in range(L)]
     print(f"веса {path.name}: {f}; буквы «{shown}», сдвиг {shift:+.0f} px; учёба {n_train} раз каждой"
+          f"; след {'конкурентный (победитель ' + str(b.cfg.teacher_hz) + ' Гц)' if wta else 'частота'}{', цель СЛУЧАЙНОЙ группе' if shuffle else ''}"
           f"{', ПОДМЕНА на сдвиге: ' + ' '.join(f'{shown[i]}→{shown[partner[i]]}' for i in range(L)) if swap else ''}", flush=True)
 
     b.teach_pop.zero_()
@@ -123,8 +133,15 @@ def main(opts: dict) -> None:
     check("до")
     order = torch.arange(L).repeat(n_train)
     order = order[torch.randperm(len(order), generator=gen)]
+    hits = 0
     for j, i in enumerate(order.tolist()):
         trace = view(i, 0.0, fix_ms)
+        if wta:
+            win = int(torch.stack([trace[group == k].sum() for k in range(len(LETTERS))]).argmax())
+            hits += int(win == ks[i])
+            if shuffle:
+                win = int(torch.randint(len(LETTERS), (1,), generator=gen))
+            trace = (group == win).float() * b.cfg.teacher_hz
         s.line = ""
         b.run(b.cfg.saccade_ms, s._blank(b.cfg.saccade_ms))
         view(partner[i] if swap else i, shift, fix_ms, target=trace)
@@ -133,6 +150,8 @@ def main(opts: dict) -> None:
             dw = float((path.weight[near] - w0[near]).abs().mean() / w0.mean())
             print(f"  учёба {j + 1}/{len(order)}, {time.time() - t0:.0f} с: |Δw| учимых {dw:.1%}; "
                   f"след своей группы {float(trace[group == ks[i]].mean()):.1f} Гц, прочих {float(trace[group != ks[i]].mean()):.1f}", flush=True)
+    if wta:
+        print(f"  победитель у ямки = показанная буква: {hits}/{len(order)} (из 10 групп)", flush=True)
     if opts.get("out"):
         torch.save({"weight": path.weight.cpu(), "opts": opts}, opts["out"])
     check("после")

@@ -53,7 +53,7 @@ def main(opts: dict) -> None:
         # эквивалент на листе: клеток источника в полосе ±x по линии = 2x·N; круг с тем же числом на листе
         r_um = lambda x: 1000 * math.sqrt(2 * x * pre_pop.size / (math.pi * dens[pre_pop.name]))  # noqa: E731
         q50 = float(d.median())
-        print(f"\n{p.name}: {pre_pop.name} → {p.post.name}, входов {k}, PSP {float(p.weight.float().mean()):+.3f} мВ; "
+        print(f"\n{p.name}: {pre_pop.name} → {p.post.name}, входов {k}, PSP пары {float(p.weight.float().mean()) * b._psp_peak(p.post, inhibitory=float(p.weight.mean()) < 0):+.3f} мВ; "
               f"медиана |Δ| {q50:.4f} ≈ радиус {r_um(q50):.0f} мкм на листе", flush=True)
         print("   |Δ| карты:   " + " ".join(f"{float(lo):.3f}–{float(hi):.3f}" for lo, hi in zip(edges[:-1], edges[1:])))
         print("   ≈ мкм листа: " + " ".join(f"{r_um(float(lo)):5.0f}–{r_um(float(hi)):<5.0f}" for lo, hi in zip(edges[:-1], edges[1:])))

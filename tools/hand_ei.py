@@ -72,7 +72,7 @@ def main(opts: dict) -> None:
         d = (cols_of[pre_pop.name][pre.clamp(0, pre_pop.size - 1)] - post_c).abs()
         d = torch.minimum(d, 1 - d)
         print(f"  размах {p.name}: входов на клетку {p.pre.shape[1]}, |Δместо| медиана {float(d.median()):.4f}, 90% {float(d.quantile(0.9)):.4f} "
-              f"(участок клавиши ±{near}); PSP среднее {float(p.weight.float().mean()):.3f}", flush=True)
+              f"(участок клавиши ±{near}); вес (ед. движка) {float(p.weight.float().mean()):.3f}", flush=True)
 
     def mf(P) -> tuple[float, float]:
         if not b.mf_on:

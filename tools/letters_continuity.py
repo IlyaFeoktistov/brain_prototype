@@ -31,12 +31,20 @@ VisNet — Wallis & Rolls 1997, https://doi.org/10.1016/S0301-0082(96)00054-8);
              цель отдаётся случайной группе вместо победителя (связь «прошлая
              фиксация → нынешняя» разорвана). Выбор группы-победителя
              стендом — КОСТЫЛЬ (как учитель, ISSUES 7);
+    regul=1 — регуляция возбудимости 200 клеток у ямки на учёбе (engine.
+             homeostasis_update, scope cell; у Földiák 1990 порог клетки
+             тянется к заданной частоте: Δt = γ(y − p),
+             https://doi.org/10.1007/BF02331346): уставка — собственная
+             частота клетки в проверке «до» (уставка своя у клетки — Hengen
+             et al. 2016), шаг — раз за попытку (~1 с, как окно develop);
+             learn=0 — те же попытки без правила (проверка, что регуляция
+             сама не портит ямку);
     проверка до и после учёбы: test показов каждой на сдвигах 0, +shift,
              −shift (необученная сторона); буква = группа с наибольшим числом
              спайков среди показываемых букв.
 
     PYTHONPATH=. .venv/bin/python tools/letters_continuity.py [letters=бгжк] [shift=3] [train=15] [test=8]
-        [seed=1] [swap=0] [trace=rate|wta] [shuffle=0] [fix=350] [rest=150] [load=…] [out=…]
+        [seed=1] [swap=0] [trace=rate|wta] [shuffle=0] [regul=0] [learn=1] [fix=350] [rest=150] [load=…] [out=…]
 """
 
 from __future__ import annotations
@@ -65,6 +73,8 @@ def main(opts: dict) -> None:
     swap = opts.get("swap", "0") == "1"
     wta = opts.get("trace", "rate") == "wta"
     shuffle = opts.get("shuffle", "0") == "1"
+    homeo = opts.get("regul", "0") == "1"
+    learn = opts.get("learn", "1") == "1"
     fix_ms, rest_ms = float(opts.get("fix", 350)), float(opts.get("rest", 150))
     gen = torch.Generator().manual_seed(seed)
     torch.manual_seed(seed)
@@ -94,7 +104,7 @@ def main(opts: dict) -> None:
 
         s.line = shown[i]
         s.gaze = s.screen.width(shown[i]) / 2 + float(torch.randint(-1, 2, (1,), generator=gen)) + sh
-        if target is not None:
+        if target is not None and learn:
             hz = torch.zeros(b.n_slots, device=dev)
             hz[cells] = target
             b.teach_hz = hz
@@ -102,11 +112,22 @@ def main(opts: dict) -> None:
         r = b.observe(ms, s._view(ms))
         b.teach_on = b.us_on = False
         b.teach_hz = None
+        acc_rates.append((r.float(), ms))
         return r[cells].float()
+
+    acc_rates: list = []
 
     def rest() -> None:
         s.line = ""
-        b.run(rest_ms, s._blank(rest_ms))
+        acc_rates.append((b.observe(rest_ms, s._blank(rest_ms)).float(), rest_ms))
+
+    def window_rates() -> torch.Tensor:
+        """Средняя частота за накопленные окна (Гц, все клетки); сбрасывает накопленное."""
+
+        tot = sum(ms for _, ms in acc_rates)
+        out = sum(r * ms for r, ms in acc_rates) / tot
+        acc_rates.clear()
+        return out
 
     def check(tag: str) -> None:
         for sh in (0.0, shift, -shift):
@@ -131,6 +152,20 @@ def main(opts: dict) -> None:
 
     t0 = time.time()
     check("до")
+    if homeo:
+        # Уставка — частота клетки за проверку «до»; регулируются только 200 клеток у ямки.
+        setpoint = window_rates()
+        b.cfg.homeostasis_scope = "cell"
+        b.homeostasis_update(setpoint)
+        tgt = torch.full_like(b.homeo_target, float("nan"))
+        tgt[cells] = setpoint[cells]
+        b.homeo_target = tgt
+        b.homeo_rate = torch.where(tgt.isnan(), 0.0, tgt)
+        b.bias[: b.n] -= b.homeo_shift
+        b.homeo_shift.zero_()
+        print(f"  регуляция: уставки 200 клеток {float(setpoint[cells].mean()):.2f} Гц (мин {float(setpoint[cells].min()):.2f}, "
+              f"макс {float(setpoint[cells].max()):.2f}); правило {'вкл' if learn else 'ВЫКЛ'}", flush=True)
+    acc_rates.clear()
     order = torch.arange(L).repeat(n_train)
     order = order[torch.randperm(len(order), generator=gen)]
     hits = 0
@@ -146,11 +181,17 @@ def main(opts: dict) -> None:
         b.run(b.cfg.saccade_ms, s._blank(b.cfg.saccade_ms))
         view(partner[i] if swap else i, shift, fix_ms, target=trace)
         rest()
+        if homeo:
+            b.homeostasis_update(window_rates())
+        else:
+            acc_rates.clear()
         if (j + 1) % 20 == 0:
             dw = float((path.weight[near] - w0[near]).abs().mean() / w0.mean())
             print(f"  учёба {j + 1}/{len(order)}, {time.time() - t0:.0f} с: |Δw| учимых {dw:.1%}; "
-                  f"след своей группы {float(trace[group == ks[i]].mean()):.1f} Гц, прочих {float(trace[group != ks[i]].mean()):.1f}", flush=True)
-    if wta:
+                  f"след своей группы {float(trace[group == ks[i]].mean()):.1f} Гц, прочих {float(trace[group != ks[i]].mean()):.1f}"
+                  + (f"; сдвиг порогов по группам, мВ: " + " ".join(f"{shown[q]} {float(b.homeo_shift[cells[group == ks[q]]].mean()):+.2f}" for q in range(L))
+                     + f", размах клеток {float(b.homeo_shift[cells].min()):+.1f}…{float(b.homeo_shift[cells].max()):+.1f}" if homeo else ""), flush=True)
+    if wta and learn:
         print(f"  победитель у ямки = показанная буква: {hits}/{len(order)} (из 10 групп)", flush=True)
     if opts.get("out"):
         torch.save({"weight": path.weight.cpu(), "opts": opts}, opts["out"])

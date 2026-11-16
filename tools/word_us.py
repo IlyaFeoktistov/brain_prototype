@@ -134,6 +134,10 @@ def main(opts: dict) -> None:
     conf = torch.zeros(W, W, dtype=torch.long)
     for a, p_ in zip(idx.tolist(), g.argmax(1).tolist()):
         conf[a, p_] += 1
+    print("  спайки группы на слово, среднее (строка — показанное, столбец — группа):")
+    print("        " + " ".join(f"{w:>5}" for w in words))
+    for k in range(W):
+        print(f"    {words[k]} " + " ".join(f"{float(g[idx.to(dev) == k, j].mean()):5.1f}" for j in range(W)))
     print("  верно по словам: " + " ".join(f"{words[k]} {int(conf[k, k])}/{int(conf[k].sum())}" for k in range(W)))
     print("  путаница (строка — показанное, столбец — ответ):")
     for k in range(W):

@@ -1539,6 +1539,8 @@ class SpikingBrain:
         if pre_index is not None:
             # Готовые источники (колонка-карта: ближайшие по месту).
             pre = pre_index
+        elif (field := next((f for f in self.cfg.field_input if f[0] == name.removesuffix(".I")), None)):
+            pre = self._field_pre(post, k, pre_pop, field[1], field[2])
         elif retinotopic > 0:
             pre = self._retinotopic_pre(post, k, pre_pop, retinotopic)
         elif topographic > 0:
@@ -2226,6 +2228,23 @@ class SpikingBrain:
         ).long()
         self.field_cols[post.name] = centre
         return pre_pop.start + order[pick.clamp(max=len(order) - 1)]
+
+    def _field_pre(self, post: Population, k: int, pre_pop: Population, mode: str, px: float) -> torch.Tensor:
+        """
+        Входы по месту источника в поле (cfg.field_input): k случайных клеток
+        источника (с повтором), вероятность — по расстоянию места от ямки:
+        "magnification" — ∝ 1 / (d + px), "window" — только d ≤ px.
+        """
+
+        d = (self.field_cols[pre_pop.name].to(self.device) - self.cfg.fovea_col).abs()
+        if mode == "magnification":
+            p = 1.0 / (d + px)
+        elif mode == "window":
+            p = (d <= px).float()
+        else:
+            raise ValueError(f"field_input: режим {mode!r}")
+        idx = torch.multinomial(p / p.sum(), post.size * k, replacement=True, generator=self.generator)
+        return pre_pop.start + idx.view(post.size, k)
 
     def _complex_pre(self, post: Population, k: int, pre_pop: Population, window: float) -> torch.Tensor:
         """

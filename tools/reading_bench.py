@@ -79,6 +79,9 @@ def build(opts: dict):
         # tc_indep=0 — прежняя проводка как контроль; tc_tau — сглаживание частоты).
         cfg.tc_missing_independent = opts["tc_indep"] != "0"
         cfg.tc_missing_tau_ms = float(opts.get("tc_tau", cfg.tc_missing_tau_ms))
+    if opts.get("field"):
+        # Входы пути по месту в поле (cfg.field_input): путь:режим:px через «;».
+        cfg.field_input = tuple((n, m, float(v)) for n, m, v in (e.rsplit(":", 2) for e in opts["field"].split(";")))
     if opts.get("us"):
         # Обучение с учителем на путях (cfg.us_paths, engine._us); шаг — us_eta.
         cfg.us_paths = tuple(opts["us"].split(","))

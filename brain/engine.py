@@ -1245,6 +1245,37 @@ class SpikingBrain:
 
         return pre_pop.start + torch.cat(out)
 
+    def _map_sheet_pre(self, spec, area, post: Population, k: int, pre_pop: Population, sigma_mm: float) -> torch.Tensor:
+        """
+        k источников без повторов на линии карты с вероятностью, как на листе
+        коры (_sheet_pre): линия ↔ лист зоны равным числом клеток источника —
+        полоса ±x содержит 2x·N клеток, на листе столько же в круге радиуса
+        r(x) = √(2x·N / (π·плотность)); клетка на расстоянии x получает вес
+        exp(−r(x)² / 2σ²) — так распределение расстояний до партнёров то же,
+        что у _sheet_pre. Карта замкнута по краям (как расстояние в
+        tools/hand_wiring.py).
+        """
+
+        per_mm2 = sum(e + i for _, e, i in self._column_layers(spec.name))
+        area_mm2 = sum(p.size for _, p in area.populations) / per_mm2
+        density = pre_pop.size / area_mm2
+        a = self.map_pos[post.name][:, 1]
+        b = self.map_pos[pre_pop.name][:, 1]
+        out = []
+        g = torch.Generator(device=self.device).manual_seed(self.cfg.seed * 7919 + post.start * 31 + pre_pop.start)
+
+        for chunk in torch.split(torch.arange(post.size, device=self.device), 512):
+            x = (a[chunk, None] - b[None, :]).abs()
+            x = torch.minimum(x, 1.0 - x)
+            r2 = 2.0 * x * pre_pop.size / (math.pi * density)
+            w = torch.exp(-r2 / (2 * sigma_mm ** 2)) + 1e-12
+
+            if post is pre_pop:
+                w[torch.arange(len(chunk), device=self.device), chunk] = 0.0
+            out.append(torch.multinomial(w, k, replacement=False, generator=g))
+
+        return pre_pop.start + torch.cat(out)
+
     def _nearest_pre(self, post: Population, k: int, pre_pop: Population) -> torch.Tensor:
         """k ближайших по карте клеток источника (ничья — случайно)."""
 
@@ -1466,7 +1497,15 @@ class SpikingBrain:
                                 # ориентации рядом (Alonso & Martinez 1998).
                                 pre_index = self._complex_pre(post, k, pre, 5.0)
                             else:
-                                pre_index = self._nearest_pre(post, min(k, pre.size - (pre is post)), pre)
+                                if (spec.name in cfg.map_ee_sheet and cfg.sigma_ee_um > 0
+                                        and (src_layer, src_kind, dst_layer, dst_kind) == ("L23", "E", "L23", "E")):
+                                    # Общий генератор тратится, как при «k ближайших», —
+                                    # проводка остальных путей не сдвигается.
+                                    self._nearest_pre(post, min(k, pre.size - (pre is post)), pre)
+                                    pre_index = self._map_sheet_pre(spec, area, post, min(k, pre.size - (pre is post)), pre,
+                                                                    cfg.sigma_ee_um / 1000.0)
+                                else:
+                                    pre_index = self._nearest_pre(post, min(k, pre.size - (pre is post)), pre)
                             k = pre_index.shape[1]
                         elif cfg.column_geometry and not (src_kind == dst_kind == "E" and cfg.sigma_ee_um <= 0):
                             # Колонка без карты — лист коры: партнёр выбирается с

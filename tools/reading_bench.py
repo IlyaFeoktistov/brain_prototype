@@ -79,6 +79,9 @@ def build(opts: dict):
         # tc_indep=0 — прежняя проводка как контроль; tc_tau — сглаживание частоты).
         cfg.tc_missing_independent = opts["tc_indep"] != "0"
         cfg.tc_missing_tau_ms = float(opts.get("tc_tau", cfg.tc_missing_tau_ms))
+    if opts.get("map_ee_sheet"):
+        # Местные E → E слоя 2/3 этих зон-карт — по расстоянию на листе (cfg.map_ee_sheet).
+        cfg.map_ee_sheet = tuple(opts["map_ee_sheet"].split(","))
     if opts.get("field"):
         # Входы пути по месту в поле (cfg.field_input): путь:режим:px через «;».
         cfg.field_input = tuple((n, m, float(v)) for n, m, v in (e.rsplit(":", 2) for e in opts["field"].split(";")))

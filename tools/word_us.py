@@ -97,7 +97,7 @@ def main(opts: dict) -> None:
     s.line, s.gaze = "", 0.0
     b.run(2500.0, s._blank(2500.0))
 
-    def show(wi: int, train: bool) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def show(wi: int, train: bool) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Слово по буквам; спайки учимых клеток, частоты смысла L4 E и источника пути за всё слово."""
 
         word = words[wi]
@@ -108,6 +108,7 @@ def main(opts: dict) -> None:
         spikes = torch.zeros(len(cells), device=dev)
         rates = torch.zeros(P.size, device=dev)
         pre_rates = torch.zeros(src.size, device=dev)
+        fix = []
         x = 0.0
         for i, ch in enumerate(word):
             w = s.screen.width(ch)
@@ -119,11 +120,12 @@ def main(opts: dict) -> None:
             spikes += r[cells].float() * (fix_ms / 1000.0)
             rates += r[P.slice].float() / len(word)
             pre_rates += r[src.slice].float() / len(word)
+            fix.append(r[near].float())
             if i < len(word) - 1:
                 b.run(b.cfg.saccade_ms, s._blank(b.cfg.saccade_ms))
         s.line = ""
         b.run(rest_ms, s._blank(rest_ms))
-        return spikes, rates, pre_rates
+        return spikes, rates, pre_rates, torch.stack(fix)
 
     t0 = time.time()
     order = torch.arange(W).repeat(n_train)
@@ -158,12 +160,22 @@ def main(opts: dict) -> None:
     dt_, dt95 = decode(drive_tr.cpu(), idx, gen)
     # Несут ли слово сами обученные клетки букв (частоты за слово).
     dl, dl95 = decode(R[:, near - src.start].cpu(), idx, gen)
+    # По фиксациям (те же 200 клеток, тот же декодер): буква на фиксации;
+    # слово по сумме трёх фиксаций и по склейке (порядок сохранён).
+    from tools.word_read import LETTERS
+    F = torch.stack([o[3] for o in outs]).cpu()
+    let = torch.tensor([LETTERS.index(words[wi][i]) for wi in idx.tolist() for i in range(F.shape[1])])
+    fl, fl95 = decode(F.reshape(-1, F.shape[2]), let, gen)
+    fs, fs95 = decode(F.sum(1), idx, gen)
+    fc, fc95 = decode(F.reshape(len(F), -1), idx, gen)
     print(f"\nпроверка {n_test} показов каждого слова без учителя (случайно {1 / W:.2f}):")
     print(f"  слово по группам смысла {acc:.2f} (перемешано 95% {float(null.quantile(0.95)):.2f}); "
           f"спайков учимых на слово {float(S.sum(1).mean()):.1f}, без спайков {float((g.sum(1) == 0).float().mean()):.0%}")
     print(f"  ближайший центр по всем клеткам смысла L4 E: {nc:.2f} [95% {nc95:.2f}]; |Δw| {float((path.weight - w0).abs().mean() / w0.mean()):.1%}")
     print(f"  ток пути на учимые клетки: от обученных клеток букв {share:.1%}; слово по току: весь {dc:.2f} [95% {dc95:.2f}], "
           f"от обученных {dt_:.2f} [95% {dt95:.2f}]; слово по 200 обученным клеткам букв {dl:.2f} [95% {dl95:.2f}]")
+    print(f"  200 обученных клеток букв по фиксациям: буква {fl:.2f} [95% {fl95:.2f}; случай {1 / len(set(let.tolist())):.2f}]; "
+          f"слово по сумме фиксаций {fs:.2f} [95% {fs95:.2f}], по склейке {fc:.2f} [95% {fc95:.2f}]")
     conf = torch.zeros(W, W, dtype=torch.long)
     for a, p_ in zip(idx.tolist(), g.argmax(1).tolist()):
         conf[a, p_] += 1

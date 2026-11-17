@@ -64,15 +64,28 @@ def main(opts: dict) -> None:
     b.run(2500.0, s._blank(2500.0))
     blank = s._blank(WIN)
 
+    nb = max(1, b.cfg.dendrite_branches)
+
+    def plateau(idx: torch.Tensor) -> float:
+        """Доля клеток idx с плато самой горячей ветки > 0.5 (детектор — состояние плато, иначе сигмоида тока)."""
+
+        if b.cfg.dendrite_coincidence:
+            pl = b.dend_plateau.view(b.n_slots, nb)[idx].amax(1)
+        else:
+            pl = torch.sigmoid((b.i_dend.view(b.n_slots, nb)[idx].amax(1) - b.cfg.dendrite_threshold_mv) / b.cfg.dendrite_slope_mv)
+        return float((pl > 0.5).float().mean())
+
     def windows(ms: float) -> tuple[list[int | None], list[float], list[float]]:
-        """Нажатая клавиша (или None) по окнам; частота участка L2/3 и доля блока L5 цели — заполняются снаружи."""
+        """Нажатая клавиша (или None) по окнам; частота участка L2/3 и доля блока L5 цели — заполняются снаружи; плато участка — в cur["pl"]."""
 
         out, patch, blk = [], [], []
+        cur["pl"] = []
         for _ in range(int(ms / WIN)):
             r = b.observe(WIN, blank)
             out.append(s.hand.pressed(r[L5.slice]))
             patch.append(float(r[cur["patch"]].mean()) if cur["patch"] is not None else 0.0)
             blk.append(float((r[L5.slice][cur["blk"]] > 0).float().mean()) if cur["blk"] is not None else 0.0)
+            cur["pl"].append(plateau(cur["patch"]) if cur["patch"] is not None else 0.0)
         return out, patch, blk
 
     def onsets(seq: list[int | None], held: int | None) -> tuple[list[tuple[int, int]], int | None]:
@@ -87,7 +100,7 @@ def main(opts: dict) -> None:
     plan = [(a, k) for a in amps for k in targets for _ in range(reps)]
     perm = torch.randperm(len(plan), generator=gen).tolist()
     plan = [plan[i] for i in perm]
-    res: dict = {a: {"hit": 0, "n": 0, "lat": [], "rep": [], "other": 0, "nb": 0, "post": 0, "patch": [], "blk": []} for a in amps}
+    res: dict = {a: {"hit": 0, "n": 0, "lat": [], "rep": [], "other": 0, "nb": 0, "post": 0, "patch": [], "blk": [], "pl": [], "pl0": []} for a in amps}
     rest_ev, rest_ms_tot = 0, 0.0
     held = None
     t0 = time.time()
@@ -96,6 +109,7 @@ def main(opts: dict) -> None:
         patch = ((cE - pos).abs() <= near).nonzero().flatten()
         cur["patch"], cur["blk"] = (patch + E.start), torch.arange(k * cells, (k + 1) * cells, device=b.device)
         seq, _, _ = windows(rest_ms)
+        pl_rest = sum(cur["pl"]) / len(cur["pl"])
         ev, held = onsets(seq, held)
         rest_ev += len(ev)
         rest_ms_tot += rest_ms
@@ -117,6 +131,8 @@ def main(opts: dict) -> None:
         R["nb"] += sum(1 for _, kk in ev if abs(kk - k) == 1)
         R["patch"].append(sum(pr) / len(pr))
         R["blk"].append(sum(bl) / len(bl))
+        R["pl"].append(sum(cur["pl"]) / len(cur["pl"]))
+        R["pl0"].append(pl_rest)
         seq, _, _ = windows(post_ms)
         ev, held = onsets(seq, held)
         R["post"] += len(ev)
@@ -130,7 +146,8 @@ def main(opts: dict) -> None:
         print(f"сила {a:4.1f} мВ: попаданий {R['hit']}/{R['n']}; задержка медиана {float(lat.median()):.0f} мс "
               f"[{float(lat.min()):.0f}…{float(lat.max()):.0f}]; нажатий A за команду {sum(R['rep']) / R['n']:.1f}; "
               f"чужих за команду {R['other'] / R['n']:.2f} (соседних ±1 {R['nb'] / R['n']:.2f}); после снятия ({post_ms:.0f} мс) "
-              f"{R['post'] / R['n']:.2f}; участок L2/3 {sum(R['patch']) / R['n']:.1f} Гц, блок L5 выстрелил {sum(R['blk']) / R['n']:.0%} окон-клеток",
+              f"{R['post'] / R['n']:.2f}; участок L2/3 {sum(R['patch']) / R['n']:.1f} Гц, блок L5 выстрелил {sum(R['blk']) / R['n']:.0%} окон-клеток; "
+              f"плато участка L2/3: команда {sum(R['pl']) / R['n']:.0%}, пауза перед ней {sum(R['pl0']) / R['n']:.0%}",
               flush=True)
     print(f"всего {time.time() - t0:.0f} с")
 

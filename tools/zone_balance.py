@@ -16,7 +16,7 @@ inh_gain. Пути — по группам: таламус (ядра с депр
 i_inh, i_ngf; среднее поле — та же оценка). У таламических путей — частота
 и ресурс источника, входов на клетку, средний вес.
 
-    PYTHONPATH=. .venv/bin/python tools/zone_balance.py [pops=…] [seconds=2] [seed=1] [homeo=lgn-d-pop-s1]
+    PYTHONPATH=. .venv/bin/python tools/zone_balance.py [pops=…] [seconds=2] [seed=1] [homeo=lgn-d-pop-s1] [va_bias=0]
 """
 
 from __future__ import annotations
@@ -148,6 +148,11 @@ def main(opts: dict) -> None:
         return out
 
     s.line = ""
+    va_bias = float(opts.get("va_bias", 0))
+    if va_bias:
+        # Ток таламуса VA (как в hand_command/hand_l5_input: −76 снимает подобранный ток, VA молчит; ISSUES 23).
+        b.bias[b.areas["thalamus"].E.slice] += va_bias
+        print(f"va_bias {va_bias:+.0f} мВ", flush=True)
     b.run(2500.0, s._blank(2500.0))
     t0 = time.time()
     n_win = int(float(opts.get("seconds", 2)) * 1000 / WIN)

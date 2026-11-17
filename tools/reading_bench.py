@@ -82,6 +82,9 @@ def build(opts: dict):
     if opts.get("map_ee_sheet"):
         # Местные E → E слоя 2/3 этих зон-карт — по расстоянию на листе (cfg.map_ee_sheet).
         cfg.map_ee_sheet = tuple(opts["map_ee_sheet"].split(","))
+    if opts.get("built_shares"):
+        # Доли тормозных типов в проводке колонки — среди построенных (cfg.column_built_shares, ISSUES 25).
+        cfg.column_built_shares = opts["built_shares"] != "0"
     if opts.get("field"):
         # Входы пути по месту в поле (cfg.field_input): путь:режим:px через «;».
         cfg.field_input = tuple((n, m, float(v)) for n, m, v in (e.rsplit(":", 2) for e in opts["field"].split(";")))

@@ -1340,7 +1340,14 @@ class SpikingBrain:
         order = [layer for layer, _, _ in cfg.column_cells]
         # Клеток в слоях колонки этой зоны (тонкий L4 — меньше источников).
         column = {layer: (e, i) for layer, e, i in self._column_layers(spec.name)}
-        shares = {layer: dict(zip(INHIBITORY_KINDS, v)) for layer, *v in cfg.layer_interneurons}
+        # Доли тормозных типов слоя: при cfg.column_built_shares — среди
+        # построенных (_layer_shares, как размеры популяций; с одним PV это
+        # 1.0 — ровно Potjans), иначе — всех типов данных (ISSUES 25: при
+        # колонке E + PV I → E L2/3 ×2.3 Potjans).
+        if cfg.column_built_shares:
+            shares = self._layer_shares()
+        else:
+            shares = {layer: dict(zip(INHIBITORY_KINDS, v)) for layer, *v in cfg.layer_interneurons}
         # Соседи стреляют, как в покое у бодрствующих (column_target_hz).
         rates = {layer: dict(zip(KINDS, v)) for layer, *v in cfg.column_target_hz}
         ee_layer = dict(cfg.layer_ee_psp_mv)
@@ -1362,7 +1369,7 @@ class SpikingBrain:
 
         def mean(weights, layer) -> float:
             share = shares[layer]
-            return sum(share[t] * weights[t] for t in types) / sum(share[t] for t in types)
+            return sum(share.get(t, 0.0) * weights[t] for t in types) / sum(share.get(t, 0.0) for t in types)
 
         def label(layer, kind) -> str:
             return ({"E": "E", "PV": "I"}.get(kind, kind)) if layer == "L23" else f"{layer}.{kind}"
@@ -1406,9 +1413,9 @@ class SpikingBrain:
                             pair = among.get((src_kind, dst_kind), 0.0)
                             # Между слоями LAMP5 — то же отношение к среднему.
                             norm = sum(
-                                shares[src_layer][a] * shares[dst_layer][b] * among.get((a, b), 0.0)
+                                shares[src_layer].get(a, 0.0) * shares[dst_layer].get(b, 0.0) * among.get((a, b), 0.0)
                                 for a in types for b in types
-                            ) / (sum(shares[src_layer][t] for t in types) * sum(shares[dst_layer][t] for t in types))
+                            ) / (sum(shares[src_layer].get(t, 0.0) for t in types) * sum(shares[dst_layer].get(t, 0.0) for t in types))
                             p *= pair / norm if norm > 0 else 0.0
 
                         if p <= 0:

@@ -7,7 +7,7 @@ homeostasis_update): мозг живёт с пустым экраном окна
 на замерах выключен — сдвиг заморожен).
 
     PYTHONPATH=. python tools/develop.py [seconds=60] [win=1000] [seed=42] [fit=lgn-a]
-        [relay_v_t_mv=-59] [trn_scale=0.1] [out=lgn-d-pop-s1] [every=10] [scope=population|cell]
+        [relay_v_t_mv=-59] [trn_scale=0.1] [out=lgn-d-pop-s1] [every=10] [scope=population|cell] [built_shares=0|1] [map_ee_sheet=зоны]
 
 scope=population — общий шаг популяции (cfg.homeostasis_scope): разброс
 клеток остаётся от проводки; в отчёте — распределение частот клеток зрительных
@@ -88,6 +88,12 @@ def main(opts: dict) -> None:
     for k in ("relay_v_t_mv", "relay_rest_mv"):
         if k in opts:
             setattr(cfg, k, float(opts[k]))
+    if opts.get("built_shares"):
+        # Доли тормозных типов в проводке колонки — среди построенных (cfg.column_built_shares, ISSUES 25).
+        cfg.column_built_shares = opts["built_shares"] != "0"
+    if opts.get("map_ee_sheet"):
+        # Местные E → E слоя 2/3 зон-карт — по расстоянию на листе (cfg.map_ee_sheet).
+        cfg.map_ee_sheet = tuple(opts["map_ee_sheet"].split(","))
     if opts.get("fit"):
         anatomy.use_fit(cfg, opts["fit"])
     mind = Mind(cfg)

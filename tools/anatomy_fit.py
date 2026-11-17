@@ -5,7 +5,7 @@
 «стреляет больше нормы — меньше фона» (как веса фона по типам у Billeh et
 al. 2020). Цели — anatomy.RATES_HZ и column_target_hz.
 
-    PYTHONPATH=. .venv/bin/python tools/anatomy_fit.py [steps=20] [ms=500] [dt=0.5] [fresh=0] [write=1] [kinds=PV,SOM,VIP,LAMP5] [start=имя] [reset=ca3,ca1] [out=имя] [relay_v_t=мВ] [relay_rest=мВ] [trn_scale=1]
+    PYTHONPATH=. .venv/bin/python tools/anatomy_fit.py [steps=20] [ms=500] [dt=0.5] [fresh=0] [write=1] [kinds=PV,SOM,VIP,LAMP5] [start=имя] [reset=ca3,ca1] [out=имя] [relay_v_t=мВ] [relay_rest=мВ] [trn_scale=1] [built_shares=0|1] [map_ee_sheet=зоны]
 
 Стартует с чисел brain/anatomy.py (fresh=1 — фон колонок с нуля), в конце
 печатает найденное и записывает его туда же (NUCLEUS_BIAS_MV,
@@ -52,6 +52,12 @@ def measure(bias: dict, pop: dict) -> tuple[dict, dict, dict]:
         cfg.relay_rest_mv = float(opts["relay_rest"])
     cfg.nucleus_bias_mv = tuple(bias.items())
     cfg.column_gain_external_pop = tuple((*key, g) for key, g in pop.items())
+    if opts.get("built_shares"):
+        # Доли тормозных типов в проводке колонки — среди построенных (cfg.column_built_shares, ISSUES 25).
+        cfg.column_built_shares = opts["built_shares"] != "0"
+    if opts.get("map_ee_sheet"):
+        # Местные E → E слоя 2/3 зон-карт — по расстоянию на листе (cfg.map_ee_sheet).
+        cfg.map_ee_sheet = tuple(opts["map_ee_sheet"].split(","))
     mind = Mind(cfg)
     brain = mind.brain
     brain.plasticity = False

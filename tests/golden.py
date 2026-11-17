@@ -8,12 +8,21 @@
 
     PYTHONPATH=. .venv/bin/python tests/golden.py write   # записать эталон
     PYTHONPATH=. .venv/bin/python tests/golden.py         # сравнить с эталоном
+
+Короткий вариант: GOLDEN_SCALE=0.1 — окна × 0.1 (20/20/10/10 мс), путь тот
+же (сборка, учитель, STDP, все веса и состояние); эталон в своём файле
+golden-x0.1.pt. Полный сценарий на пути PyTorch идёт дольше 30 мин;
+короткого хватает, чтобы проверить «правка под флагом при выключенном флаге
+не меняет вычислений» (ветки, синапсы, пластичность считаются каждый шаг).
+Для проверки правки под флагом: эталон пишется на коммите до правки
+(git worktree, туда же этот файл), сравнение — на новом.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
 # Детерминированный GPU: свои ядра CUDA складывают входы atomicAdd во float —
@@ -33,7 +42,9 @@ from brain.mind import Mind
 from brain.session import Session
 from brain import anatomy
 
-GOLDEN = BRAIN_HOME / "golden.pt"           # ~2.6 ГБ — вне git, рядом с весами
+SCALE = float(os.environ.get("GOLDEN_SCALE", "1"))
+# ~2.6 ГБ — вне git, рядом с весами; короткий вариант — свой файл.
+GOLDEN = BRAIN_HOME / ("golden.pt" if SCALE == 1 else f"golden-x{SCALE:g}.pt")
 
 
 def flatten(prefix: str, x, out: dict) -> None:
@@ -59,14 +70,16 @@ def scenario() -> dict[str, torch.Tensor]:
     cfg.autosave = False
     anatomy.use_fit(cfg, "lgn-a")
     cfg.us_paths = ("visual -> letters",)
+    t0 = time.time()
     mind = Mind(cfg)
     b = mind.brain
+    print(f"сборка {time.time() - t0:.0f} с; окна × {SCALE:g}", flush=True)
     s = Session(mind, window_ms=10.0)
     out: dict[str, torch.Tensor] = {}
 
     s.line, s.gaze = "", 0.0
     b.plasticity = False
-    out["r0"] = b.observe(200.0, s._blank(200.0)).cpu()
+    out["r0"] = b.observe(200.0 * SCALE, s._blank(200.0 * SCALE)).cpu()
 
     path = b.us[0]
     P = path.post
@@ -77,18 +90,19 @@ def scenario() -> dict[str, torch.Tensor]:
     s.line = "а"
     s.gaze = s.screen.width("а") / 2
     b.teach_on = b.us_on = True
-    out["r1"] = b.observe(200.0, s._view(200.0)).cpu()
+    out["r1"] = b.observe(200.0 * SCALE, s._view(200.0 * SCALE)).cpu()
     b.teach_on = b.us_on = False
 
     s.line = ""
     b.plasticity = True
-    out["r2"] = b.observe(100.0, s._blank(100.0)).cpu()
+    out["r2"] = b.observe(100.0 * SCALE, s._blank(100.0 * SCALE)).cpu()
     b.plasticity = False
 
     s.line = "б"
     s.gaze = s.screen.width("б") / 2
-    out["r3"] = b.observe(100.0, s._view(100.0)).cpu()
+    out["r3"] = b.observe(100.0 * SCALE, s._view(100.0 * SCALE)).cpu()
 
+    print(f"окна прожиты, всего {time.time() - t0:.0f} с", flush=True)
     for p in b.projections:
         out[f"w.{p.name}"] = p.weight.detach().cpu().clone()
     flatten("state", b.state_dict(), out)

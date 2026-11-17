@@ -8,6 +8,7 @@ homeostasis_update): мозг живёт с пустым экраном окна
 
     PYTHONPATH=. python tools/develop.py [seconds=60] [win=1000] [seed=42] [fit=lgn-a]
         [relay_v_t_mv=-59] [trn_scale=0.1] [out=lgn-d-pop-s1] [every=10] [scope=population|cell] [built_shares=0|1] [map_ee_sheet=зоны]
+        [coincidence=0|1] [dend_count=15] [dend_window=5] [probe=1]
 
 scope=population — общий шаг популяции (cfg.homeostasis_scope): разброс
 клеток остаётся от проводки; в отчёте — распределение частот клеток зрительных
@@ -57,6 +58,50 @@ def report(b, rates, label: str) -> None:
               f"без спайков {float((x == 0).float().mean()):.0%}, > 1 Гц {float((x > 1).float().mean()):.0%}", flush=True)
 
 
+PROBE = ("motor.L23E", "hand.L23E", "premotor.L23E", "letters.L23E")
+
+
+def probed_window(b, s, win: float, step: float = 10.0) -> torch.Tensor:
+    """
+    Окно отчёта кусками по step мс (те же частоты за окно) со снимками L2/3 E
+    зон PROBE: доля клеток с плато ветки > 0.5 (детектор — состояние плато,
+    иначе сигмоида тока), самая горячая ветка (счёт синапсов за окно при
+    детекторе, иначе мВ), разброс доли плато по снимкам (постоянное плато —
+    ровно, от совпадений — вспышками), расстояние v до порога v_t.
+    """
+
+    cfg = b.cfg
+    nb = max(1, cfg.dendrite_branches)
+    pops = dict(populations(b))
+    snaps = {k: {"pl": [], "hot": [], "gap": []} for k in PROBE}
+    total = torch.zeros(b.n, device=b.device)
+    n = int(win / step)
+    for _ in range(n):
+        total += b.observe(step, s._blank(step))
+        for k in PROBE:
+            sl = pops[k]
+            br = b.i_dend.view(b.n_slots, nb)[sl]
+            hot = br.amax(1)
+            if cfg.dendrite_coincidence:
+                pl = b.dend_plateau.view(b.n_slots, nb)[sl].amax(1)
+            else:
+                pl = torch.sigmoid((hot - cfg.dendrite_threshold_mv) / cfg.dendrite_slope_mv)
+            snaps[k]["pl"].append(float((pl > 0.5).float().mean()))
+            snaps[k]["hot"].append(hot.float())
+            snaps[k]["gap"].append(float((b.v_t[sl] - b.v[sl]).median()))
+    u = "синапсов за окно" if cfg.dendrite_coincidence else "мВ"
+    print(f"\n   ветки L2/3 E (снимки каждые {step:.0f} мс; горячая ветка — {u}):", flush=True)
+    for k in PROBE:
+        pl = torch.tensor(snaps[k]["pl"])
+        hot = torch.cat(snaps[k]["hot"])
+        hot = hot[:: max(1, hot.numel() // 1_000_000)]
+        hq = torch.quantile(hot, torch.tensor([0.5, 0.9, 0.99], device=hot.device))
+        print(f"   {k:14s} плато {float(pl.mean()):5.1%} (по снимкам 10–90% {float(pl.quantile(0.1)):.1%}–{float(pl.quantile(0.9)):.1%}, "
+              f"снимков с плато > 1% клеток {float((pl > 0.01).float().mean()):.0%}); горячая ветка медиана {float(hq[0]):.1f}, "
+              f"90% {float(hq[1]):.1f}, 99% {float(hq[2]):.1f}; v_t − v медиана {sum(snaps[k]['gap']) / n:.1f} мВ", flush=True)
+    return total / n
+
+
 def main(opts: dict) -> None:
     cfg = BrainConfig()
     cfg.size = "small"
@@ -94,6 +139,11 @@ def main(opts: dict) -> None:
     if opts.get("map_ee_sheet"):
         # Местные E → E слоя 2/3 зон-карт — по расстоянию на листе (cfg.map_ee_sheet).
         cfg.map_ee_sheet = tuple(opts["map_ee_sheet"].split(","))
+    if opts.get("coincidence"):
+        # Ветки дендрита — детектор совпадений (cfg.dendrite_coincidence, ISSUES 26); порог/окно — по желанию.
+        cfg.dendrite_coincidence = opts["coincidence"] != "0"
+        cfg.dendrite_count_threshold = float(opts.get("dend_count", cfg.dendrite_count_threshold))
+        cfg.dendrite_window_ms = float(opts.get("dend_window", cfg.dendrite_window_ms))
     if opts.get("fit"):
         anatomy.use_fit(cfg, opts["fit"])
     mind = Mind(cfg)
@@ -109,9 +159,11 @@ def main(opts: dict) -> None:
     windows = int(float(opts.get("seconds", 60)) * 1000 / win)
 
     for w in range(windows):
-        rates = b.observe(win, s._blank(win))
+        shown = w == 0 or (w + 1) % every == 0
+        # Окна отчёта — кусками со снимками веток (probed_window); частоты те же, шум генератора — свой.
+        rates = probed_window(b, s, win) if shown and opts.get("probe", "1") != "0" else b.observe(win, s._blank(win))
         b.homeostasis_update(rates)
-        if w == 0 or (w + 1) % every == 0:
+        if shown:
             report(b, rates, f"окно {w + 1} из {windows}")
 
     out = opts.get("out", "lgn-a")

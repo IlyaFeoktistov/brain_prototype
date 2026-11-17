@@ -52,9 +52,13 @@ def run(opts: dict, va: float) -> None:
     s = Session(mind, window_ms=WIN)
     nb = max(1, cfg.dendrite_branches)
     thr, slope, tau = cfg.dendrite_threshold_mv, cfg.dendrite_slope_mv, cfg.dendrite_tau_ms
+    coinc = cfg.dendrite_coincidence
+    if coinc:
+        # Детектор совпадений: «ток» ветки — счёт синапсов за окно, плато — своё состояние.
+        thr, slope, tau = cfg.dendrite_count_threshold, cfg.dendrite_count_slope, cfg.dendrite_window_ms
     if va:
         b.bias[b.areas["thalamus"].E.slice] += va
-    print(f"\n######## va_bias {va:+.0f}; веток {nb}, порог {thr} мВ, крутизна {slope}, τ {tau} мс, "
+    print(f"\n######## va_bias {va:+.0f}; {'ДЕТЕКТОР СОВПАДЕНИЙ (счёт синапсов) ' if coinc else ''}веток {nb}, порог {thr}, крутизна {slope}, окно/τ {tau} мс, "
           f"усиление {cfg.dendrite_gain}, в сому {cfg.dendrite_soma_mv} мВ", flush=True)
 
     targets = []
@@ -90,7 +94,10 @@ def run(opts: dict, va: float) -> None:
             br_now = b.i_dend.view(b.n_slots, nb)[pop.slice]
             hot = br_now.amax(1)
             A["hot"].append(hot.half().cpu())
-            A["pl"].append(float((torch.sigmoid((hot - thr) / slope) > 0.5).float().mean()))
+            if coinc:
+                A["pl"].append(float((b.dend_plateau.view(b.n_slots, nb)[pop.slice].amax(1) > 0.5).float().mean()))
+            else:
+                A["pl"].append(float((torch.sigmoid((hot - thr) / slope) > 0.5).float().mean()))
             A["above"].append(float((br_now > thr).float().mean()))
             A["snap"].append(float(br_now.mean()))
             A["rate"].append(float(r[pop.slice].mean()))
@@ -99,7 +106,7 @@ def run(opts: dict, va: float) -> None:
             total = torch.zeros(pop.size, nb, device=b.device)
             alone = torch.zeros(pop.size, nb, dtype=torch.bool, device=b.device)
             for p, pre, w, br in paths:
-                sup = w * r[pre] * tau / 1000.0
+                sup = (torch.sign(w) if coinc else w) * r[pre] * tau / 1000.0
                 per = torch.zeros(pop.size, nb, device=b.device).scatter_add_(1, br, sup)
                 x = b.stp_x[pre] / (1.0 - b.stp_u_cell[pre]).clamp_min(1e-3)
                 perd = torch.zeros(pop.size, nb, device=b.device).scatter_add_(1, br, sup * torch.where(b.stp_u_cell[pre] > 0, x, 1.0))
@@ -116,13 +123,14 @@ def run(opts: dict, va: float) -> None:
         hot = torch.cat(A["hot"]).float()
         ns = len(A["sum"])
         est, est_above, est_alone = (sum(x[i] for x in A["sum"]) / ns for i in range(3))
-        print(f"\n== {key}: {sum(A['rate']) / n_win:.2f} Гц; самая горячая ветка медиана {q(hot, 0.5):.1f} мВ (10–90% "
+        u = "синапсов за окно" if coinc else "мВ"
+        print(f"\n== {key}: {sum(A['rate']) / n_win:.2f} Гц; самая горячая ветка медиана {q(hot, 0.5):.1f} {u} (10–90% "
               f"{q(hot, 0.1):.1f}–{q(hot, 0.9):.1f}); плато > 0.5: {sum(A['pl']) / n_win:.0%} клеток-окон; веток выше порога "
               f"{sum(A['above']) / n_win:.0%}", flush=True)
         print(f"  сверка: ток ветки среднее — движок {sum(A['snap']) / n_win:.2f}, оценка по источникам {est:.2f} мВ; веток выше "
               f"порога по оценке {est_above:.0%}, из них один источник сам — {est_alone:.0%} веток", flush=True)
         for name in sorted(A["src"], key=lambda n: -A["src"][n]):
-            print(f"    {name:34s} на ветку {A['src'][name] / ns:6.2f} мВ (с депрессией было бы {A['srcd'][name] / ns:6.2f})", flush=True)
+            print(f"    {name:34s} на ветку {A['src'][name] / ns:6.2f} {u} (с депрессией было бы {A['srcd'][name] / ns:6.2f})", flush=True)
     del mind, b
     torch.cuda.empty_cache()
 

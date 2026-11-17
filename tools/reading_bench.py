@@ -85,6 +85,11 @@ def build(opts: dict):
     if opts.get("built_shares"):
         # Доли тормозных типов в проводке колонки — среди построенных (cfg.column_built_shares, ISSUES 25).
         cfg.column_built_shares = opts["built_shares"] != "0"
+    if opts.get("coincidence"):
+        # Ветки дендрита — детектор совпадений (cfg.dendrite_coincidence, ISSUES 26); порог/окно — по желанию.
+        cfg.dendrite_coincidence = opts["coincidence"] != "0"
+        cfg.dendrite_count_threshold = float(opts.get("dend_count", cfg.dendrite_count_threshold))
+        cfg.dendrite_window_ms = float(opts.get("dend_window", cfg.dendrite_window_ms))
     if opts.get("field"):
         # Входы пути по месту в поле (cfg.field_input): путь:режим:px через «;».
         cfg.field_input = tuple((n, m, float(v)) for n, m, v in (e.rsplit(":", 2) for e in opts["field"].split(";")))

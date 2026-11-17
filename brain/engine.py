@@ -670,6 +670,8 @@ class SpikingBrain:
         self.decay_ngf = math.exp(-dt / cfg.lamp5_tau_syn)
         self.ngf_scale = self.tau_m / cfg.lamp5_tau_syn
         self.decay_dend = math.exp(-dt / cfg.dendrite_tau_ms)
+        # Спад счёта ветки (cfg.dendrite_coincidence) — окно совпадения.
+        self.decay_dend_count = math.exp(-dt / cfg.dendrite_window_ms)
         # Сколько плато ветки поднимает сому, мВ.
         self.dendrite_soma = torch.full((self.n_slots,), float(cfg.dendrite_soma_mv), device=self.device)
         # На ветки дендрита идут пути с признаком dendrite (path_flags: обратные
@@ -2519,6 +2521,14 @@ class SpikingBrain:
                 self.stp_free[p.offset: p.offset + p.weight.numel()] = True
         self.path_start = torch.tensor([p.offset for p in paths] + [self.n_synapses], dtype=torch.long, device=self.device)
         self.path_flags = torch.tensor(flags + [0], dtype=torch.uint8, device=self.device)
+        # Детектор совпадений ветки (cfg.dendrite_coincidence): событие пути
+        # «на дендрит» — один синапс со знаком пути, не вес.
+        self.path_dend_unit = None
+        if self.cfg.dendrite_coincidence:
+            self.path_dend_unit = torch.tensor(
+                [1.0 if float(p.weight.float().mean()) >= 0 else -1.0 for p in paths] + [0.0],
+                dtype=torch.float32, device=self.device,
+            )
         # Задержка каждого пути (шагов сверх одного) — по его типу
         # (cfg.path_delays); кольцо — в _init_state.
         delays = [self._path_delay_steps(p) for p in paths]
@@ -2878,6 +2888,8 @@ class SpikingBrain:
         self.i_ngf = z()
         # Ток веток дендрита (пути с признаком dendrite).
         self.i_dend = torch.zeros(self.n_slots * branches, device=self.device)
+        # Плато ветки при детекторе совпадений: загорается по счёту, держится dendrite_tau_ms.
+        self.dend_plateau = torch.zeros(self.n_slots * branches, device=self.device)
         self.adapt = z()
         self.refractory = z()
         self.spikes = z()
@@ -3080,7 +3092,7 @@ class SpikingBrain:
             # теряется); список выстреливших — без предела.
             fired_all = self._fired_all()
             t = self.out_all
-            self.i_dend.mul_(self.decay_dend)
+            self.i_dend.mul_(self.decay_dend_count if cfg.dendrite_coincidence else self.decay_dend)
             inhibition = torch.zeros_like(drive)
             ngf = torch.zeros_like(drive)
             glutamate = torch.zeros_like(drive) if self.nmda_on else None
@@ -3094,7 +3106,7 @@ class SpikingBrain:
                 self.is_lamp5, self.ngf_d, 1.0 / (1.0 - cfg.lamp5_desens_u), KINDS.index("LAMP5"),
                 self.stp_x, self.stp_u_cell, self.inh_gain,
                 self.i_dend, drive, glutamate, inhibition, ngf,
-                self.path_delay, self.tick, self.ring, self.dend_ring,
+                self.path_delay, self.tick, self.ring, self.dend_ring, self.path_dend_unit,
             )
 
             if self.ring_slots > 1:
@@ -3131,8 +3143,13 @@ class SpikingBrain:
                 to_dendrite = to_dendrite | self.dendrite_syn.index_select(0, synapses)
             branches = max(1, cfg.dendrite_branches)
             slot = post.long() * branches + self.net_branch.index_select(0, synapses).long()
-            dendrite = torch.zeros_like(self.i_dend).index_add_(0, slot, weight * to_dendrite)
-            self.i_dend.mul_(self.decay_dend).add_(dendrite)
+            unit = weight
+            if self.path_dend_unit is not None:
+                # Детектор совпадений: событие — один синапс со знаком пути.
+                path = torch.searchsorted(self.path_start, synapses, right=True) - 1
+                unit = self.path_dend_unit.index_select(0, path)
+            dendrite = torch.zeros_like(self.i_dend).index_add_(0, slot, unit * to_dendrite)
+            self.i_dend.mul_(self.decay_dend_count if cfg.dendrite_coincidence else self.decay_dend).add_(dendrite)
             weight = weight * ~to_dendrite
 
             # Синапсы клеток колонок: свои U, ресурс и облегчение к каждому
@@ -3322,9 +3339,17 @@ class SpikingBrain:
         # усиливает возбуждающий вход сомы и сам поднимает сому
         # (dendrite_soma_mv).
         branch = self.i_dend.view(self.n_slots, max(1, cfg.dendrite_branches))
-        plateau = torch.sigmoid(
-            (branch - cfg.dendrite_threshold_mv) / cfg.dendrite_slope_mv
-        ).amax(1)
+        if cfg.dendrite_coincidence:
+            # Совпадение ~порога синапсов за окно зажигает плато ветки, оно
+            # держится dendrite_tau_ms (NMDA-плато — десятки–сотни мс, Major 2013).
+            trigger = torch.sigmoid((branch - cfg.dendrite_count_threshold) / cfg.dendrite_count_slope)
+            held = self.dend_plateau.view_as(branch)
+            held.copy_(torch.maximum(held * self.decay_dend, trigger))
+            plateau = held.amax(1)
+        else:
+            plateau = torch.sigmoid(
+                (branch - cfg.dendrite_threshold_mv) / cfg.dendrite_slope_mv
+            ).amax(1)
         synaptic = synaptic + cfg.dendrite_gain * plateau * synaptic.clamp(min=0.0) + self.dendrite_soma * plateau
 
         # Вещества через рецепторы: занятость c / (c + K) × ток клетки.
@@ -3966,7 +3991,7 @@ class SpikingBrain:
     # читает и пишет по фиксированным адресам. Поэтому их
     # всегда восстанавливают через copy_, а не присваиванием.
     _DYNAMIC = (
-        "v", "i_syn", "i_inh", "i_ngf", "ngf_mf", "i_nmda", "nmda_mf", "i_dend", "adapt", "refractory", "spikes",
+        "v", "i_syn", "i_inh", "i_ngf", "ngf_mf", "i_nmda", "nmda_mf", "i_dend", "dend_plateau", "adapt", "refractory", "spikes",
         "trace_pre", "trace_pre_rise", "ltp_kernel", "trace_post", "counts", "eligibility",
         "eligibility_scale", "dropped", "bias", "t_h", "kick_current", "kick_left", "stp_x", "stp_ca", "stp_u4", "stp_x4", "inh_gain",
         "chemistry", "tick", "mf_rate", "v_t", "dc_pre", "dc_post1", "dc_post2", "bg_fast", "bg_slow",

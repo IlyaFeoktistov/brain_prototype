@@ -65,12 +65,13 @@ if torch.cuda.is_available() and os.environ.get("BRAIN_KERNELS", "1") == "1":
             dendrite: torch.Tensor, drive: torch.Tensor, glutamate: torch.Tensor | None,
             inhibition: torch.Tensor, ngf: torch.Tensor,
             path_delay: torch.Tensor, tick: torch.Tensor, ring: torch.Tensor, dend_ring: torch.Tensor,
+            dend_unit: torch.Tensor | None = None,
         ) -> None:
             _ext.deliver(fired, n, start, count, perm, path_post, path_fanin, net_weight, path_start, path_flags, ach_paths,
                          ach_suppression, acetylcholine, dendrite_pre, dendrite_post, net_branch, branches,
                          typed_pre, cell_type, kinds, stp_u4, stp_x4, stp_U4, is_lamp5, ngf_d,
                          lamp5_scale, lamp5_kind, stp_x, stp_u_cell, inh_gain, dendrite, drive, glutamate, inhibition, ngf,
-                         path_delay, tick, ring, dend_ring)
+                         path_delay, tick, ring, dend_ring, dend_unit)
 
         @deliver.register_fake
         def _(*args) -> None:

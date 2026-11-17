@@ -87,7 +87,8 @@ __global__ void deliver_kernel(
     float* __restrict__ dendrite, float* __restrict__ drive, float* __restrict__ glutamate,
     float* __restrict__ inhibition, float* __restrict__ ngf,
     const int32_t* __restrict__ path_delay, const int64_t* __restrict__ tick, int64_t delay_slots,
-    int64_t stride, float* __restrict__ ring, float* __restrict__ dend_ring) {
+    int64_t stride, float* __restrict__ ring, float* __restrict__ dend_ring,
+    const float* __restrict__ dend_unit) {
   const float ach = ach_suppression > 0.0f ? *acetylcholine * ach_suppression : 0.0f;
   FOR_EVENTS(fired, slots, n, start, count, perm) {
     const int64_t syn = perm[row_ + j_];
@@ -111,8 +112,9 @@ __global__ void deliver_kernel(
       to_dend = dend_ring + s * stride * branches;
     }
     // Рабочая память -> смысл: на дальний дендрит (вес до истощения).
+    // dend_unit (cfg.dendrite_coincidence): ветка считает синапсы, не вес.
     if ((dendrite_pre[pre] && dendrite_post[post]) || (flags & 1)) {
-      atomicAdd(to_dend + post * branches + net_branch[syn], w);
+      atomicAdd(to_dend + post * branches + net_branch[syn], dend_unit ? dend_unit[path] : w);
       continue;
     }
     const bool typed = typed_pre[pre];
@@ -198,7 +200,8 @@ void deliver(torch::Tensor fired, int64_t n, torch::Tensor start, torch::Tensor 
              torch::Tensor stp_x, torch::Tensor stp_u_cell, torch::Tensor inh_gain,
              torch::Tensor dendrite, torch::Tensor drive, c10::optional<torch::Tensor> glutamate,
              torch::Tensor inhibition, torch::Tensor ngf,
-             torch::Tensor path_delay, torch::Tensor tick, torch::Tensor ring, torch::Tensor dend_ring) {
+             torch::Tensor path_delay, torch::Tensor tick, torch::Tensor ring, torch::Tensor dend_ring,
+             c10::optional<torch::Tensor> dend_unit) {
   auto stream = at::cuda::getCurrentCUDAStream();
   deliver_kernel<<<BLOCKS, THREADS, 0, stream>>>(
       fired.data_ptr<int64_t>(), fired.size(0), n, start.data_ptr<int32_t>(), count.data_ptr<int32_t>(), perm.data_ptr<int32_t>(),
@@ -215,7 +218,7 @@ void deliver(torch::Tensor fired, int64_t n, torch::Tensor start, torch::Tensor 
       glutamate.has_value() ? glutamate->data_ptr<float>() : nullptr,
       inhibition.data_ptr<float>(), ngf.data_ptr<float>(),
       path_delay.data_ptr<int32_t>(), tick.data_ptr<int64_t>(), ring.size(0),
-      drive.size(0), ring.data_ptr<float>(), dend_ring.data_ptr<float>());
+      drive.size(0), ring.data_ptr<float>(), dend_ring.data_ptr<float>(), opt<float>(dend_unit));
 }
 
 void ltd(torch::Tensor fired, int64_t n, torch::Tensor start, torch::Tensor count, torch::Tensor perm,

@@ -34,7 +34,7 @@ https://doi.org/10.3758/CABN.1.2.137; SNr → MD моносинаптическ�
   4 = 2, ворота закрыты дальше → держит А через 2.4 с без канала
   5 = 2, потом слово Б при закрытых → держит А, Б не записано
 
-    PYTHONPATH=. python tools/e1_gate.py [trials=8] [seed=1] [gsnr=2.0] [bg=3] [gctx=2.08] [size=1]
+    PYTHONPATH=. python tools/e1_gate.py [trials=8] [seed=1] [gsnr=2.0] [bg=3] [gctx=2.08] [size=2]
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ import time
 
 import torch
 
-from e1_slot import DT, P, Slot
+from e1_slot import DT, P, SIZE, Slot
 
 NW = 20          # клеток коры на слово
 NR = 20          # реле MD на слово в канале
@@ -99,7 +99,7 @@ def main(opts: dict) -> None:
     B = C * T
     cond = torch.arange(C).repeat_interleave(T)
     bg = float(opts.get("bg", 3.0))
-    slot, md = Slot(B, dev, size=float(opts.get("size", 1.0))), Relay(B, dev, gsnr, bg, float(opts.get("gctx", 2.08)))
+    slot, md = Slot(B, dev, size=float(opts.get("size", SIZE))), Relay(B, dev, gsnr, bg, float(opts.get("gctx", 2.08)))
     A, Bw = 0, 1
     # (от мс, до мс): ворота открыты? слово (−1 нет) — по условию
     open_ev = torch.tensor([False, True, True, True])[cond]

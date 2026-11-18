@@ -25,7 +25,7 @@ w− = 1 − f(w+ − 1)/(1 − f); в неизбирательные и в I �
 Контроль авторов (рис. 6b): фон низкий; слово 1 в 1.0 с — его группа держит
 до следующего; слово 2 в 2.0 с — заменяет; сброс в 3.0 с — все к фону.
 
-    PYTHONPATH=. python tools/e1_slot.py [trials=8] [seed=1] [size=1] [device=cpu]
+    PYTHONPATH=. python tools/e1_slot.py [trials=8] [seed=1] [size=2] [device=cpu]
 """
 
 from __future__ import annotations
@@ -45,12 +45,18 @@ G = P + 1                          # группы E: 0..P−1 — слова, P 
 C_EXT, R_EXT = 800, 3.0            # фон: входов × Гц
 C_SEL, R_SEL = int(F * C_EXT), 25.0  # стимул слова
 R_RESET = 25.0                     # сброс: C_EXT входов × 25 Гц
+# Размер по умолчанию — вдвое больше примера Brian2 (1600 E / 400 I), масштаб
+# проводимостей — формула из кода авторов (g × 800 / N_E). При 800 E память
+# метастабильна и у авторов (Brian2: слово гаснет к 4-й с, 3/3 зерна), при
+# 1600 E держит ≥ 4 с и у авторов (27 Гц), и у нас (26 Гц, 32/32);
+# самовозгорание без входа — 1/32 за 10 с (2026-11-18).
+SIZE = 2.0
 
 
 class Slot:
     """Пачка из B независимых ячеек; группы E пулятся (все со всеми)."""
 
-    def __init__(self, B: int, dev: str, wplus: float = WPLUS, size: float = 1.0):
+    def __init__(self, B: int, dev: str, wplus: float = WPLUS, size: float = SIZE):
         # size — во сколько раз сеть больше примера Brian2 (800 E / 200 I);
         # внутренние проводимости ÷ size — как в коде примера (g × 800 / N_E).
         self.B, self.dev = B, dev
@@ -76,7 +82,14 @@ class Slot:
         for k in range(P):
             w[k, k] = wplus
         self.w = w.to(dev)  # [получатель, источник]
-        self.decay = {t: float(torch.exp(torch.tensor(-DT / t))) for t in (2.0, 10.0)}
+        # Затухание синапсов — Эйлер, s × (1 − dt/τ), как у авторов (Brian2,
+        # method='euler'): площадь следа спайка ровно τ. Точная экспонента со
+        # скачком в начале шага даёт τ + dt/2 (AMPA +2.5% заряда, ГАМК +0.5%) —
+        # с ней фон 3 Гц вместо 2 и ячейка загоралась сама 20/32 за 10 с.
+        self.decay = {t: 1.0 - DT / t for t in (2.0, 10.0)}
+        # Своя клетка не входит в сумму (у авторов connect('i != j') для E→E и I→I).
+        self.w_self = self.w[self.lab, self.lab]          # [NE]
+        self.self_ampa, self.self_gaba = z(B, self.ne), z(B, self.ni)
         self.spk_e = z(B, self.ne)
         self.spk_i = z(B, self.ni)
         self.count = z(B, G)
@@ -94,6 +107,8 @@ class Slot:
         self.ampa_i.mul_(d2).add_(cnt.sum(1))
         self.gaba_e.mul_(d10).add_(n_i)
         self.gaba_i.mul_(d10).add_(n_i)
+        self.self_ampa.mul_(d2).add_(self.spk_e)
+        self.self_gaba.mul_(d10).add_(self.spk_i)
         lam_e = torch.full((B, self.ne), C_EXT * R_EXT * 1e-3 * DT, device=dev)
         lam_i = torch.full((B, self.ni), C_EXT * R_EXT * 1e-3 * DT, device=dev)
         if drive_e is not None:
@@ -109,16 +124,18 @@ class Slot:
         self.s_nmda.add_(DT * (-self.s_nmda / 100.0 + 0.5 * self.x_nmda * (1.0 - self.s_nmda)))
         s_pool = self.s_nmda @ self.onehot
         nmda_e = s_pool @ self.w.T                # [B, G]
+        w_self = self.w_self[None, :]
         nmda_i = s_pool.sum(1)
         ve, vi = self.ve, self.vi
         pool = lambda x: x[:, self.lab]
         mg_e = 1.0 / (1.0 + torch.exp(-0.062 * ve) / 3.57)
         mg_i = 1.0 / (1.0 + torch.exp(-0.062 * vi) / 3.57)
         # нС · мВ = пА
-        i_e = (2.08 * self.ext_e + 0.104 * self.k * pool(self.ampa_e)) * ve + 0.327 * self.k * pool(nmda_e) * mg_e * ve \
+        i_e = (2.08 * self.ext_e + 0.104 * self.k * (pool(self.ampa_e) - w_self * self.self_ampa)) * ve \
+            + 0.327 * self.k * (pool(nmda_e) - w_self * self.s_nmda) * mg_e * ve \
             + 1.25 * self.k * self.gaba_e[:, None] * (ve + 70.0)
         i_i = (1.62 * self.ext_i + 0.081 * self.k * self.ampa_i[:, None]) * vi + 0.258 * self.k * nmda_i[:, None] * mg_i * vi \
-            + 0.973 * self.k * self.gaba_i[:, None] * (vi + 70.0)
+            + 0.973 * self.k * (self.gaba_i[:, None] - self.self_gaba) * (vi + 70.0)
         dve = (-25.0 * (ve + 70.0) - i_e) / 0.5 * 1e-3
         dvi = (-20.0 * (vi + 70.0) - i_i) / 0.2 * 1e-3
         ve = torch.where(self.ref_e <= 0, ve + DT * dve, ve)
@@ -126,8 +143,9 @@ class Slot:
         se, si = ve > -50.0, vi > -50.0
         self.ve = torch.where(se, -55.0, ve)
         self.vi = torch.where(si, -55.0, vi)
-        self.ref_e = torch.where(se, 2.0, self.ref_e - DT)
-        self.ref_i = torch.where(si, 1.0, self.ref_i - DT)
+        # рефрактерность целыми шагами: свободна ровно через t_ref после спайка (как Brian2)
+        self.ref_e = torch.where(se, round(2.0 / DT) - 1, self.ref_e - 1)
+        self.ref_i = torch.where(si, round(1.0 / DT) - 1, self.ref_i - 1)
         self.spk_e, self.spk_i = se.float(), si.float()
         self.count.add_(self.spk_e @ self.onehot)
 
@@ -153,7 +171,7 @@ def main(opts: dict) -> None:
     torch.set_num_threads(int(opts.get("threads", 2)))
     torch.manual_seed(int(opts.get("seed", 1)))
     B = int(opts.get("trials", 8))
-    slot = Slot(B, dev, float(opts.get("wplus", WPLUS)), float(opts.get("size", 1.0)))
+    slot = Slot(B, dev, float(opts.get("wplus", WPLUS)), float(opts.get("size", SIZE)))
     w1, w2 = torch.zeros(B, dtype=torch.long), torch.ones(B, dtype=torch.long)
     t0 = time.time()
     # (метка, длительность мс, слово, сброс)

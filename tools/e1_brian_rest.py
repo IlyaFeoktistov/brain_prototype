@@ -6,7 +6,7 @@
 Вопрос: загорается ли избирательная группа сама без стимулов (наш перенос
 tools/e1_slot.py: 20/32 ячеек за 10 с, зерно 1).
 
-    OMP_NUM_THREADS=1 .venv-nengo/bin/python tools/e1_brian_rest.py SEED [секунд=10]
+    OMP_NUM_THREADS=1 .venv-nengo/bin/python tools/e1_brian_rest.py SEED [секунд=10] [hold|rest] [N=1000]
 """
 import sys
 #!/usr/bin/env python
@@ -25,7 +25,7 @@ from brian2 import *
 import numpy as np
 
 # populations
-N = 1000
+N = int(sys.argv[4]) if len(sys.argv) > 4 else 1000  # единственное отличие: размер (масштаб g — формула авторов)
 N_E = int(N * 0.8)  # pyramidal neurons
 N_I = int(N * 0.2)  # interneurons
 
@@ -183,12 +183,18 @@ r_I = PopulationRateMonitor(P_I)
 
 seed(int(sys.argv[1]))
 T = float(sys.argv[2]) if len(sys.argv) > 2 else 10.0
+if len(sys.argv) > 3 and sys.argv[3] == "hold":
+    # режим удержания: только первый стимул авторов (группа 1 в 1.0–1.05 с) — дословно
+    C_selection = int(f * C_ext)
+    rate_selection = 25 * Hz
+    stimuli1 = TimedArray(np.r_[np.zeros(40), np.ones(2), np.zeros(1000)], dt=25 * ms)
+    input1 = PoissonInput(P_E[N_non:N_non + N_sub], 's_AMPA_ext', C_selection, rate_selection, 'stimuli1(t)')
 net = Network(collect())
 net.add(sp_E_sels)
 net.add(r_E_sels)
 net.run(T * second)
 bins = int(T)
-print(f"зерно {sys.argv[1]}, {T:.0f} с без стимулов; частоты избирательных групп по секундам, Гц:")
+print(f"зерно {sys.argv[1]}, {T:.0f} с, N {N}, {'слово в группу 1 в 1.0 с' if len(sys.argv) > 3 and sys.argv[3] == 'hold' else 'без стимулов'}; частоты избирательных групп по секундам, Гц:")
 first = None
 for k, r in enumerate(r_E_sels):
     t = np.asarray(r.t / second); x = np.asarray(r.rate / Hz)

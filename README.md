@@ -1,154 +1,174 @@
-# Анатомический мозг — спайковая сеть на GPU
+**English** | [Русский](README.ru.md)
 
-Модель мозга из спайковых нейронов, где каждая часть — нейроны, связи и
-химия по данным о мозге, без решений кода. Симулятор на PyTorch и CUDA:
-нейроны AdEx/LIF, синапсы-проводимости, доставка спайков по событиям,
-пластичность STDP → след → вес по третьему фактору (дофамин, ацетилхолин,
-лазающее волокно). Знания — только в весах синапсов.
+# Anatomical brain — a spiking network on the GPU
 
-**Состояние: мозг ещё не работает как целое.** Цепи собраны, но слово пока
-не доходит от входа до смысловой коры, а правило пластичности коры по
-данным человека не найдено. Числа параметров сверяются с исследованиями и
-будут подгоняться под измерения человека, поэтому здесь их нет.
+A brain model built from spiking neurons. Every part is neurons, synapses
+and chemistry taken from brain data — no hand-written decision logic in the
+code. The simulator runs on PyTorch and CUDA: AdEx/LIF neurons,
+conductance synapses, event-driven spike delivery, plasticity
+(STDP → eligibility trace → weight, gated by a third factor: dopamine,
+acetylcholine, climbing fibre). Knowledge lives only in synaptic weights.
 
-- [ROADMAP.md](ROADMAP.md) — цель (чат: мозг учится и говорит), звенья до
-  неё и что их держит.
-- [docs/DESIGN.md](docs/DESIGN.md) — решения и замеры.
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — устройство зон и колонки.
-- [docs/ISSUES.md](docs/ISSUES.md) — открытые находки (баги, расхождения с данными).
-- [docs/REFACTOR.md](docs/REFACTOR.md) — план перестройки кода (отложен).
+The long-term goal is a brain that learns from the world and talks like a
+chat assistant. **It does not talk yet.** Below is an honest list of what
+already works, what does not, and what you will see if you run it.
 
-## Как мозг общается с миром
+- [ROADMAP.md](ROADMAP.md) — the goal, the links in the chain to it and
+  what blocks each one (in Russian).
+- [docs/DESIGN.md](docs/DESIGN.md) — decisions and measurements;
+  [docs/SPAUN_TRANSFER.md](docs/SPAUN_TRANSFER.md) — the current main line
+  of work; [docs/ISSUES.md](docs/ISSUES.md) — open problems and every
+  known stub (all in Russian).
 
-Чат — как переписка в мессенджере: мир рисует текст на экране, мозг читает
-его глазом и печатает ответ рукой на клавиатуре. Куда посмотреть, что
-понять и что нажать — решает сеть; код — только тело и мир (сетчатка,
-клавиатура, экран, вкус-награда учителя). Голос — через ухо (улитка).
+## Status (2026-11-18)
 
-```
-                ЭКРАН (мир)                         ГОЛОС (мир)
-                    │                                    │
-              сетчатка ON/OFF                     улитка, слуховой нерв
-                    │                                    │
-                   LGN ◄── ретикулярное               кохлеарное ядро (CN)
-                    │                                    │      └► VNLL ┐
-           V1: простые (L4) → сложные (L2/3)       нижнее двухолмие (IC) ◄┘
-                    │                                    │
-          зона букв (V4 / LO)                       MGN ◄── ретикулярное
-                    │                                    │
-                    └──────────►  СМЫСЛОВАЯ КОРА  ◄──── слуховая кора (A1)
-                                (ассоциативная)  ◄────► речевая моторная (Брока)
-                                 ▲    ▲    ▲
-             ПФК и цель ◄────────┘    │    └────────► височный полюс (категории)
-             (MD таламуса)            │
-                                гиппокамп: EC → DG → CA3 ↺ → CA1
-                    │
-     смысл → буквы → зона Экснера (премоторная) → моторная кора руки → КЛАВИШИ
-                         ▲          │                     ▲
-                         │          └► базальные ганглии ─┤ (выбор действия:
-                         │             стриатум D1/D2, GPe,│  «нажать / ждать»)
-                         │             STN, GPi ⊣ VA/VL ───┘
-                         │
-                 мозжечок: мшистые волокна → гранулярные → Пуркинье ⊣ ядра → VLp
-                 (учится по ошибке: нижняя олива — лазающие волокна)
+### Works, measured
 
-     Взгляд: боковое зрение и V1 → верхнее двухолмие (⊣ GPi) → саккада
-```
+- **The whole brain runs on one 6 GB GPU.** The default brain has ~320 000
+  neurons and ~183 million synapses: 11 cortical areas as layered columns,
+  thalamus, basal ganglia, cerebellum, hippocampus, amygdala,
+  neuromodulator nuclei, sleep and wake. At rest the firing rate of every
+  nucleus and layer is fitted to recordings from awake animals and humans.
+- **Vision up to letters.** Text on the screen goes through retina → LGN →
+  V1 → the letter area (V4/LO). LGN cells under a word fire about 3× more
+  than background. After supervised learning, the letter area recognises
+  which of 10 letters sits at the fovea correctly 58% of the time (chance
+  is 10%).
+- **The web UI.** You can create a brain, type into the chat and watch
+  every area live in the microscope. There are cell cards, chemistry,
+  pathways, and a view of what the eye sees and where the hand presses.
+- **Working-memory control blocks (E1), as separate small networks.**
+  These follow the control scheme of Spaun (Eliasmith 2012), rebuilt from
+  spiking populations. They are not yet inside the brain. Results:
+  - a memory cell (Brunel & Wang 2001) holds one word: 8/8 trials;
+  - the thalamic gate (MD under SNr) passes or blocks a write as it
+    should: 5 conditions, 8/8 trials, 3 seeds;
+  - a position counter steps through positions 1 → 5 without error in
+    23/24 trials (3 seeds);
+  - writing a 3-word phrase into "position × word" memory, with the
+    channel chosen by spiking basal ganglia: 23/24.
 
-Кроме этого — химия и состояния:
+### Does not work yet
 
-```
-  VTA (дофамин) ◄─ вкус «сладко»; уздечка ⊣ VTA ◄─ вкус «горько», GPi
-  голубое пятно (норадреналин), шов (серотонин), ядро Мейнерта (ацетилхолин),
-  латеральный гипоталамус (орексин)
-  сон: VLPO ⊣ ядра бодрствования; аденозин копится наяву; часы SCN → DMH
-  миндалина: смысл → базолатеральная → центральная ⊣ LC, VTA, Мейнерт
-```
+- **There is no conversation.** You can type a phrase and the brain will
+  look at it, but the hand types noise. The motor thalamus (VA) is held
+  up by a fitted current and drives the hand map in bursts, so random keys
+  are pressed even on an empty screen. This is a known stub (ISSUES 23).
+- **Recalling a stored phrase in order ("repeat") works in only 3–4 of 8
+  trials.** The cause has been found: the counter's reset weakens the
+  first position (docs/SPAUN_TRANSFER.md, step 5b).
+- **Letters are not position-invariant.** The letter area loses a letter
+  that moves ±3 px away from the fovea.
+- **Meaning is not learned.** Mapping a word to its meaning is at chance
+  (0.12). No plasticity rule for human cortex has been fitted yet.
+- **Premotor → hand is not shown to work.** Driving L5 of the hand map
+  presses the right key (16/18). A command arriving from L2/3 or from the
+  premotor area does not reach the key.
+- Many numbers are still marked `[сверить]` ("to be checked against data").
+  Every stub is listed in docs/ISSUES.md under "Костыли и заглушки"
+  ("Crutches and stubs").
 
-Каждая зона коры — колонка по слоям (L2/3, L4, L5, L6): вход из таламуса и
-низших зон — в L4, связи с соседями — L2/3, выход к ядрам и мышцам — L5,
-обратная связь в таламус — L6. Пути вверх по иерархии идут в L4, вниз — на
-дендриты L2/3. Каждая кора связана со своим ядром таламуса и сектором
-ретикулярного ядра. Вещества действуют через рецепторы: выброс ядра —
-концентрация — занятость рецепторов — ток клеток.
+## Running
 
-## Что реализовано
-
-**Кора (колонки по слоям):** зрительная V1, зона букв (V4/LO), слуховая
-A1, смысловая (ассоциативная), ПФК, цель (ПФК), височный полюс, поясная и
-островковая (чувства), речевая моторная (Брока), премоторная (зона
-Экснера), моторная кора руки. Клетки: главные (E) и быстрые тормозные (PV);
-SOM, VIP, LAMP5 собраны, по умолчанию выключены.
-
-**Таламус:** LGN, MGN, MD, VA/VLa, VLp, ретикулярное ядро по секторам
-(зрение, слух, MD, моторный); T-ток реле, триады.
-
-**Слуховой ствол:** кохлеарное ядро (T-, L-, D-звёздчатые), VNLL, нижнее
-двухолмие.
-
-**Зрение и взгляд:** сетчатка (центр–окружение), боковое зрение, верхнее
-двухолмие, генератор саккад.
-
-**Базальные ганглии:** стриатум D1 и D2, быстрые тормозные стриатума, GPe,
-GPi, субталамическое ядро.
-
-**Мозжечок:** гранулярные клетки (с клетками Гольджи), Пуркинье, ядра
-мозжечка, нижняя олива.
-
-**Гиппокамп:** энторинальная кора, зубчатая извилина, CA3, CA1.
-
-**Миндалина и награда:** базолатеральная и центральная миндалина, VTA,
-латеральная уздечка.
-
-**Модуляторы и сон:** голубое пятно, дорсальное ядро шва, ядро Мейнерта,
-латеральный гипоталамус (орексин), VLPO, супрахиазматическое ядро, DMH;
-вещества — дофамин, норадреналин, серотонин, ацетилхолин, орексин,
-галанин, аденозин.
-
-**Тело и мир:** сетчатка, улитка, рука и клавиатура, вкус-награда; экран
-и голос (синтез речи) — в мире.
-
-## Запуск
+Requires an NVIDIA GPU (6 GB is enough), Python 3.12 and Node.js (to
+build the UI).
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install torch --index-url https://download.pytorch.org/whl/cu128
 pip install -r requirements.txt
+./run-web.sh            # http://localhost:8000
 ```
 
-Главный ввод — веб-интерфейс (`./run-web.sh`, http://localhost:8000):
-разговор с мозгом и наблюдение за ним. Новый мозг в вебе по умолчанию —
-пресет «рабочий» (`brain/presets.py`): тот же мозг, что в опытах, с
-выученными буквами. Консольного чата нет — разговор в терминале требует
-отдельного TUI. Опыты — стенды (`PYTHONPATH=. .venv/bin/python tools/<стенд>.py`):
+In the web UI, create a new brain from the **working** preset
+(`brain/presets.py`). It is the same brain used in the experiments: fitted
+visual pathway and learned letters. Its files ship with the repository in
+`data/presets/`. Brains are saved to `~/.brain/brains/` (`BRAIN_HOME`).
 
-- `anatomy_bench` — мозг в покое: частота каждого ядра и слоя против
-  записей у бодрствующих.
-- `train_anatomy` — обучение через мир: азбука, лепет руки, копирование и
-  курс `data/course` (буквы → слоги → слова → фразы → факты → вопросы).
-- `course_exam` — экзамен по курсу на наборах `data/course/проверка`;
-  `letters_local` — различает ли зона букв буквы.
-- `word_trace`, `ear_trace`, `ic_latency` — путь слова и звука по звеньям.
-- `anatomy_fit`, `sleep_fit` — согласование фона с частотами in vivo.
-- `column_check`, `column_fit` — одиночная колонка.
-- `stdp_fit_human`, `calcium_stdp` — правило пластичности против данных
-  человека.
+Why the minimum brain is ~320 000 neurons: every cortical area is a column
+of at least 20 000 cells. In a smaller column almost all input is the
+average current standing in for missing neighbours, and the network
+fires in pathological bursts (`min_column_neurons` in `brain/config.py`).
 
-Мозги сохраняются в `~/.brain/brains/`, логи — в `~/.brain/logs/`
-(`BRAIN_HOME`). Размер — `BRAIN_SIZE` (`small` по умолчанию), устройство —
-`BRAIN_DEVICE`.
+The E1 blocks run on the CPU:
 
-## Файлы
+```bash
+cd tools
+PYTHONPATH=. ../.venv/bin/python e1_counter.py     # position counter
+PYTHONPATH=. ../.venv/bin/python e1_phrase.py      # write a phrase
+PYTHONPATH=. ../.venv/bin/python e1_recall.py      # recall it in order (not working yet)
+```
 
-- `brain/anatomy.py` — зоны, пути, ядра, рецепторы, частоты и данные
-  человека со ссылками на исследования.
-- `brain/config.py` — параметры клеток, колонки, пластичности, химии,
-  органов (у чисел — источники).
-- `brain/engine.py` — симулятор: нейроны, синапсы, доставка, пластичность,
-  химия; `brain/csrc/events.cu`, `brain/kernels.py` — ядра CUDA.
-- `brain/mind.py` — мозг целиком: сборка, сохранение, загрузка.
-- `brain/body.py`, `brain/world.py`, `brain/session.py` — тело, мир и
-  разговор с миром.
-- `brain/presets.py` — готовые сборки мозга (веб, опыты, тесты).
-- `brain/server.py`, `brain/neuron.py`, `web/` — веб, главный ввод.
-- `tools/` — стенды.
+## How the brain meets the world
+
+The chat is like a messenger: the world draws text on a screen, the brain
+reads it with its eye and types the answer with its hand on a keyboard.
+Where to look, what it means and which key to press is decided by the
+network. The code is only the body and the world: retina, keyboard,
+screen, the teacher's sweet/bitter taste as reward. Voice goes in through
+the ear (cochlea).
+
+```
+                SCREEN (world)                      VOICE (world)
+                    │                                    │
+              retina ON/OFF                       cochlea, auditory nerve
+                    │                                    │
+                   LGN ◄── reticular nucleus          cochlear nucleus (CN)
+                    │                                    │      └► VNLL ┐
+          V1: simple (L4) → complex (L2/3)        inferior colliculus ◄─┘
+                    │                                    │
+          letter area (V4 / LO)                     MGN ◄── reticular
+                    │                                    │
+                    └──────────►  MEANING CORTEX ◄──── auditory cortex (A1)
+                                 (association)  ◄────► speech motor (Broca)
+                                 ▲    ▲    ▲
+          PFC and goal ◄─────────┘    │    └────────► temporal pole (categories)
+          (MD thalamus)               │
+                                hippocampus: EC → DG → CA3 ↺ → CA1
+                    │
+    meaning → letters → Exner's area (premotor) → hand motor cortex → KEYS
+                         ▲          │                     ▲
+                         │          └► basal ganglia ─────┤ (action choice:
+                         │             striatum D1/D2, GPe,│  "press / wait")
+                         │             STN, GPi ⊣ VA/VL ───┘
+                         │
+               cerebellum: mossy fibres → granule → Purkinje ⊣ nuclei → VLp
+               (learns from error: inferior olive — climbing fibres)
+
+    Gaze: peripheral vision and V1 → superior colliculus (⊣ GPi) → saccade
+```
+
+Chemistry and states:
+
+```
+  VTA (dopamine) ◄─ "sweet"; lateral habenula ⊣ VTA ◄─ "bitter", GPi
+  locus coeruleus (noradrenaline), raphe (serotonin), nucleus basalis
+  (acetylcholine), lateral hypothalamus (orexin)
+  sleep: VLPO ⊣ wake nuclei; adenosine builds up while awake; SCN clock → DMH
+  amygdala: meaning → basolateral → central ⊣ LC, VTA, nucleus basalis
+```
+
+Every cortical area is a layered column (L2/3, L4, L5, L6). Input from the
+thalamus and lower areas goes to L4, links to neighbours to L2/3, output to
+nuclei and muscles from L5, feedback to the thalamus from L6. Substances
+act through receptors: release → concentration → receptor occupancy →
+current in the cells.
+
+## Files
+
+- `brain/anatomy.py` — areas, pathways, nuclei, receptors and human data,
+  with references to the studies.
+- `brain/config.py` — cell, column, plasticity, chemistry and body
+  parameters (sources next to the numbers).
+- `brain/engine.py` — the simulator; `brain/csrc/events.cu`,
+  `brain/kernels.py` — CUDA kernels.
+- `brain/mind.py` — the whole brain: build, save, load.
+- `brain/body.py`, `brain/world.py`, `brain/session.py` — body, world and
+  conversation with the world.
+- `brain/presets.py`, `data/presets/` — ready-made brains.
+- `brain/server.py`, `web/` — the web UI.
+- `tools/` — test benches and experiments (`e1_*.py` — working-memory
+  control blocks).
+
+Code comments and docs are in Russian; numbers taken from studies carry a
+DOI or URL.

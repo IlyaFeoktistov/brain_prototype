@@ -27,8 +27,10 @@ already works, what does not, and what you will see if you run it.
 - **The whole brain runs on one 6 GB GPU.** The default brain has ~320 000
   neurons and ~183 million synapses: 11 cortical areas as layered columns,
   thalamus, basal ganglia, cerebellum, hippocampus, amygdala,
-  neuromodulator nuclei, sleep and wake. At rest the firing rate of every
-  nucleus and layer is fitted to recordings from awake animals and humans.
+  neuromodulator nuclei, sleep and wake. Sensory areas (V1, A1, letters,
+  limbic) and most thalamic and brainstem nuclei rest at the firing rates
+  recorded in awake animals and humans. Frontal and motor areas do not
+  (see below).
 - **Vision up to letters.** Text on the screen goes through retina → LGN →
   V1 → the letter area (V4/LO). LGN cells under a word fire about 3× more
   than background. After supervised learning, the letter area recognises

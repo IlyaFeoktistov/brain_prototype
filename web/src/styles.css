@@ -287,3 +287,7 @@ table.grid th { color: var(--ink-soft); font-weight: 400; }
 .flag-status.partial { color: #b26a00; }
 .flag-status.not_debugged, .flag-status.not_data { color: #b3261e; }
 fieldset.flags { border: 1px solid var(--line, #ddd); border-radius: 6px; padding: 6px 10px; margin: 8px 0; }
+
+/* ---- живой режим в шапке ---- */
+.live-toggle { font: inherit; font-size: 13px; padding: 1px 10px; border-radius: 10px; border: 1px solid currentColor; background: none; color: inherit; cursor: pointer; }
+.live-toggle.on { color: #2e7d32; }

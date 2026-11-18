@@ -76,7 +76,10 @@ class BrainHost:
         self.clients: set[asyncio.Queue] = set()
         self.jobs: queue.Queue = queue.Queue()
         self.busy: str | None = None
-        self.live = False
+        # Живой режим по умолчанию включён: мозг живёт сам (смотрит на экран,
+        # время идёт), а не стоит до реплики; BRAIN_LIVE=0 — выключить
+        # (например, чтобы не занимать видеокарту).
+        self.live = os.environ.get("BRAIN_LIVE", "1") != "0"
         self.mind: Mind | None = None
         self.session: Session | None = None
         self.teacher: Teacher | None = None

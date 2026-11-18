@@ -161,7 +161,12 @@ export function App() {
           <span>{hourText(status.hour ?? 0)}</span>
           <span>прожито {bioTime(status.timeMs ?? 0)}</span>
           {status.busy && <span className="busy">{status.busy}…</span>}
-          {status.live && <span>живёт в тишине</span>}
+          <button type="button" className={`live-toggle${status.live ? " on" : ""}`} disabled={!connected}
+                  onClick={() => api.setLive(!status.live).catch(() => undefined)}
+                  title={status.live ? "мозг живёт сам: смотрит на экран, время идёт, клетки работают и без реплики — нажми, чтобы поставить на паузу (видеокарта освободится)"
+                                     : "мозг стоит и ждёт реплики — нажми, чтобы он жил сам"}>
+            {status.live ? "⏸ живёт" : "▶ жить"}
+          </button>
           <span className="device">{anatomy.device === "cpu" ? "процессор" : "видеокарта"}</span>
           {!connected && <span className="busy">нет связи</span>}
         </p>

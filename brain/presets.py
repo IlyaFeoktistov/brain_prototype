@@ -7,6 +7,10 @@
 и выученные веса этого пути (letters_us, у ямки 0.58 на 10 буквах).
 Подгонка и гомеостаз посчитаны на мозге размера small (наименьший), поэтому
 размер пресета фиксирован.
+
+Файлы пресета ищутся сначала в ~/.brain (BRAIN_HOME — там их пишут опыты),
+потом в репозитории data/presets (копия для зерна 1 — чтобы веб из свежего
+клона создавал тот же мозг, что у нас; ~13 МБ).
 """
 
 from __future__ import annotations
@@ -21,6 +25,14 @@ from brain.config import BRAIN_HOME, BrainConfig
 from brain.mind import Mind
 
 FITS = BRAIN_HOME / "fits"
+REPO_PRESETS = Path(__file__).resolve().parent.parent / "data" / "presets"
+
+
+def preset_file(rel: str) -> Path:
+    """Файл пресета по пути относительно BRAIN_HOME: из ~/.brain, иначе копия в data/presets."""
+
+    home = BRAIN_HOME / rel
+    return home if home.exists() or not (REPO_PRESETS / rel).exists() else REPO_PRESETS / rel
 TRN_TO_LGN = "trn -> lgn"
 LETTERS_PATH = "visual -> letters"
 
@@ -54,15 +66,15 @@ class Preset:
     def missing(self, seed: int = 1) -> list[Path]:
         """Файлы пресета, которых нет на диске."""
 
-        need = [BRAIN_HOME / f.format(seed=seed) for f in self.weights.values()]
+        need = [preset_file(f.format(seed=seed)) for f in self.weights.values()]
         if self.fit:
-            need.append(FITS / f"{self.fit}.json")
+            need.append(preset_file(f"fits/{self.fit}.json"))
         if self.homeo:
             need.append(self.homeo_file(seed))
         return [p for p in need if not p.exists()]
 
     def homeo_file(self, seed: int) -> Path:
-        return FITS / f"{self.homeo}-s{seed}-homeo.pt"
+        return preset_file(f"fits/{self.homeo}-s{seed}-homeo.pt")
 
     def finish(self, mind: Mind, seed: int = 1) -> None:
         """Правки после сборки: TRN, гомеостаз, выученные веса."""
@@ -73,7 +85,7 @@ class Preset:
         if self.homeo:
             b.bias[: b.n] += torch.load(self.homeo_file(seed), map_location=b.device)
         for path, f in self.weights.items():
-            w = torch.load(BRAIN_HOME / f.format(seed=seed), map_location=b.device)["weight"]
+            w = torch.load(preset_file(f.format(seed=seed)), map_location=b.device)["weight"]
             next(p for p in b.projections if p.name == path).weight.copy_(w)
 
     def build(self, seed: int = 1, cfg: BrainConfig | None = None) -> Mind:

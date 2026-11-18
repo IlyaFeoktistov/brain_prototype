@@ -920,13 +920,14 @@ def save_fit(name: str, bias, pop) -> str:
 
 
 def use_fit(cfg, name: str) -> None:
-    """Взять фон из ~/.brain/fits/<имя>.json (save_fit) вместо чисел этого файла."""
+    """Взять фон из ~/.brain/fits/<имя>.json (save_fit) вместо чисел этого файла;
+    нет там — копия в репозитории data/presets/fits (brain/presets.py)."""
 
     import json
 
-    from brain.config import BRAIN_HOME
+    from brain.presets import preset_file
 
-    data = json.loads((BRAIN_HOME / "fits" / f"{name}.json").read_text(encoding="utf-8"))
+    data = json.loads(preset_file(f"fits/{name}.json").read_text(encoding="utf-8"))
     cfg.nucleus_bias_mv = tuple(tuple(b) for b in data["bias"])
     cfg.column_gain_external_pop = tuple(tuple(p) for p in data["pop"])
 

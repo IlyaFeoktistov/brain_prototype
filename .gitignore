@@ -45,3 +45,5 @@ Thumbs.db
 web/node_modules/
 web/dist/
 web/*.tsbuildinfo
+# …кроме файлов пресета «рабочий» (brain/presets.py), чтобы веб из клона создавал тот же мозг
+!data/presets/**/*.pt

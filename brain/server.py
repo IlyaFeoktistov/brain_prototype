@@ -267,7 +267,7 @@ class BrainHost:
 
         # Только мозги нового формата (старые этим кодом не открываются).
         items = [d for d in (describe_saved(p) for p in files) if not d["old"]]
-        presets = [{"name": p.name, "title": p.title, "ready": not p.missing()} for p in PRESETS.values()]
+        presets = [{"name": p.name, "title": p.title, "ready": not p.missing(), "seeds": p.seeds()} for p in PRESETS.values()]
         small = BrainConfig()
         flags.configure(small, {"small_columns": True})
         return {"type": "brains", "current": current, "items": items,

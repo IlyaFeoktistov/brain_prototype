@@ -72,7 +72,7 @@ export interface Brains {
   items: SavedBrain[];
   minNeurons: number;
   minNeuronsSmall: number;
-  presets: { name: string; title: string; ready: boolean }[];
+  presets: { name: string; title: string; ready: boolean; seeds: number[] }[];
   flags: FlagInfo[];
 }
 

@@ -73,6 +73,11 @@ class Preset:
             need.append(self.homeo_file(seed))
         return [p for p in need if not p.exists()]
 
+    def seeds(self, upto: int = 10) -> list[int]:
+        """Зёрна, для которых файлы пресета есть (в репозитории — только 1)."""
+
+        return [s for s in range(1, upto + 1) if not self.missing(s)]
+
     def homeo_file(self, seed: int) -> Path:
         return preset_file(f"fits/{self.homeo}-s{seed}-homeo.pt")
 

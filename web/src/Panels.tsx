@@ -336,14 +336,24 @@ export function Chooser({ brains, onClose, info }: { brains: Brains; onClose?: (
           act(api.newBrain(name.trim(), neurons, preset || null, seed, fl), `создаю ${name}`);
         }}>
           <label>имя <input value={name} onChange={(e) => setName(e.target.value)} placeholder="например, первый" /></label>
-          <label>сборка <select value={preset} onChange={(e) => setPreset(e.target.value)}>
+          <label>сборка <select value={preset} onChange={(e) => {
+            setPreset(e.target.value);
+            const p = brains.presets.find((q) => q.name === e.target.value);
+            if (p && !p.seeds.includes(seed)) setSeed(p.seeds[0] ?? 1);
+          }}>
             {brains.presets.map((p) => (
               <option key={p.name} value={p.name} disabled={!p.ready}>{p.title}{p.ready ? "" : " — нет файлов"}</option>
             ))}
             <option value="">голый мозг заданного размера</option>
           </select></label>
           {!preset && <label>нейронов <input type="number" min={1} step={10000} value={neurons} onChange={(e) => setNeurons(Number(e.target.value))} /></label>}
-          <label>зерно <input type="number" min={1} step={1} value={seed} onChange={(e) => setSeed(Number(e.target.value))} /></label>
+          {preset ? (
+            <label>зерно <select value={seed} onChange={(e) => setSeed(Number(e.target.value))}>
+              {(brains.presets.find((p) => p.name === preset)?.seeds ?? [1]).map((s) => <option key={s} value={s}>{s}</option>)}
+            </select></label>
+          ) : (
+            <label>зерно <input type="number" min={1} step={1} value={seed} onChange={(e) => setSeed(Number(e.target.value))} /></label>
+          )}
           {preset ? <p className="muted">Размер — наименьший мозг ({brains.minNeurons.toLocaleString("ru")} нейронов): подгонки посчитаны на нём.
             Файлы пресета в репозитории — для зерна 1.</p> : <p className="muted">
             Ядра получают клетки по данным, остальное делится между колонками коры по их долям — мозг растёт числом клеток в

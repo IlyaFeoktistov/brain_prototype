@@ -32,8 +32,9 @@ already works, what does not, and what you will see if you run it.
   recorded in awake animals and humans. Frontal and motor areas do not
   (see below).
 - **Vision up to letters.** Text on the screen goes through retina → LGN →
-  V1 → the letter area (V4/LO). LGN cells under a word fire about 3× more
-  than background. After supervised learning, the letter area recognises
+  V1 → the letter area (V4/LO). LGN cells under a word fired about 3× more
+  than background (measured 2026-10-22; not re-checked on the current
+  preset, where LGN at rest is too quiet: 1.6 Hz against a 10 Hz target). After supervised learning, the letter area recognises
   which of 10 letters sits at the fovea correctly 58% of the time (chance
   is 10%).
 - **The web UI.** You can create a brain, type into the chat and watch
@@ -52,6 +53,15 @@ already works, what does not, and what you will see if you run it.
 
 ### Does not work yet
 
+- **Frontal and motor areas overheat at rest.** This is what the
+  microscope shows as zones "on fire". Working preset, 1 s of rest, seed 1:
+  prefrontal and goal areas fire 3–7× their target rate (their PV
+  interneurons 5–15×); premotor, hand and motor cortex 3–7×; dentate gyrus
+  ×90, raphe ×8, superior colliculus ×5. The causes found so far are bursts
+  of the motor thalamus (VA) and dendritic plateaus that never switch off
+  (ISSUES 23, 26). The "dendrite coincidence detector" flag, with its own
+  homeostasis, brings motor cortex to target, but not the prefrontal,
+  premotor or hand areas.
 - **There is no conversation.** You can type a phrase and the brain will
   look at it, but the hand types noise. The motor thalamus (VA) is held
   up by a fitted current and drives the hand map in bursts, so random keys

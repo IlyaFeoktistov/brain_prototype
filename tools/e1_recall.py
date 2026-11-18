@@ -19,7 +19,11 @@ tools/e1_phrase.py; вывод:
 пусты; удерживающего «стопа» ещё нет); вывод дважды подряд без повторной
 записи. Испытания: длины фразы 2 и 3 вперемешку; 0 — «ААА», 1 — «АБВ».
 
-    PYTHONPATH=tools python tools/e1_recall.py [trials=8] [seed=1] [g_ans=8] [reads=4] [repeats=2]
+    PYTHONPATH=tools python tools/e1_recall.py [trials=8] [seed=1] [g_ans=8] [reads=4] [repeats=2] [trace=0]
+
+trace=1 — диагностика без изменений сети (тот же поток случайных чисел):
+временные ряды по цепочке, бины 50 мс, среднее по испытаниям, позиции 1 и 2,
+запись против чтения — см. trace_report.
 """
 
 from __future__ import annotations
@@ -36,6 +40,73 @@ from e1_slot import C_EXT, C_SEL, DT, P, R_RESET, R_SEL, Slot
 
 T = 1200.0
 NANS = 40
+
+
+class Trace:
+    """Бины по времени: средние по испытаниям величины цепочки по каналам (позициям) 0..P−1.
+    «Своё» слово канала k — слово фразы на позиции k (испытания короче k не считаются)."""
+
+    NAMES = ["поз Гц", "поз v", "стрЧ Гц", "стрЧ v", "стрЧ Iвх", "SNrЧ Гц", "стрЗ Гц", "SNrЗ Гц",
+             "MDЧ своё", "MDЧ чуж", "MDЧ v", "MDЧ Iкора", "MDЧ Isnr", "MDЗ Гц", "яч своё", "отв своё", "отв чуж",
+             "отв Iвх"]
+
+    def __init__(self, nb: int, B: int, phrase: torch.Tensor, length: torch.Tensor):
+        self.x = torch.zeros(nb, len(self.NAMES), P)
+        self.n = torch.zeros(nb)
+        self.B = B
+        L = phrase.shape[1]
+        self.valid = (torch.arange(P)[None, :] < length[:, None]).float()        # [B, P]
+        w = torch.zeros(B, P, dtype=torch.long)
+        w[:, :L] = phrase
+        self.w = w
+
+    def add(self, b: int, cur, ws, bg_w, bg_r, md_r, md_w, ans) -> None:
+        B, w, val = self.B, self.w, self.valid
+        nv = val.sum(0).clamp(min=1)
+        own = lambda x: (x.gather(2, w[:, :, None]).squeeze(2) * val).sum(0) / nv     # x [B, канал, слово]
+        other = lambda x: ((x.sum(2) - x.gather(2, w[:, :, None]).squeeze(2)) / (P - 1) * val).sum(0) / nv
+        grp = lambda v, nn: v.view(B, P, nn).mean(2).mean(0)
+        k = 1000.0 / DT    # доля спайков за шаг → Гц
+        r = [(cur.spk_e @ cur.onehot)[:, :P].mean(0) / cur.nsub * k,
+             ((cur.ve @ cur.onehot)[:, :P] / cur.nsub).mean(0),
+             bg_r.msn.per_channel().mean(0) / 40 * k,
+             grp(bg_r.msn.v, 40),
+             grp(-bg_r.msn.ge * bg_r.msn.v, 40),
+             bg_r.snr.per_channel().mean(0) / 30 * k,
+             bg_w.msn.per_channel().mean(0) / 40 * k,
+             bg_w.snr.per_channel().mean(0) / 30 * k]
+        sp = md_r.spk.view(B, P, P, NR).mean(3) * k
+        r += [own(sp), other(sp),
+              own(md_r.v.view(B, P, P, NR).mean(3)),
+              own((-md_r.gctx * md_r.ctx * md_r.v).view(B, P, P, NR).mean(3)),
+              own((md_r.gsnr * md_r.gaba * (md_r.v + 70.0)).view(B, P, P, NR).mean(3)),
+              md_w.spk.view(B, P, P * NR).mean(2).mean(0) * k,
+              own((ws.spk_e @ ws.onehot)[:, :P].view(B, P, P) / ws.nsub * k)]
+        a3 = (ans.spk.view(B, P, NANS).mean(2) * k)[:, None, :].expand(B, P, P)
+        g3 = (-ans.ge * ans.v).view(B, P, NANS).mean(2)[:, None, :].expand(B, P, P)
+        r += [own(a3), other(a3), own(g3)]
+        self.x[b] += torch.stack(r)
+        self.n[b] += 1
+
+
+def trace_report(tr: Trace, TB: float, periods: list, rec_starts: list) -> None:
+    x = tr.x / tr.n.clamp(min=1)[:, None, None]
+    rs = rec_starts[0]
+    # (заголовок, начало окна, нулевой момент, канал)
+    wins = [("НАЧАЛО фразы: позиция 1 в текущую +100…150", 0.0, 0.0, 0),
+            ("ЗАПИСЬ слова 1 (0 — начало слова)", periods[0][0] - 100, periods[0][0], 0),
+            ("ЗАПИСЬ слова 2", periods[1][0] - 100, periods[1][0], 1),
+            ("ПЕРЕД «повтори» → сброс (0) → позиция 1 (+100…150)", rs - 300, rs, 0),
+            ("ЧТЕНИЕ позиции 1 (0 — начало окна чтения)", rs + 400 - 100, rs + 400, 0),
+            ("ЧТЕНИЕ позиции 2", rs + 400 + 1200 - 100, rs + 1600, 1)]
+    cols = ["поз Гц", "поз v", "стрЗ Гц", "SNrЗ Гц", "MDЗ Гц", "стрЧ Гц", "стрЧ v", "стрЧ Iвх", "SNrЧ Гц",
+            "MDЧ своё", "MDЧ чуж", "MDЧ v", "MDЧ Iкора", "MDЧ Isnr", "яч своё", "отв своё", "отв чуж", "отв Iвх"]
+    idx = [Trace.NAMES.index(c) for c in cols]
+    for title, a, zero, k in wins:
+        print(f"\n[трасса] {title}; канал = позиция {k + 1}; бины {TB:.0f} мс, среднее по испытаниям; Гц, мВ, пА")
+        print("   t,мс " + " ".join(f"{c:>9s}" for c in cols))
+        for b in range(int(a // TB), int((a + 800) // TB)):
+            print(f"  {b * TB - zero:+5.0f} " + " ".join(f"{float(x[b, j, k]):9.1f}" for j in idx))
 
 
 def main(opts: dict) -> None:
@@ -77,6 +148,9 @@ def main(opts: dict) -> None:
     ans_read = torch.zeros(repeats, reads, B, P)
     ans_write = torch.zeros(LMAX, B, P)           # ответ в 0–600 мс после записываемого слова
     dbg = torch.zeros(repeats, reads, 4, B, P)   # стриатум чтения, SNr чтения, реле чтения (по каналам), текущая позиция
+    trace = int(opts.get("trace", 0))
+    TB = 50.0
+    tr = Trace(int(total // TB) + 1, B, phrase, length) if trace else None
     t0 = time.time()
     pi = 0
     for step in range(int(round(total / DT))):
@@ -121,6 +195,8 @@ def main(opts: dict) -> None:
         cur.step(de_c, di_c, add_e=g2.to_slot(cur.lab))
         ws.step(add_e=md_w.to_slot(ws.lab))
         a = ans.per_channel()
+        if tr is not None:
+            tr.add(int(t // TB), cur, ws, bg_w, bg_r, md_r, md_w, ans)
         if kind == "r" and 0 <= ph < 300:
             ans_read[idx[0], idx[1]] += a
             dbg[idx[0], idx[1], 0] += bg_r.msn.per_channel() / 40
@@ -129,6 +205,8 @@ def main(opts: dict) -> None:
             dbg[idx[0], idx[1], 3] += (cur.spk_e @ cur.onehot)[:, :P] / cur.nsub
         if kind == "w" and 0 <= ph < 600:
             ans_write[idx] += a
+    if tr is not None:
+        trace_report(tr, TB, periods, rec_starts)
     ans_read = ans_read / NANS / 0.3
     ans_write = ans_write / NANS / 0.6
     print(f"Вывод фразы: {B} испытаний, длины {length.tolist()}, g_ans {g_ans}, {time.time() - t0:.0f} с")
@@ -140,6 +218,11 @@ def main(opts: dict) -> None:
                 print(f"  [отладка] вывод {r + 1}, окно поз. {k + 1}: " + "; ".join(
                     f"{n} {' '.join(f'{float(x):4.0f}' for x in dbg[r, k, j].mean(0))}" for j, n in enumerate(names))
                     + f"; ответ {' '.join(f'{float(x):4.0f}' for x in ans_read[r, k].mean(0))}")
+                if k < LMAX:
+                    print("      по испытаниям (поз. Гц / стриатум / SNr / реле своего канала): " + "  ".join(
+                        f"{''.join('АБВГД'[x] for x in phrase[b, :length[b]].tolist())}"
+                        f" {float(dbg[r, k, 3, b, k]):.0f}/{float(dbg[r, k, 0, b, k]):.0f}/{float(dbg[r, k, 1, b, k]):.0f}/{float(dbg[r, k, 2, b, k]):.0f}"
+                        for b in range(B)))
     leak = (ans_write.max(2).values > 10)
     print(f"  ответ во время записи (0–600 мс после слова): «сказал» (> 10 Гц) в {int(leak.sum())}/{leak.numel()} окнах,"
           f" макс группы в среднем {ans_write.max(2).values.mean():.1f} Гц (должен молчать)")

@@ -71,7 +71,27 @@ export interface Brains {
   current: string | null;
   items: SavedBrain[];
   minNeurons: number;
+  minNeuronsSmall: number;
   presets: { name: string; title: string; ready: boolean }[];
+  flags: FlagInfo[];
+}
+
+// Флаг мозга (brain/flags.py): wiring — только при создании, runtime — на ходу.
+export interface FlagInfo {
+  key: string;
+  title: string;
+  kind: "wiring" | "runtime";
+  status: "debugged" | "partial" | "not_debugged" | "not_data";
+  note: string;
+  where: string;
+  value?: boolean;
+}
+
+export interface FlagState {
+  preset: string;
+  seed: number;
+  neurons: number;
+  flags: FlagInfo[];
 }
 
 export interface Spikes {

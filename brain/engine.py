@@ -2354,6 +2354,12 @@ class SpikingBrain:
         weight = torch.cat(sign, dim=1) * sensor.weight
         return pre, weight
 
+    def set_dendrite_coincidence(self, on: bool) -> None:
+        """Включить/выключить детектор совпадений ветки у собранного мозга (cfg.dendrite_coincidence)."""
+
+        self.cfg.dendrite_coincidence = on
+        self.path_dend_unit = self.path_dend_sign if on else None
+
     def _pack(self) -> None:
         """
         Все синапсы мозга — в один плоский массив (пластичные первыми),
@@ -2523,12 +2529,13 @@ class SpikingBrain:
         self.path_flags = torch.tensor(flags + [0], dtype=torch.uint8, device=self.device)
         # Детектор совпадений ветки (cfg.dendrite_coincidence): событие пути
         # «на дендрит» — один синапс со знаком пути, не вес.
-        self.path_dend_unit = None
-        if self.cfg.dendrite_coincidence:
-            self.path_dend_unit = torch.tensor(
-                [1.0 if float(p.weight.float().mean()) >= 0 else -1.0 for p in paths] + [0.0],
-                dtype=torch.float32, device=self.device,
-            )
+        # Знаки считаются всегда (путей сотни — копейки), чтобы флаг можно
+        # было включить у собранного мозга (set_dendrite_coincidence, веб).
+        self.path_dend_sign = torch.tensor(
+            [1.0 if float(p.weight.float().mean()) >= 0 else -1.0 for p in paths] + [0.0],
+            dtype=torch.float32, device=self.device,
+        )
+        self.path_dend_unit = self.path_dend_sign if self.cfg.dendrite_coincidence else None
         # Задержка каждого пути (шагов сверх одного) — по его типу
         # (cfg.path_delays); кольцо — в _init_state.
         delays = [self._path_delay_steps(p) for p in paths]

@@ -34,7 +34,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from brain import anatomy, neuron
+from brain import anatomy, flags, neuron
 from brain.config import BRAINS, BrainConfig, brain_path
 from brain.presets import PRESETS
 from brain.engine import KINDS
@@ -268,8 +268,22 @@ class BrainHost:
         # Только мозги нового формата (старые этим кодом не открываются).
         items = [d for d in (describe_saved(p) for p in files) if not d["old"]]
         presets = [{"name": p.name, "title": p.title, "ready": not p.missing()} for p in PRESETS.values()]
+        small = BrainConfig()
+        flags.configure(small, {"small_columns": True})
         return {"type": "brains", "current": current, "items": items,
-                "minNeurons": anatomy.min_size(), "presets": presets}
+                "minNeurons": anatomy.min_size(), "minNeuronsSmall": anatomy.min_size(small),
+                "presets": presets, "flags": flags.describe()}
+
+    def flag_state(self) -> dict:
+        """С чем собран текущий мозг и что включено на ходу (из его конфига — сохраняется в файле)."""
+
+        cfg = self.need().cfg
+        return {"preset": cfg.preset, "seed": cfg.seed, "neurons": self.mind.brain.n, "flags": flags.describe(cfg)}
+
+    def switch(self, key: str, on: bool) -> dict:
+        flags.switch(self.need(), key, on)
+        self.info(f"флаг «{flags.BY_KEY[key].title}»: {'вкл' if on else 'выкл'}")
+        return self.flag_state()
 
     # ==============================================================
     # РАБОЧИЙ ПОТОК
@@ -403,14 +417,25 @@ class BrainHost:
         self.mind = Mind.load(name)
         return self.mind.cfg.save_path
 
-    def new(self, name: str, neurons: int, preset: str | None = None) -> str:
-        """Новый мозг: голый заданного размера или по пресету (brain/presets.py, размер — пресета)."""
+    def new(self, name: str, neurons: int, preset: str | None = None, seed: int = 1,
+            chosen_flags: dict[str, bool] | None = None) -> str:
+        """Новый мозг: голый заданного размера или по пресету (brain/presets.py, размер — пресета);
+        зерно и флаги (brain/flags.py) — в конфиг, он сохраняется с мозгом."""
+
+        chosen = PRESETS[preset] if preset else None
+        chosen_flags = {k: v for k, v in (chosen_flags or {}).items() if v}
+        if chosen and chosen_flags.get("small_columns"):
+            raise ValueError("малые колонки — только у голого мозга: подгонки пресета посчитаны на колонках 20 тыс.")
+        if chosen and chosen.missing(seed):
+            raise ValueError(f"у пресета «{chosen.name}» нет файлов для зерна {seed} (в репозитории — только зерно 1)")
 
         if self.mind is not None and self.mind.cfg.autosave:
             self.mind.save()
 
-        chosen = PRESETS[preset] if preset else None
-        cfg = chosen.config() if chosen else BrainConfig()
+        cfg = chosen.config(seed) if chosen else BrainConfig()
+        cfg.seed = int(seed)
+        cfg.preset = chosen.name if chosen else ""
+        flags.configure(cfg, chosen_flags)
         if not chosen:
             cfg.size = str(int(neurons))
         cfg.save_path = str(brain_path(name if name.endswith(".pt") else name + ".pt"))
@@ -418,7 +443,8 @@ class BrainHost:
         if Path(cfg.save_path).exists():
             raise ValueError(f"мозг {Path(cfg.save_path).name} уже есть")
 
-        self.mind = chosen.build(cfg=cfg) if chosen else Mind(cfg)
+        self.mind = chosen.build(seed, cfg=cfg) if chosen else Mind(cfg)
+        flags.after_build(self.mind)
         self.mind.save()
         return cfg.save_path
 
@@ -470,6 +496,13 @@ class New(BaseModel):
     name: str
     neurons: int
     preset: str | None = None
+    seed: int = 1
+    flags: dict[str, bool] = {}
+
+
+class Switch(BaseModel):
+    key: str
+    enabled: bool
 
 
 class Lesson(BaseModel):
@@ -558,9 +591,23 @@ async def synapse_card(sid: int) -> dict:
 
 
 @app.get("/api/sizes")
-async def sizes(neurons: int) -> dict:
-    total = anatomy.total_for(max(1, neurons))
-    return {"neurons": neurons, "total": total, "min": anatomy.min_size()}
+async def sizes(neurons: int, small: bool = False) -> dict:
+    cfg = BrainConfig()
+    flags.configure(cfg, {"small_columns": small})
+    total = anatomy.total_for(max(1, neurons), cfg)
+    return {"neurons": neurons, "total": total, "min": anatomy.min_size(cfg)}
+
+
+@app.get("/api/flags")
+async def flag_state() -> dict:
+    if host.mind is None:
+        raise HTTPException(400, "мозг не выбран")
+    return host.flag_state()
+
+
+@app.post("/api/flag")
+async def switch(body: Switch) -> dict:
+    return await _run(lambda: host.switch(body.key, body.enabled), "флаг")
 
 
 @app.post("/api/load")
@@ -575,7 +622,7 @@ async def new(body: New) -> dict:
     if not name:
         raise HTTPException(400, "нужно имя")
 
-    return {"brain": await _run(lambda: host.new(name, body.neurons, body.preset), "новый мозг")}
+    return {"brain": await _run(lambda: host.new(name, body.neurons, body.preset, body.seed, body.flags), "новый мозг")}
 
 
 @app.post("/api/save")

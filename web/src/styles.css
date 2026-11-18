@@ -278,3 +278,12 @@ table.grid th { color: var(--ink-soft); font-weight: 400; }
   background: linear-gradient(to top, rgb(44 30 120 / 0.35) calc(var(--share) * 100%), #fff calc(var(--share) * 100%));
 }
 .key.held { border-color: var(--eosin); box-shadow: 0 0 0 2px var(--eosin); }
+
+/* ---- флаги мозга ---- */
+.toggle.flag { display: flex; gap: 8px; align-items: flex-start; margin: 6px 0; }
+.toggle.flag small { display: block; font-size: 12px; line-height: 1.35; margin-top: 2px; }
+.flag-status { font-size: 11px; padding: 1px 6px; border-radius: 8px; margin-left: 4px; white-space: nowrap; border: 1px solid currentColor; }
+.flag-status.debugged { color: #2e7d32; }
+.flag-status.partial { color: #b26a00; }
+.flag-status.not_debugged, .flag-status.not_data { color: #b3261e; }
+fieldset.flags { border: 1px solid var(--line, #ddd); border-radius: 6px; padding: 6px 10px; margin: 8px 0; }

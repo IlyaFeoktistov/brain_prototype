@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import * as api from "./api";
-import type { Brains, Health, Status, Summary } from "./brain";
+import type { Brains, FlagInfo, FlagState, Health, Status, Summary } from "./brain";
 import { SUBSTANCE, SUBSTANCE_HINT, bioTime, hourText } from "./brain";
 
 // ---- химия и состояние: то, что наведением не увидишь ----
@@ -194,6 +194,54 @@ function HealthView({ data }: { data: Health }) {
   );
 }
 
+// ---- флаги мозга (brain/flags.py) ----
+
+const FLAG_STATUS: Record<FlagInfo["status"], string> = {
+  debugged: "отлажен",
+  partial: "отлажен частично",
+  not_debugged: "не отлажен",
+  not_data: "не по данным",
+};
+
+function FlagRow({ flag, checked, disabled, onChange }: {
+  flag: FlagInfo; checked: boolean; disabled?: boolean; onChange?: (on: boolean) => void;
+}) {
+  return (
+    <label className="toggle flag" title={`${flag.note}\nГде разобран: ${flag.where}`}>
+      <input type="checkbox" checked={checked} disabled={disabled || !onChange} onChange={(e) => onChange?.(e.target.checked)} />
+      <span>
+        {flag.title} <span className={`flag-status ${flag.status}`}>{FLAG_STATUS[flag.status]}</span>
+        <small className="muted">{flag.note}</small>
+      </span>
+    </label>
+  );
+}
+
+function BrainFlags({ info }: { info: (text: string) => void }) {
+  const [state, setState] = useState<FlagState | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { api.flagState().then(setState).catch(() => setState(null)); }, []);
+  if (!state) return null;
+  const toggle = (key: string, on: boolean) => {
+    setBusy(true);
+    api.setFlag(key, on).then(setState).catch((e) => info(`Ошибка: ${(e as Error).message}`)).finally(() => setBusy(false));
+  };
+  const wiring = state.flags.filter((f) => f.kind === "wiring");
+  const runtime = state.flags.filter((f) => f.kind === "runtime");
+  return (
+    <div className="menu-group">
+      <h4>Флаги</h4>
+      <p className="muted">
+        Собран: {state.preset ? <>пресет «{state.preset}»</> : "голый мозг"}, зерно {state.seed},{" "}
+        {state.neurons.toLocaleString("ru")} нейронов. Проводка — с чем мозг создан (меняется только новым мозгом):
+      </p>
+      {wiring.map((f) => <FlagRow key={f.key} flag={f} checked={!!f.value} />)}
+      <p className="muted">На ходу (сохраняются с мозгом):</p>
+      {runtime.map((f) => <FlagRow key={f.key} flag={f} checked={!!f.value} disabled={busy} onChange={(on) => toggle(f.key, on)} />)}
+    </div>
+  );
+}
+
 export function Menu({ status, actions }: { status: Status; actions: MenuActions }) {
   const fail = (e: unknown) => actions.info(`Ошибка: ${(e as Error).message}`);
   return (
@@ -227,6 +275,7 @@ export function Menu({ status, actions }: { status: Status; actions: MenuActions
           <button type="button" onClick={actions.choose} title="открыть сохранённый мозг или создать новый (текущий сначала сохраняется)">Другой мозг…</button>
         </div>
       </div>
+      <BrainFlags info={actions.info} />
     </div>
   );
 }
@@ -240,11 +289,15 @@ export function Chooser({ brains, onClose, info }: { brains: Brains; onClose?: (
   const [preset, setPreset] = useState<string>(brains.presets.find((p) => p.ready)?.name ?? "");
   const [preview, setPreview] = useState<{ total: number; min: number } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [seed, setSeed] = useState(1);
+  const [chosen, setChosen] = useState<Record<string, boolean>>({});
+  const small = !preset && !!chosen.small_columns;
+  const flagsShown = brains.flags.filter((f) => !(preset && f.key === "small_columns"));
 
   useEffect(() => {
-    const timer = window.setTimeout(() => api.sizes(neurons).then(setPreview).catch(() => setPreview(null)), 250);
+    const timer = window.setTimeout(() => api.sizes(neurons, small).then(setPreview).catch(() => setPreview(null)), 250);
     return () => window.clearTimeout(timer);
-  }, [neurons]);
+  }, [neurons, small]);
 
   const act = (promise: Promise<{ brain: string }>, what: string) => {
     setBusy(true);
@@ -272,7 +325,11 @@ export function Chooser({ brains, onClose, info }: { brains: Brains; onClose?: (
       </section>
       <section>
         <h3>Создать новый</h3>
-        <form onSubmit={(e) => { e.preventDefault(); act(api.newBrain(name.trim(), neurons, preset || null), `создаю ${name}`); }}>
+        <form onSubmit={(e) => {
+          e.preventDefault();
+          const fl = Object.fromEntries(Object.entries(chosen).filter(([k, v]) => v && !(preset && k === "small_columns")));
+          act(api.newBrain(name.trim(), neurons, preset || null, seed, fl), `создаю ${name}`);
+        }}>
           <label>имя <input value={name} onChange={(e) => setName(e.target.value)} placeholder="например, первый" /></label>
           <label>сборка <select value={preset} onChange={(e) => setPreset(e.target.value)}>
             {brains.presets.map((p) => (
@@ -281,11 +338,19 @@ export function Chooser({ brains, onClose, info }: { brains: Brains; onClose?: (
             <option value="">голый мозг заданного размера</option>
           </select></label>
           {!preset && <label>нейронов <input type="number" min={1} step={10000} value={neurons} onChange={(e) => setNeurons(Number(e.target.value))} /></label>}
-          {preset ? <p className="muted">Размер — наименьший мозг ({brains.minNeurons.toLocaleString("ru")} нейронов): подгонки посчитаны на нём.</p> : <p className="muted">
-            Ядра получают клетки по данным и долям, остальное делится между колонками коры по их долям; колонка не меньше 20 тыс.
-            клеток. Минимум — {brains.minNeurons.toLocaleString("ru")}.
+          <label>зерно <input type="number" min={1} step={1} value={seed} onChange={(e) => setSeed(Number(e.target.value))} /></label>
+          {preset ? <p className="muted">Размер — наименьший мозг ({brains.minNeurons.toLocaleString("ru")} нейронов): подгонки посчитаны на нём.
+            Файлы пресета в репозитории — для зерна 1.</p> : <p className="muted">
+            Ядра получают клетки по данным, остальное делится между колонками коры по их долям — мозг растёт числом клеток в
+            колонках. Колонка не меньше {small ? "1 тыс." : "20 тыс."} клеток, минимум — {(small ? brains.minNeuronsSmall : brains.minNeurons).toLocaleString("ru")}.
             {preview && <> Получится <strong>{preview.total.toLocaleString("ru")}</strong> нейронов.</>}
           </p>}
+          <fieldset className="flags">
+            <legend>Флаги (опыты; по умолчанию всё выключено — как в пресете)</legend>
+            {flagsShown.map((f) => (
+              <FlagRow key={f.key} flag={f} checked={!!chosen[f.key]} onChange={(on) => setChosen({ ...chosen, [f.key]: on })} />
+            ))}
+          </fieldset>
           <button type="submit" disabled={busy || !name.trim()} title="собрать новый мозг (по сборке или голый) и сразу сохранить его">Создать</button>
         </form>
       </section>

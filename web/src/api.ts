@@ -1,6 +1,6 @@
 // Действия с мозгом — HTTP (brain/server.py).
 
-import type { Health, NeuronInfo, Summary, SynapseInfo } from "./brain";
+import type { FlagState, Health, NeuronInfo, Summary, SynapseInfo } from "./brain";
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const response = await fetch(path, {
@@ -26,10 +26,13 @@ export const lesson = (kind: string, n: number, extra: { text?: string; first?: 
   post<{ text: string }>("/api/lesson", { kind, n, ...extra });
 
 export const load = (name: string) => post<{ brain: string }>("/api/load", { name });
-export const newBrain = (name: string, neurons: number, preset: string | null) =>
-  post<{ brain: string }>("/api/new", { name, neurons, preset });
+export const newBrain = (name: string, neurons: number, preset: string | null, seed = 1, flags: Record<string, boolean> = {}) =>
+  post<{ brain: string }>("/api/new", { name, neurons, preset, seed, flags });
+export const flagState = () => get<FlagState>("/api/flags");
+export const setFlag = (key: string, enabled: boolean) => post<FlagState>("/api/flag", { key, enabled });
 export const save = () => post<{ brain: string }>("/api/save");
-export const sizes = (neurons: number) => get<{ neurons: number; total: number; min: number }>(`/api/sizes?neurons=${neurons}`);
+export const sizes = (neurons: number, small = false) =>
+  get<{ neurons: number; total: number; min: number }>(`/api/sizes?neurons=${neurons}&small=${small}`);
 
 export const neuron = (index: number) => get<NeuronInfo>(`/api/neuron/${index}`);
 export const synapse = (id: number) => get<SynapseInfo>(`/api/synapse/${id}`);

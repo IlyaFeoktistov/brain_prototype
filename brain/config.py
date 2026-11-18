@@ -918,6 +918,12 @@ class BrainConfig:
     # кольцо задержек ветвей n × ветвей × слотов не помещается при ~300
     # участках).
     dendrite_coincidence: bool = False
+    # Выключить подобранный ток таламуса VA (флаг на ходу, brain/flags.py;
+    # ISSUES 23): из фона зоны «thalamus» вычитается её nucleus_bias_mv.
+    va_current_off: bool = False
+    # Пресет, по которому собран мозг (brain/presets.py; пусто — голый) — для
+    # веба и повторения опыта; зерно — seed.
+    preset: str = ""
     dendrite_window_ms: float = 5.0
     dendrite_count_threshold: float = 15.0
     dendrite_count_slope: float = 2.0

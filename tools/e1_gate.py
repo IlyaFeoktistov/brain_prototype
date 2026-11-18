@@ -34,7 +34,8 @@ https://doi.org/10.3758/CABN.1.2.137; SNr → MD моносинаптическ�
   4 = 2, ворота закрыты дальше → держит А через 2.4 с без канала
   5 = 2, потом слово Б при закрытых → держит А, Б не записано
 
-    PYTHONPATH=. python tools/e1_gate.py [trials=8] [seed=1] [gsnr=2.0] [bg=3] [gctx=2.08] [size=2]
+    PYTHONPATH=tools python tools/e1_gate.py [trials=8] [seed=1] [gsnr=16] [bg=1] [gctx=4] [size=2]
+    (по умолчанию — рабочие числа 2026-11-18; прежние варианты — SPAUN_TRANSFER шаг 2)
 """
 
 from __future__ import annotations
@@ -66,10 +67,14 @@ class Relay:
     def step(self, word_rate: torch.Tensor, snr_on: torch.Tensor) -> None:
         """word_rate [B, P] Гц клеток коры по словам; snr_on [B] — SNr тонически активен."""
 
+        self.step_counts(torch.poisson((word_rate * NW * 1e-3 * DT).repeat_interleave(NR, 1)), snr_on)
+
+    def step_counts(self, ctx_counts: torch.Tensor, snr_on: torch.Tensor) -> None:
+        """ctx_counts [B, P·NR] — пришедшие на реле спайки ведущего входа за шаг."""
+
         B, dev = self.B, self.dev
         self.ext.mul_(self.d2).add_(torch.poisson(torch.full((B, P * NR), 800 * self.bg * 1e-3 * DT, device=dev)))
-        lam = (word_rate * NW * 1e-3 * DT).repeat_interleave(NR, 1)
-        self.ctx.mul_(self.d2).add_(torch.poisson(lam))
+        self.ctx.mul_(self.d2).add_(ctx_counts)
         lam_snr = (snr_on.float() * N_SNR * R_SNR * 1e-3 * DT)[:, None].expand(B, P * NR)
         self.gaba.mul_(self.d10).add_(torch.poisson(lam_snr))
         v = self.v
@@ -93,13 +98,13 @@ def main(opts: dict) -> None:
     torch.set_num_threads(int(opts.get("threads", 2)))
     torch.manual_seed(int(opts.get("seed", 1)))
     T = int(opts.get("trials", 8))
-    gsnr = float(opts.get("gsnr", 2.0))
+    gsnr = float(opts.get("gsnr", 16.0))
     names = ["1 закрыто + А", "2/4 открыто + А", "3 открыто без слова", "5 открыто + А, потом Б закрыто"]
     C = len(names)
     B = C * T
     cond = torch.arange(C).repeat_interleave(T)
-    bg = float(opts.get("bg", 3.0))
-    slot, md = Slot(B, dev, size=float(opts.get("size", SIZE))), Relay(B, dev, gsnr, bg, float(opts.get("gctx", 2.08)))
+    bg = float(opts.get("bg", 1.0))
+    slot, md = Slot(B, dev, size=float(opts.get("size", SIZE))), Relay(B, dev, gsnr, bg, float(opts.get("gctx", 4.0)))
     A, Bw = 0, 1
     # (от мс, до мс): ворота открыты? слово (−1 нет) — по условию
     open_ev = torch.tensor([False, True, True, True])[cond]

@@ -20,7 +20,7 @@ STN, дофамина (ISSUES 29).
 Проверка (калибровка, без памяти): частоты стриатума и SNr канала при
 (позиция k активна 25 Гц / нет 2 Гц) × (слово есть 40 Гц / нет 2 Гц).
 
-    PYTHONPATH=tools python tools/e1_bg.py [gmsn=4] [g_d1=4] [i_snr=620]
+    PYTHONPATH=tools python tools/e1_bg.py [gmsn=4.5] [g_d1=8] [i_snr=620]
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ class LIF:
 class BG:
     """Стриатум D1 + SNr, канал на позицию."""
 
-    def __init__(self, B: int, dev: str, gmsn: float = 4.0, g_d1: float = 4.0, i_snr: float = 620.0):
+    def __init__(self, B: int, dev: str, gmsn: float = 4.5, g_d1: float = 8.0, i_snr: float = 620.0):
         self.B, self.dev, self.gmsn, self.g_d1 = B, dev, gmsn, g_d1
         self.msn = LIF(B, NMSN, dev, -80.0)
         self.snr = LIF(B, NSNR, dev, -70.0, i_snr)
@@ -83,9 +83,10 @@ def main(opts: dict) -> None:
     torch.set_num_threads(int(opts.get("threads", 2)))
     torch.manual_seed(int(opts.get("seed", 1)))
     B = 4
-    bg = BG(B, "cpu", float(opts.get("gmsn", 4.0)), float(opts.get("g_d1", 4.0)), float(opts.get("i_snr", 620.0)))
+    bg = BG(B, "cpu", float(opts.get("gmsn", 4.5)), float(opts.get("g_d1", 8.0)), float(opts.get("i_snr", 620.0)))
     # канал 0: позиция активна? слово есть? — 4 сочетания по каналам 0..3, канал 4 — покой
-    pos_hz = torch.tensor([25.0, 25.0, 2.0, 2.0, 2.0])
+    ph = float(opts.get("pos_hz", 25.0))
+    pos_hz = torch.tensor([ph, ph, 2.0, 2.0, 2.0])
     word_on = bool(int(opts.get("word", 1)))
     print(f"gmsn {bg.gmsn} нС, стриатум → SNr {bg.g_d1} нС, ток SNr {bg.snr.i_const} пА")
     for word_hz in (2.0, 40.0):

@@ -85,6 +85,13 @@ In the web UI, create a new brain from the **working** preset
 visual pathway and learned letters. Its files ship with the repository in
 `data/presets/`. Brains are saved to `~/.brain/brains/` (`BRAIN_HOME`).
 
+When creating a brain you can also set the seed and experimental flags
+(`brain/flags.py`). Each flag shows how well it is debugged. Wiring flags
+are fixed at creation; runtime flags can be toggled in the Menu tab of a
+running brain. The menu also shows what the current brain was built with
+(preset, seed, flags), read from its saved config, so a run can be
+repeated.
+
 Why the minimum brain is ~320 000 neurons: every cortical area is a column
 of at least 20 000 cells. In a smaller column almost all input is the
 average current standing in for missing neighbours, and the network

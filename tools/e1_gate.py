@@ -69,14 +69,19 @@ class Relay:
 
         self.step_counts(torch.poisson((word_rate * NW * 1e-3 * DT).repeat_interleave(NR, 1)), snr_on)
 
-    def step_counts(self, ctx_counts: torch.Tensor, snr_on: torch.Tensor) -> None:
-        """ctx_counts [B, P·NR] — пришедшие на реле спайки ведущего входа за шаг."""
+    def step_counts(self, ctx_counts: torch.Tensor, snr_on: torch.Tensor | None,
+                    snr_counts: torch.Tensor | None = None) -> None:
+        """ctx_counts [B, P·NR] — пришедшие на реле спайки ведущего входа за шаг;
+        SNr — пуассон по snr_on [B] или спайки клеток SNr канала snr_counts [B] (все → каждое реле)."""
 
         B, dev = self.B, self.dev
         self.ext.mul_(self.d2).add_(torch.poisson(torch.full((B, P * NR), 800 * self.bg * 1e-3 * DT, device=dev)))
         self.ctx.mul_(self.d2).add_(ctx_counts)
-        lam_snr = (snr_on.float() * N_SNR * R_SNR * 1e-3 * DT)[:, None].expand(B, P * NR)
-        self.gaba.mul_(self.d10).add_(torch.poisson(lam_snr))
+        if snr_counts is None:
+            lam_snr = (snr_on.float() * N_SNR * R_SNR * 1e-3 * DT)[:, None].expand(B, P * NR)
+            self.gaba.mul_(self.d10).add_(torch.poisson(lam_snr))
+        else:
+            self.gaba.mul_(self.d10).add_(snr_counts[:, None])
         v = self.v
         i = (2.08 * self.ext + self.gctx * self.ctx) * v + self.gsnr * self.gaba * (v + 70.0)
         v = torch.where(self.ref <= 0, v + DT * (-25.0 * (v + 70.0) - i) / 0.5 * 1e-3, v)

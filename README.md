@@ -54,9 +54,9 @@ already works, what does not, and what you will see if you run it.
   look at it, but the hand types noise. The motor thalamus (VA) is held
   up by a fitted current and drives the hand map in bursts, so random keys
   are pressed even on an empty screen. This is a known stub (ISSUES 23).
-  Turning on the runtime flag "switch off VA current" (together with the
-  wiring flag "hand E→E by distance") stops the noise, and the brain then
-  stays silent.
+  In one check (working preset, seed 1, with the flags "hand E→E by
+  distance", "dendrite coincidence detector" and "switch off VA current")
+  the reply to "привет" ("hi") was empty: no noise, but also no answer.
 - **The eye does not read along the line.** The gaze stays where the text
   starts and sees the first letters. The letter area recognises letters
   only at the fovea, and moving the gaze letter by letter was never

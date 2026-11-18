@@ -54,6 +54,13 @@ already works, what does not, and what you will see if you run it.
   look at it, but the hand types noise. The motor thalamus (VA) is held
   up by a fitted current and drives the hand map in bursts, so random keys
   are pressed even on an empty screen. This is a known stub (ISSUES 23).
+  Turning on the runtime flag "switch off VA current" (together with the
+  wiring flag "hand E→E by distance") stops the noise, and the brain then
+  stays silent.
+- **The eye does not read along the line.** The gaze stays where the text
+  starts and sees the first letters. The letter area recognises letters
+  only at the fovea, and moving the gaze letter by letter was never
+  learned.
 - **Recalling a stored phrase in order ("repeat") works in only 3–4 of 8
   trials.** The cause has been found: the counter's reset weakens the
   first position (docs/SPAUN_TRANSFER.md, step 5b).

@@ -81,7 +81,12 @@ export function Conversation({ face, entries, screen, typing, busy, onSay, thoug
         </div>
       </div>
       <div className="log" ref={log}>
-        {entries.length === 0 && <p className="muted">Напиши реплику — она появится на экране мира, мозг прочтёт её глазом и ответит рукой.</p>}
+        {entries.length === 0 && <>
+          <p className="muted">Напиши реплику — она появится на экране мира, мозг посмотрит на неё глазом и ответит рукой.</p>
+          <p className="muted"><strong>Разговора пока нет.</strong> Рука печатает шум: залпы моторного таламуса (VA) жмут клавиши и на
+            пустом экране. Глаз не ведёт взгляд по строке — видит только первые буквы. Флаг «выключить ток VA» (Меню → Флаги)
+            убирает шум, но мозг тогда молчит. Что уже работает — в README («Состояние»).</p>
+        </>}
         {entries.map((e) => <p key={e.id} className={`line line-${e.who}`}>{e.text}</p>)}
         {typing && <p className="line line-brain typing">{typing}</p>}
       </div>

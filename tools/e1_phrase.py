@@ -24,7 +24,7 @@ E1, шаг 4: запись фразы «позиция × слово» — ка�
 Испытание 0 — «А А А…» (одно слово на разных позициях), 1 — «А Б В…»,
 остальные — случайные фразы (разные слова на одной позиции).
 
-    PYTHONPATH=tools python tools/e1_phrase.py [trials=8] [seed=1] [L=3]
+    PYTHONPATH=tools python tools/e1_phrase.py [trials=8] [seed=1] [L=3] [reset=burst|inhib]
 """
 
 from __future__ import annotations
@@ -59,7 +59,11 @@ def main(opts: dict) -> None:
     bg = BG(B, dev)
     md = Relay(B * P, dev, 16.0, 1.0, 4.0)
     ws = Slot(B * P, dev)
-    reset_e = torch.full((B, cur.ne), C_EXT * R_RESET * 1e-3)
+    # Форма сброса ячеек счётчика (шаг 5в, tools/e1_counter_reset.py): burst — залп авторов
+    # Brunel–Wang на все E и I; inhib — тот же залп только на тормозные (как сброс nengo
+    # InputGatedMemory — торможение клеток памяти): без вспышки всех позиций и хвоста NMDA.
+    reset_mode = opts.get("reset", "burst")
+    reset_e = None if reset_mode == "inhib" else torch.full((B, cur.ne), C_EXT * R_RESET * 1e-3)
     reset_i = torch.full((B, cur.ni), C_EXT * R_RESET * 1e-3)
     start = (cur.lab[None, :] == 0).float().expand(B, cur.ne) * (C_SEL * R_SEL * 1e-3)
     closed, opened = torch.ones(B, dtype=torch.bool), torch.zeros(B, dtype=torch.bool)

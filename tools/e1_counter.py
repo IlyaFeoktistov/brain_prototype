@@ -28,7 +28,7 @@ ISSUES 28). Счётчик не знает, что писать в позици�
 позиция, без пропусков и двойных шагов; мера — победитель в окне
 period−200…period мс, «держит» > 10 Гц.
 
-    PYTHONPATH=tools python tools/e1_counter.py [trials=8] [seed=1] [period=1000] [gsnr=16] [nsrc=40] [gate=200]
+    PYTHONPATH=tools python tools/e1_counter.py [trials=8] [seed=1] [period=1000] [gsnr=16] [nsrc=40] [gate=200] [reset=burst|inhib]
 """
 
 from __future__ import annotations
@@ -74,7 +74,11 @@ def main(opts: dict) -> None:
     src_cur, src_nxt = sources(cur, nsrc).to(dev), sources(nxt, nsrc).to(dev)
     n_adv = 4
     total = period * (n_adv + 1)
-    reset_e = torch.full((B, cur.ne), C_EXT * R_RESET * 1e-3, device=dev)
+    # Форма сброса ячеек счётчика (шаг 5в, tools/e1_counter_reset.py): burst — залп авторов
+    # Brunel–Wang на все E и I; inhib — тот же залп только на тормозные (как сброс nengo
+    # InputGatedMemory — торможение клеток памяти): без вспышки всех позиций и хвоста NMDA.
+    reset_mode = opts.get("reset", "burst")
+    reset_e = None if reset_mode == "inhib" else torch.full((B, cur.ne), C_EXT * R_RESET * 1e-3, device=dev)
     reset_i = torch.full((B, cur.ni), C_EXT * R_RESET * 1e-3, device=dev)
     start = (cur.lab[None, :] == 0).float().expand(B, cur.ne) * (C_SEL * R_SEL * 1e-3)
     closed, opened = torch.ones(B, dtype=torch.bool, device=dev), torch.zeros(B, dtype=torch.bool, device=dev)

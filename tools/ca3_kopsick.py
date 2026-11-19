@@ -28,7 +28,9 @@ STDP PC → PC (setESTDP у авторов) в покое не включаем:
     PYTHONPATH=. .venv/bin/python tools/ca3_kopsick.py [ms=2000] [seed=1] [skip=100] [scale=1.0]
 
 scale < 1 — меньше клеток с той же вероятностью связи (только для отладки
-скрипта: меньше входов на клетку — другая динамика).
+скрипта: меньше входов на клетку — другая динамика). degree=1 — вероятность
+÷ scale: у клетки столько же входов, сколько у авторов (проверка, держит ли
+покой CA3 размером с наш).
 """
 
 from __future__ import annotations
@@ -53,7 +55,7 @@ E_AMPA, E_GABAA = 0.0, -70.0
 
 
 class CA3:
-    def __init__(self, net: dict, seed: int, scale: float, device: torch.device):
+    def __init__(self, net: dict, seed: int, scale: float, device: torch.device, degree: bool = False):
         self.device = device
         gen = torch.Generator(device=device).manual_seed(seed)
         self.gen = gen
@@ -123,7 +125,8 @@ class CA3:
                 for i in mine:
                     link = links[i]
                     npost = self.size[link["post"]]
-                    mask = torch.rand((hi - lo, npost), generator=gen, device=device) < link["p"]
+                    p = min(1.0, link["p"] / scale) if degree else link["p"]
+                    mask = torch.rand((hi - lo, npost), generator=gen, device=device) < p
                     pre_l, post_l = mask.nonzero(as_tuple=True)
                     del mask
                     pre_l = pre_l + lo
@@ -232,7 +235,7 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(seed)
     net = json.loads(NET.read_text())
-    ca3 = CA3(net, seed, scale, device)
+    ca3 = CA3(net, seed, scale, device, degree=opts.get("degree", "0") == "1")
     counts = torch.zeros(ca3.n, device=device)
     early = torch.zeros(ca3.n, device=device)
     t0 = time.time()

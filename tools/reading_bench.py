@@ -125,7 +125,8 @@ def build(opts: dict):
             p.weight.mul_(float(opts.get("trn_scale", 1.0)))
     if opts.get("homeo"):
         # Сдвиги гомеостаза после развития (tools/develop.py) — заморожены.
-        b.bias[: b.n] += torch.load(BRAIN_HOME / "fits" / f"{opts['homeo']}-homeo.pt").to(b.device)
+        shift = torch.load(BRAIN_HOME / "fits" / f"{opts['homeo']}-homeo.pt").to(b.device)
+        b.bias[: len(shift)] += shift          # зоны в конце анатомии, добавленные позже, — без сдвига
     return mind, b
 
 

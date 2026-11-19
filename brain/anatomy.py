@@ -56,6 +56,11 @@ RATES_HZ = {
     # мозжечка — редко, ~0.5 (Chadderton, Margrie & Häusser 2004). VLPO наяву
     # ~1, во сне 5–10 (Szymusiak et al. 1998).
     "ca1": 1.5, "ca3": 1.0, "dentate": 0.3, "entorhinal": 2.0, "granule": 0.5, "vlpo": 1.0,
+    # Глубокие слои энторинальной (V–VI, выход гиппокампа) редки: у
+    # неспящих клеток медиана 0.4 Гц, половина клеток молчит; поверхностные —
+    # 2.4 Гц (КРЫСА, юкстаклеточно, исследование и неподвижность —
+    # https://doi.org/10.3389/fncir.2014.00074). Среднее популяции ~0.5 [сверить].
+    "entorhinal_deep": 0.5,
     # Промежуточный слой верхнего двухолмия при фиксации — единицы Гц до
     # залпа саккады (Munoz & Wurtz 1995 [сверить число]).
     "colliculus": 5.0,
@@ -107,6 +112,10 @@ NUCLEI = {
     # активности».
     **{name: (0.10, (2000, 1.0, 200, -1.5, 20, -1.0, 15.0)) for name in ("ca3", "ca1")},
     "entorhinal": (0.20, (30, 1.0, 30, -1.5, 10, -1.0, 15.0)),
+    # Слой V: сильное возбуждение, слабое торможение — обратно слою II
+    # (Jones & Woodhall 2005, обзор, https://pmc.ncbi.nlm.nih.gov/articles/PMC1665486);
+    # числа контура — как у поверхностной [сверить: доля тормозных, их сила].
+    "entorhinal_deep": (0.20, (30, 1.0, 30, -1.5, 10, -1.0, 15.0)),
     # Корзинчатых в зубчатой — 3600 на 635 тыс. гранулярных у крысы
     # (Seress & Pokorny 1981: 1 на 160–220) — 0.57%.
     "dentate": (0.0057, (30, 1.5, 30, -2.0, 10, -1.0, 15.0)),
@@ -269,6 +278,13 @@ def areas(cfg) -> list[AreaSpec]:
         _nucleus("purkinje", "мозжечок: клетки Пуркинье", 0.01, autonomous_hz=45.0),
         _nucleus("dcn", "ядра мозжечка", 0.003, autonomous_hz=15.0),
         _nucleus("io", "нижняя олива (лазающие волокна)", 0.002, autonomous_hz=1.0),
+        # ---- выход гиппокампа (в конце списка: номера прежних клеток те же) ----
+        # Глубокие слои энторинальной (V): CA1 и субикулум → EC V → неокортекс;
+        # слой V — главный источник проекций EC в передний мозг (Witter et al.
+        # 2017, https://doi.org/10.3389/fnsys.2017.00046; van Strien, Cappaert &
+        # Witter 2009, https://doi.org/10.1038/nrn2614). Субикулума нет — CA1 прямо в EC V.
+        _nucleus("entorhinal_deep", "энторинальная кора, слой V (выход гиппокампа в кору)",
+                 cells=HIPPOCAMPUS_CELLS["entorhinal_deep"]),
     ]
 
 
@@ -493,7 +509,6 @@ def pathways(cfg) -> list[PathwaySpec]:
         _path("ca3", "ca1", 200, 0.13, k_data=20000, plastic=True, modulator="acetylcholine", ach_suppressed=True,
               k_data_inhibitory=13800, psp_inhibitory_mv=0.13),
         _path("entorhinal", "ca1", 200, 0.1, k_data=1700, k_data_inhibitory=1550, psp_inhibitory_mv=0.1),
-        _path("ca1", "association", 200, 0.15, plastic=True, modulator="acetylcholine", ach_suppressed=True),
         # Рекуррентные коллатерали CA3: ~12 тыс. синапсов (Amaral 1990) —
         # ~6 тыс. связей по ~2 синапса, связь ~0.6 мВ (Guzman et al. 2016;
         # Miles & Wong 1986 — до ~1), STDP симметричное (Mishra et al. 2016 —
@@ -560,6 +575,21 @@ def pathways(cfg) -> list[PathwaySpec]:
         _path("gpi", "colliculus", 20, -1.5),
         _path("colliculus", "md", 20, 0.5),
     ]
+    # ---- выход гиппокампа в кору через слой V энторинальной ----
+    # Прежде было CA1 → смысловая прямо (200 входов по 0.15 мВ, «не найдено»):
+    # каждый всплеск CA3 через него поднимал всю кору на секунды (CHAT_PLAN
+    # шаг 3, цикл 2). По анатомии выход идёт CA1 → EC V → неокортекс; EC V →
+    # поверхностные слои EC — петля обратно в гиппокамп. Входов и ВПСП всех
+    # трёх путей нет [сверить: ищется]; пока — как прочие пути коры (0.15 мВ),
+    # обратный путь в поверхностные слои вчетверо реже. Запись следа памяти
+    # в кору — на пути EC V → смысловая (пластичность при ацетилхолине, как
+    # была у прямого пути).
+    out += [
+        _path("ca1", "entorhinal_deep", 200, 0.15),
+        _path("entorhinal_deep", "association", 200, 0.15, plastic=True, modulator="acetylcholine",
+              ach_suppressed=True),
+        _path("entorhinal_deep", "entorhinal", 50, 0.15),
+    ]
     return out
 
 
@@ -598,7 +628,8 @@ REPLACED_OLD = {("striatum_d1", "gpi"), ("striatum_d2", "gpe"), ("gpe", "gpi"), 
                           # гиппокамп — по данным (pathways)
                           ("association", "entorhinal"), ("prefrontal", "entorhinal"), ("entorhinal", "dentate"),
                           ("dentate", "ca3"), ("entorhinal", "ca3"), ("ca3", "ca1"), ("entorhinal", "ca1"),
-                          ("ca1", "association")}
+                          ("ca1", "entorhinal_deep"), ("entorhinal_deep", "association"),
+                          ("entorhinal_deep", "entorhinal")}
 
 
 def cortex_chain(cfg) -> list[PathwaySpec]:
@@ -832,7 +863,11 @@ def write_fitted(bias, pop) -> str:
 # зубчатая — 6000 (корзинчатых 0.57% → 34 при 30 входах на гранулярную);
 # энторинальная — 10 000 (200 её входов в зубчатую, CA3, CA1 — ~2%, при 256
 # клетках было 78%).
-HIPPOCAMPUS_CELLS = {"ca3": 10000, "ca1": 10000, "dentate": 6000, "entorhinal": 10000}
+# Глубоких слоёв EC (V+VI) у человека в 1.31 раза меньше, чем поверхностных
+# (II+III): 3.25 млн против 4.24 (средние стереологии, сводка
+# https://pmc.ncbi.nlm.nih.gov/articles/PMC7304525, табл. 3; у крысы 1.12).
+HIPPOCAMPUS_CELLS = {"ca3": 10000, "ca1": 10000, "dentate": 6000, "entorhinal": 10000,
+                     "entorhinal_deep": round(10000 / 1.31)}
 
 
 # STDP гиппокампа человека — измерения по клеткам (Testa-Silva et al. 2010,

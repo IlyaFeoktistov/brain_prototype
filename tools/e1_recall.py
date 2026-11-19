@@ -125,15 +125,17 @@ def main(opts: dict) -> dict:
     length = torch.where(torch.arange(B) % 2 == 0, LMAX, LMAX - 1)
     length[0] = length[1] = LMAX
     if opts.get("phrase"):
-        # Одна заданная фраза (сценарий веба «Запомни и повтори»): слова А–Д, 1–3 слова.
-        text = opts["phrase"].upper()
-        if not 1 <= len(text) <= LMAX or any(c not in WORDS for c in text):
-            raise ValueError(f"фраза — 1–{LMAX} слова из {' '.join(WORDS)}")
-        given = [WORDS.index(c) for c in text]
-        B = 1
-        phrase = torch.zeros(1, LMAX, dtype=torch.long)
-        phrase[0, : len(given)] = torch.tensor(given)
-        length = torch.tensor([len(given)])
+        # Заданные фразы (веб «Запомни и повтори», экзамен чата tools/chat_exam.py):
+        # через запятую, каждая — 1–3 слова из WORDS; испытаний столько, сколько фраз.
+        texts = opts["phrase"].upper().split(",")
+        for text in texts:
+            if not 1 <= len(text) <= LMAX or any(c not in WORDS for c in text):
+                raise ValueError(f"фраза — 1–{LMAX} слова из {' '.join(WORDS)}")
+        B = len(texts)
+        phrase = torch.zeros(B, LMAX, dtype=torch.long)
+        for b, text in enumerate(texts):
+            phrase[b, : len(text)] = torch.tensor([WORDS.index(c) for c in text])
+        length = torch.tensor([len(text) for text in texts])
     cur, nxt = Slot(B, dev), Slot(B, dev)
     g1, g2 = Relay(B, dev, 16.0, 1.0, 4.0), Relay(B, dev, 16.0, 1.0, 4.0)
     src_cur, src_nxt = sources(cur, NSRC), sources(nxt, NSRC)
@@ -167,7 +169,9 @@ def main(opts: dict) -> dict:
         t_end = rs + 400.0 + reads * T
     total = t_end + 200.0
     ans_read = torch.zeros(repeats, reads, B, P)
-    ans_write = torch.zeros(LMAX, B, P)           # ответ в 0–600 мс после записываемого слова
+    ans_write = torch.zeros(LMAX, B, P)
+    relay_own = torch.zeros(B, LMAX)              # реле чтения слова фразы в окне его позиции (вывод 1), Гц
+    held = torch.zeros(B, P, P)                   # ячейка позиции k: группы слов за 300 мс до «повтори», [B, k, слово]           # ответ в 0–600 мс после записываемого слова
     dbg = torch.zeros(repeats, reads, 4, B, P)   # стриатум чтения, SNr чтения, реле чтения (по каналам), текущая позиция
     trace = int(opts.get("trace", 0))
     TB = 50.0
@@ -224,8 +228,13 @@ def main(opts: dict) -> dict:
             dbg[idx[0], idx[1], 1] += bg_r.snr.per_channel() / 30
             dbg[idx[0], idx[1], 2] += md_r.spk.view(B, P, P * NR).sum(2) / (P * NR)
             dbg[idx[0], idx[1], 3] += (cur.spk_e @ cur.onehot)[:, :P] / cur.nsub
+        if kind == "r" and idx[0] == 0 and idx[1] < LMAX and 0 <= ph < 300:
+            k = idx[1]
+            relay_own[:, k] += md_r.spk.view(B, P, P, NR)[torch.arange(B), k, phrase[:, k]].sum(1) / NR
         if kind == "w" and 0 <= ph < 600:
             ans_write[idx] += a
+        if rec_starts[0] - 300.0 <= t < rec_starts[0]:
+            held += (ws.spk_e @ ws.onehot)[:, :P].view(B, P, P)
     if tr is not None:
         trace_report(tr, TB, periods, rec_starts)
     ans_read = ans_read / NANS / 0.3
@@ -273,8 +282,13 @@ def main(opts: dict) -> dict:
             outs.append(w)
         said.append(outs)
         print(f"    {''.join('АБВГД'[x] for x in phrase[b, :length[b]].tolist()):3s} → " + " | ".join(outs))
+    # Звенья (экзамен чата): записано — в ячейке позиции k сильнее всех группа слова фразы;
+    # реле — за окно чтения позиции k реле слова фразы в канале k открыто (> 10 Гц, вывод 1).
+    stored = held[:, :LMAX].argmax(2) == phrase
+    relay = relay_own / 0.3 > th
     return {"phrases": ["".join(WORDS[x] for x in phrase[b, :length[b]].tolist()) for b in range(B)],
-            "said": said, "leak": int(leak.sum()), "leak_windows": leak.numel()}
+            "said": said, "leak": int(leak.sum()), "leak_windows": leak.numel(),
+            "stored": stored.tolist(), "relay": relay.tolist()}
 
 
 if __name__ == "__main__":

@@ -122,6 +122,7 @@ class BrainBody:
         self.cells = {w: c.to(b.device) for w, c in zip(vocab, cells)}
         self.vocab = vocab
         self.b.teach_hz = torch.zeros(b.n_slots, device=b.device)
+        self.thr = {w: THR_HZ for w in vocab}
         self.blank(1000.0)
 
     def blank(self, ms: float):
@@ -144,11 +145,10 @@ class BrainBody:
     def rates(self, r) -> dict[str, float]:
         return {w: float(r[c].mean()) for w, c in self.cells.items()}
 
-    @staticmethod
-    def said(rates: dict[str, float], exclude=("повтори", "?")) -> str:
+    def said(self, rates: dict[str, float], exclude=("повтори", "?")) -> str:
         """Сказанное в окне: '' — молчал, '?' — несколько слов сразу, иначе слово."""
 
-        over = [w for w, hz in rates.items() if hz > THR_HZ and w not in exclude]
+        over = [w for w, hz in rates.items() if hz > self.thr[w] and w not in exclude]
         return over[0] if len(over) == 1 else ("" if not over else "?")
 
     def repeat(self, texts: list[str]) -> dict:
@@ -165,7 +165,7 @@ class BrainBody:
                 self.blank(400.0 - WORD_MS)
                 line = ""
                 for _ in range(POS):
-                    w = self.said(self.rates(self.b.observe(READ_MS, self.s._blank(READ_MS))))
+                    w = self.said(self.rates(self.blank(READ_MS)))
                     line += w if w and w in WORDS else ("·" if w == "" else "?")
                     self.blank(SLOT_MS - READ_MS)
                 runs.append(line)
@@ -183,19 +183,58 @@ class BrainBody:
         конца слова, популяции в окне ответа."""
 
         self.word(cue)
-        hold = self.rates(self.b.observe(100.0, self.s._blank(100.0)))[cue]
+        hold = self.rates(self.blank(100.0))[cue] > self.thr[cue]
         self.word("?")
         self.blank(100.0)
-        r = self.rates(self.b.observe(READ_MS, self.s._blank(READ_MS)))
+        r = self.rates(self.blank(READ_MS))
         self.blank(SLOT_MS - 900.0)
         return {"said": self.said(r, exclude=("повтори", "?", cue)), "hold": hold, "rates": r, "cue": cue}
 
 
+class WordBody(BrainBody):
+    """
+    Словесный мозг (cfg.organs = ("words",), CHAT_PLAN шаг 2): слово — орган
+    «слова» (brain/body.Words) в L4 смысловой коры; популяции слов L2/3 и
+    порог «сказано» — скрининг tools/word_port.py (пластичность выключена на
+    время скрининга, потом как была).
+    """
+
+    def __init__(self, seed: int, size: str, screen: int = 4):
+        import torch
+
+        import word_port
+        from brain.body import Words
+
+        self.torch = torch
+        self.mind, self.b = word_port.build({"seed": seed, "size": size})
+        b = self.b
+        self.port = Words.of(b)
+        vocab = list(WORDS) + ["повтори", "?", UNKNOWN] + [w for p in PAIRS for w in p]
+        if len(vocab) != b.cfg.words_count:
+            raise ValueError(f"словарь {len(vocab)} слов, а порт на {b.cfg.words_count}")
+        self.vocab, self.index = vocab, {w: i for i, w in enumerate(vocab)}
+        plastic = b.plasticity
+        b.plasticity = False
+        pops, thr = word_port.screen(b, self.port, screen, seed)
+        b.plasticity = plastic
+        self.cells = {w: pops[i] for i, w in enumerate(vocab)}
+        self.thr = {w: float(thr[i]) for i, w in enumerate(vocab)}
+        self.blank(1000.0)
+
+    def blank(self, ms: float):
+        return self.b.observe(ms, self.port.hear(None, ms))
+
+    def word(self, w: str, ms: float = WORD_MS):
+        return self.b.observe(ms, self.port.hear(self.index[w], ms))
+
+
 def brain_exam(seed: int, opts: dict) -> dict:
     t0 = time.time()
-    body = BrainBody(seed, opts.get("mind", "bare"), opts.get("size", "small"))
+    mind = opts.get("mind", "words")
+    body = (WordBody(seed, opts.get("size", "small"), int(opts.get("screen", 4))) if mind == "words"
+            else BrainBody(seed, mind, opts.get("size", "small")))
     base = body.rates(body.blank(1000.0))
-    res = {"seed": seed, "base": base}
+    res = {"seed": seed, "base": base, "thr": body.thr}
     parts = opts.get("parts", "repeat,pairs").split(",")
     if "repeat" in parts:
         texts = phrases(seed, int(opts.get("trials", 4)))
@@ -278,12 +317,12 @@ def report_pairs(rs: list[dict]) -> None:
                 ok += said == want
                 silent += said == ""
                 wrong += said not in (want, "")
-                link["подсказка держится"] += a["hold"] > THR_HZ
+                link["подсказка держится"] += a["hold"]
                 rate = a["rates"]
                 link["ответ над фоном"] += rate[want] > base[want] + 2.0 * max(base[want], 1.0)
                 rival = max(hz for w, hz in rate.items() if w not in (want, "повтори", "?", a["cue"]))
                 link["ответ победил"] += rate[want] > rival
-                link["ответ вышел"] += rate[want] > THR_HZ
+                link["ответ вышел"] += rate[want] > r["thr"][want]
         return ok, silent, wrong, n, link
 
     for key, title in (("known1", "знакомые (первая порция)"), ("known2", "знакомые (вторая порция)"),
@@ -323,7 +362,7 @@ def main(opts: dict) -> None:
     else:
         rs = [brain_exam(s, opts) for s in seeds]
         if "repeat" in parts:
-            report_repeat(f"мозг ({opts.get('mind', 'bare')})", [(r["repeat"]["phrases"], r["repeat"]["said"]) for r in rs], None)
+            report_repeat(f"мозг ({opts.get('mind', 'words')})", [(r["repeat"]["phrases"], r["repeat"]["said"]) for r in rs], None)
         if "pairs" in parts:
             report_pairs(rs)
         for r in rs:

@@ -99,6 +99,35 @@ class Periphery(Eye):
         return super().rates(coarse)
 
 
+class Words:
+    """
+    Порт слов (CHAT_PLAN шаг 2): слово — номер в словаре; пока оно звучит,
+    его рецепторы стреляют cfg.words_hz пуассоном, в тишине молчат. Как
+    VisionSystemDummy у Spaun: слово приходит готовым кодом в начало коры,
+    минуя ухо и глаз. Словарь — дело мира (кто говорит), не мозга.
+    """
+
+    def __init__(self, cfg, offset: int, size: int, n_receptors: int, device):
+        self.cfg, self.offset, self.size, self.n, self.device = cfg, offset, size, n_receptors, device
+        self.per = size // cfg.words_count
+
+    def hear(self, word: int | None, ms: float) -> torch.Tensor:
+        """Растр всех рецепторов мозга на ms: звучит word (None — тишина)."""
+
+        steps = int(round(ms / self.cfg.dt_ms))
+        out = torch.zeros(steps, self.n, device=self.device)
+        if word is not None:
+            a = self.offset + word * self.per
+            p = self.cfg.words_hz * self.cfg.dt_ms / 1000.0
+            out[:, a: a + self.per] = (torch.rand(steps, self.per, device=self.device) < p).float()
+        return out
+
+    @classmethod
+    def of(cls, brain) -> "Words":
+        i = [s.name for s in brain.sensors].index("words")
+        return cls(brain.cfg, brain.sensor_offsets[i], brain.sensors[i].size, brain.n_receptors, brain.device)
+
+
 class Hand:
     """
     Рука (орган-исполнитель): у каждой клавиши своё врождённое движение —

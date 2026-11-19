@@ -47,7 +47,7 @@ class Mind:
         self.cfg = cfg
 
         # Новый мозг: зоны и пути по данным (загруженный их уже имеет).
-        if not any(a.name == "trn" for a in cfg.areas):
+        if not cfg.areas:
             anatomy.apply(cfg)
 
         self.brain = SpikingBrain(cfg)

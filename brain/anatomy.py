@@ -1009,11 +1009,31 @@ def min_size(cfg=None) -> int:
     return total_for(1, cfg)
 
 
-def apply(cfg) -> None:
-    """Собрать анатомический мозг: зоны, пути, вещества и рецепторы, согласованный фон."""
+# Зоны органов (cfg.organs). Глаз — сетчатка → LGN → V1 → буквы, его сектор
+# TRN и карта взгляда (двухолмие); ухо — слуховой ствол → MGN → A1 и его
+# сектор TRN; рука — карта руки, зона Экснера (буква → движение), моторный
+# таламус VLp с сектором TRN и мозжечок (у нас он учит только движения руки).
+# Таламус VA/VLa и базальные ганглии остаются: это ворота рабочей памяти.
+ORGAN_AREAS = {
+    "eye": ("lgn", "visual", "letters", "trn", "colliculus"),
+    "ear": ("cn", "ic", "vnll", "mgn", "trn_mgn", "auditory"),
+    "hand": ("hand", "premotor", "vl_cb", "trn_motor", "granule", "purkinje", "dcn", "io"),
+    # Порт слов — только рецепторы (BrainConfig.sensors), своих зон нет.
+    "words": (),
+}
 
-    cfg.areas = areas(cfg)
-    cfg.pathways = pathways(cfg)
+
+def apply(cfg) -> None:
+    """Собрать анатомический мозг: зоны, пути, вещества и рецепторы, согласованный фон.
+    Зоны органов, которых нет в cfg.organs, и все их пути не строятся."""
+
+    unknown = set(cfg.organs) - set(ORGAN_AREAS)
+    if unknown:
+        raise ValueError(f"нет органа {', '.join(sorted(unknown))}")
+    gone = {a for organ, names in ORGAN_AREAS.items() if organ not in cfg.organs for a in names}
+    cfg.areas = [a for a in areas(cfg) if a.name not in gone]
+    cfg.pathways = [p for p in pathways(cfg) if p.src.split(":")[0].strip() not in gone
+                    and p.dst.split(":")[0].strip() not in gone]
     receptors = []
 
     for substance, target, mv in RECEPTORS:
@@ -1024,7 +1044,7 @@ def apply(cfg) -> None:
         else:
             receptors.append((substance, target, mv))
 
-    cfg.receptors = tuple(receptors)
+    cfg.receptors = tuple(r for r in receptors if r[1].split(":")[0] not in gone)
 
     if not cfg.nucleus_bias_mv:
         cfg.nucleus_bias_mv = NUCLEUS_BIAS_MV

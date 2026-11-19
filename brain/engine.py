@@ -1892,6 +1892,24 @@ class SpikingBrain:
                     layer = torch.randint(0, 2, (pop.size, k), device=self.device, generator=self.generator)
                     pre = layer * sensor.rows * sensor.cols + row * sensor.cols + col
                     weight = torch.full((pop.size, k), sensor.weight / self._psp_peak(pop), device=self.device)
+                elif sensor.wiring == "words":
+                    # Порт слов [своё: нет готового; ISSUES 31]: у слова свой
+                    # участок листа коры (плитка сетки ⌈√слов⌉², место клетки —
+                    # _sheet_place: связи колонки идут по расстоянию, σ ~100 мкм,
+                    # и слово остаётся на своём участке в L2/3). Клетка L4 (E и
+                    # PV) плитки слова берёт k его рецепторов; клетки за
+                    # последней плиткой — без входа.
+                    per = sensor.size // sensor.cols
+                    k = min(sensor.k, per)
+                    spec = next(a for a in cfg.areas if a.name == sensor.area)
+                    xy = self._sheet_place(spec, area, pop)
+                    side = float(xy.max()) + 1e-6
+                    grid = math.ceil(math.sqrt(sensor.cols))
+                    tile = (xy[:, 0] / side * grid).long().clamp(max=grid - 1) + grid * (xy[:, 1] / side * grid).long().clamp(max=grid - 1)
+                    pre = tile.clamp(max=sensor.cols - 1)[:, None] * per + torch.randint(
+                        0, per, (pop.size, k), device=self.device, generator=self.generator)
+                    weight = torch.full((pop.size, k), sensor.psp_mv / self._psp_peak(pop), device=self.device)
+                    weight[tile >= sensor.cols] = 0.0
                 elif relay is not None and sensor.wiring == "oriented" and pop is inhibitory:
                     # Быстрые тормозные L4 V1: поле шире, чем у E, но местное
                     # (не всё поле зрения) — своё место и входы из окрестности

@@ -229,6 +229,20 @@ class BrainConfig:
     # ------------------------------------------------------------------
     size: str = os.environ.get("BRAIN_SIZE", "small")
     areas: list[AreaSpec] = field(default_factory=list)
+    # Органы, которые строятся (проводка; anatomy.ORGAN_AREAS): без органа нет
+    # его зон и путей. Словесный мозг (docs/CHAT_PLAN.md, шаг 2) — без всех трёх:
+    # слово входит портом слов (как VisionSystemDummy у Spaun), не глазом.
+    organs: tuple[str, ...] = ("eye", "ear", "hand")
+    # Порт слов (орган «words», CHAT_PLAN шаг 2): words_count слов, у каждого
+    # words_receptors рецепторов; клетка L4 смысловой коры слушает words_k
+    # рецепторов своего слова (engine, wiring="words") с ВПСП words_psp_mv.
+    # Пока слово звучит, его рецепторы стреляют words_hz (как слово в блоке
+    # E1); в тишине молчат. Числа — подбор под считывание ≥ 95% (не данные).
+    words_count: int = 32
+    words_receptors: int = 20
+    words_k: int = 10
+    words_psp_mv: float = 2.0
+    words_hz: float = 40.0
     pathways: list[PathwaySpec] = field(default_factory=list)
 
     # ------------------------------------------------------------------
@@ -1285,6 +1299,9 @@ class BrainConfig:
             # Jhou et al. 2009). Кнопки учителя «верно» / «неверно» в мире —
             # этот вкус. Вход клетки — 10 рецепторов по 2 мВ [сверить].
             SensorSpec("sweet", "vta", 50, 10, 0.0, psp_mv=2.0),
+            *([SensorSpec("words", "association", self.words_count * self.words_receptors, self.words_k, 0.0,
+                          cols=self.words_count, wiring="words", psp_mv=self.words_psp_mv)]
+              if "words" in self.organs else []),
             SensorSpec("bitter", "lhb", 50, 10, 0.0, psp_mv=2.0),
             SensorSpec(
                 "periphery", "colliculus",

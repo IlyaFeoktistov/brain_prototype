@@ -8,7 +8,14 @@ homeostasis_update): мозг живёт с пустым экраном окна
 
     PYTHONPATH=. python tools/develop.py [seconds=60] [win=1000] [seed=42] [fit=lgn-a]
         [relay_v_t_mv=-59] [trn_scale=0.1] [out=lgn-d-pop-s1] [every=10] [scope=population|cell] [built_shares=0|1] [map_ee_sheet=зоны]
-        [coincidence=0|1] [dend_count=15] [dend_window=5] [probe=1]
+        [coincidence=0|1] [dend_count=15] [dend_window=5] [probe=1] [organs=eye,ear,hand|words] [check=10]
+
+organs — какие органы строятся (cfg.organs); organs=words — словесный мозг
+(CHAT_PLAN шаг 3), тишина — порт слов молчит. check=N — после адаптации N с
+без обучения и без гомеостаза: по популяциям частота против цели (±20% —
+критерий пресета ROADMAP «подберётся ли фон сам»), медиана и 10–90% клеток,
+доли молчащих и > 3× цели, у предела гомеостаза; стабильность — первая
+половина против второй.
 
 scope=population — общий шаг популяции (cfg.homeostasis_scope): разброс
 клеток остаётся от проводки; в отчёте — распределение частот клеток зрительных
@@ -51,7 +58,9 @@ def report(b, rates, label: str) -> None:
         print(f"   {name:22s} {float(rates[sl].mean()):6.2f} / {float(t.mean()):5.2f}   {float(shift.mean()):+6.2f}"
               + (f"   {edge:.0%}" if edge > 0 else ""), flush=True)
     for name in ("visual.L23E", "visual.L4E", "letters.L4E", "letters.L23E"):
-        sl = dict(populations(b))[name]
+        sl = dict(populations(b)).get(name)
+        if sl is None:
+            continue
         x = rates[sl].float()
         q = torch.quantile(x, torch.tensor([0.1, 0.5, 0.9], device=x.device))
         print(f"   распределение {name:14s} медиана {float(q[1]):.2f}, 10–90% {float(q[0]):.2f}–{float(q[2]):.2f}, "
@@ -73,12 +82,12 @@ def probed_window(b, s, win: float, step: float = 10.0) -> torch.Tensor:
     cfg = b.cfg
     nb = max(1, cfg.dendrite_branches)
     pops = dict(populations(b))
-    snaps = {k: {"pl": [], "hot": [], "gap": []} for k in PROBE}
+    snaps = {k: {"pl": [], "hot": [], "gap": []} for k in PROBE if k in pops}
     total = torch.zeros(b.n, device=b.device)
     n = int(win / step)
     for _ in range(n):
         total += b.observe(step, s._blank(step))
-        for k in PROBE:
+        for k in [k for k in PROBE if k in pops]:
             sl = pops[k]
             br = b.i_dend.view(b.n_slots, nb)[sl]
             hot = br.amax(1)
@@ -91,7 +100,7 @@ def probed_window(b, s, win: float, step: float = 10.0) -> torch.Tensor:
             snaps[k]["gap"].append(float((b.v_t[sl] - b.v[sl]).median()))
     u = "синапсов за окно" if cfg.dendrite_coincidence else "мВ"
     print(f"\n   ветки L2/3 E (снимки каждые {step:.0f} мс; горячая ветка — {u}):", flush=True)
-    for k in PROBE:
+    for k in snaps:
         pl = torch.tensor(snaps[k]["pl"])
         hot = torch.cat(snaps[k]["hot"])
         hot = hot[:: max(1, hot.numel() // 1_000_000)]
@@ -100,6 +109,53 @@ def probed_window(b, s, win: float, step: float = 10.0) -> torch.Tensor:
               f"снимков с плато > 1% клеток {float((pl > 0.01).float().mean()):.0%}); горячая ветка медиана {float(hq[0]):.1f}, "
               f"90% {float(hq[1]):.1f}, 99% {float(hq[2]):.1f}; v_t − v медиана {sum(snaps[k]['gap']) / n:.1f} мВ", flush=True)
     return total / n
+
+
+class Silence:
+    """Тишина словесного мозга: порт слов молчит (тот же вызов, что Session._blank)."""
+
+    def __init__(self, b):
+        from brain.body import Words
+
+        self.port = Words.of(b)
+
+    def _blank(self, ms: float) -> torch.Tensor:
+        return self.port.hear(None, ms)
+
+
+def check(b, s, seconds: float) -> None:
+    """Критерии пресета (ROADMAP): N с без обучения и без гомеостаза."""
+
+    b.cfg.homeostasis = False
+    half = seconds * 1000.0 / 2
+    r1 = b.observe(half, s._blank(half))
+    r2 = b.observe(half, s._blank(half))
+    rates = (r1 + r2) / 2
+    lim = b.cfg.homeostasis_max_mv
+    print(f"\nпроверка {seconds:.0f} с без обучения и гомеостаза: популяция — частота / цель, "
+          f"медиана, 10–90% клеток, молчат, > 3× цели, у предела; 1-я → 2-я половина", flush=True)
+    ok = bad = 0
+    edge_all = []
+    for name, sl in populations(b):
+        t = b.homeo_target[sl]
+        if t.isnan().all():
+            continue
+        x = rates[sl].float()
+        target = float(t.nanmean())
+        q = torch.quantile(x, torch.tensor([0.1, 0.5, 0.9], device=x.device))
+        edge = (b.homeo_shift[sl].abs() >= lim - 1e-3).float()
+        edge_all.append(edge)
+        m = float(x.mean())
+        good = abs(m - target) <= 0.2 * target
+        ok += good
+        bad += not good
+        print(f"   {'ок ' if good else 'НЕТ'} {name:22s} {m:6.2f} / {target:5.2f}  мед {float(q[1]):5.2f}  "
+              f"{float(q[0]):5.2f}–{float(q[2]):6.2f}  молчат {float((x == 0).float().mean()):4.0%}  "
+              f"> 3× {float((x > 3 * target).float().mean()):4.0%}  предел {float(edge.mean()):4.0%}  "
+              f"{float(r1[sl].mean()):6.2f} → {float(r2[sl].mean()):6.2f}", flush=True)
+    edge_all = torch.cat(edge_all)
+    print(f"итог: в ±20% от цели {ok} из {ok + bad} популяций; у предела гомеостаза {float(edge_all.mean()):.1%} клеток "
+          f"(критерий ≤ 5%)", flush=True)
 
 
 def main(opts: dict) -> None:
@@ -144,13 +200,15 @@ def main(opts: dict) -> None:
         cfg.dendrite_coincidence = opts["coincidence"] != "0"
         cfg.dendrite_count_threshold = float(opts.get("dend_count", cfg.dendrite_count_threshold))
         cfg.dendrite_window_ms = float(opts.get("dend_window", cfg.dendrite_window_ms))
+    if opts.get("organs"):
+        cfg.organs = tuple(x for x in opts["organs"].split(",") if x)
     if opts.get("fit"):
         anatomy.use_fit(cfg, opts["fit"])
     mind = Mind(cfg)
     b = mind.brain
     b.plasticity = False
-    # Пустой экран — ямка видит ровную страницу (Session._blank).
-    s = Session(mind)
+    # Пустой экран — ямка видит ровную страницу (Session._blank); без глаза — порт слов молчит.
+    s = Session(mind) if "eye" in cfg.organs else Silence(b)
     for p in b.projections:
         if p.name == "trn -> lgn":
             p.weight.mul_(float(opts.get("trn_scale", 1.0)))
@@ -171,6 +229,8 @@ def main(opts: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(b.homeo_shift.cpu(), path)
     print(f"\nсдвиги записаны в {path}")
+    if opts.get("check"):
+        check(b, s, float(opts["check"]))
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 import gc
 import math
 import time
+import zlib
 
 import torch
 
@@ -1613,6 +1614,18 @@ class SpikingBrain:
 
         return proj
 
+    def _reseed(self, key: str) -> None:
+        """
+        Свой поток случайных чисел у каждого звена сборки (путь, местный контур
+        зоны, орган, разброс возбудимости зоны): генератор пересевается от
+        (зерно, имя звена). Добавить или убрать зону или путь — проводка
+        остальных не сдвигается (прежде общий поток сдвигал все звенья после
+        правки, и выученные веса пресета переставали подходить). Инженерное,
+        не биология: распределения связей те же.
+        """
+
+        self.generator.manual_seed((self.cfg.seed * 1_000_003 + zlib.crc32(key.encode())) % (2 ** 62))
+
     def _init_projections(self) -> None:
         cfg = self.cfg
         self.projections: list[Projection] = []
@@ -1636,11 +1649,13 @@ class SpikingBrain:
                 self.field_width = sensor.cols
                 self.eye_sensor = sensor
 
+        self._reseed("maps")
         self._place_maps()
 
         # ---- локальные микросхемы зон ----
         for spec in cfg.areas:
             area = self.areas[spec.name]
+            self._reseed(f"local:{spec.name}")
 
             if area.layers is not None:
                 self._wire_column(spec, area)
@@ -1703,7 +1718,12 @@ class SpikingBrain:
                         continue
                     self.cortical_inputs[pop.name] = self.cortical_inputs.get(pop.name, 0) + 1
 
+        seen_keys: dict[str, int] = {}
+
         for path in cfg.pathways:
+            key = f"path:{path.src}->{path.dst}:{path.name}"
+            seen_keys[key] = seen_keys.get(key, 0) + 1
+            self._reseed(f"{key}#{seen_keys[key]}")
             src = self.areas[path.src]
             dst = self.areas[path.dst]
             pre, post, inhibitory, top_down = self._laminar(path, src, dst)
@@ -1814,6 +1834,7 @@ class SpikingBrain:
         # У каждого органа свой участок общего массива рецепторов: ухо —
         # первым (как всегда), дальше остальные.
         for sensor, offset in zip(self.sensors, self.sensor_offsets):
+            self._reseed(f"sensor:{sensor.name}")
             area = self.areas[sensor.area]
             relay = self.areas.get(sensor.relay)
 
@@ -1991,7 +2012,9 @@ class SpikingBrain:
                     )
                 )
 
+        self._reseed("v1->colliculus")
         self._v1_to_colliculus()
+        self._reseed("lgn->l6")
         self._lgn_to_l6()
         self._external_minus_modeled()
         self._build_mean_field()
@@ -2940,6 +2963,7 @@ class SpikingBrain:
         for area in self.areas.values():
             if area.layers is None:
                 continue
+            self._reseed(f"spread:{area.name}")
 
             for group in area.layers.values():
                 # До порога — как у клетки этого типа (реобаза × сопротивление).
@@ -2998,6 +3022,7 @@ class SpikingBrain:
         for area in self.areas.values():
             if area.layers is None:
                 E = area.E
+                self._reseed(f"spread-nucleus:{area.name}")
                 self.bias[E.slice] += torch.randn(E.size, device=self.device, generator=self.generator) * sd
 
         # Ацетилхолин — занятость его рецепторов (ядро Мейнерта); тензор — его

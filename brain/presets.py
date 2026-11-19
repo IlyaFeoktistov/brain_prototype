@@ -93,7 +93,7 @@ class Preset:
             next(p for p in b.projections if p.name == TRN_TO_LGN).weight.mul_(self.trn_scale)
         if self.homeo:
             # Сдвиги — по клеткам на момент подгонки; зоны, добавленные в конец
-            # анатомии позже (entorhinal_deep, 2026-11-19), сдвига не имеют.
+            # анатомии позже (слой V энторинальной, 2026-11-19), сдвига не имеют.
             shift = torch.load(self.homeo_file(seed), map_location=b.device)
             b.bias[: len(shift)] += shift
         for path, f in self.weights.items():

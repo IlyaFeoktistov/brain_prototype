@@ -11,10 +11,23 @@ https://doi.org/10.1007/s10827-024-00881-3; PMC11470887), код анализа 
 github.com/jkopsick/cell_assembly_formation_retrieval; сеть — CARLsim4-Hippocampome.
 Модель — МЫШЬ (данные Hippocampome.org).
 
-**Не хватает (ищет пользователь):** число клеток каждого типа и вероятности
-связей между типами — в обеих статьях только на рис. 1a (в статье 2023 —
-возможно, таблицей; PMC закрыт проверкой браузера), или в файлах
-Hippocampome.org / CARLsim4-Hippocampome.
+**Источник чисел — код авторов** (github.com/jkopsick/simulate_formation_and_retrieval,
+formation/project/ca3_full_net_lognormalI_09_05_23_assem_275: generateCONFIGStateSTP.h —
+сеть, src/main_*.cpp — запуск; разбор ниже). Сводка пользователя (2026-11-19):
+численности по табл. 1 статьи 2023 — 89 226 клеток, в коде 2024 — 84 053 (как в
+тексте статьи 2024); вероятности по табл. 3 статьи 2023 в основном совпадают с
+кодом, но **корзинчатые, CCK+ и аксо-аксональные → PC в коде 0.0265, в
+сводке 0.150**, QuadD → PC 0.072 против 0.119 — берём код (на нём авторы
+получили устойчивый покой).
+
+Запуск у авторов: клетки Izhikevich 2007 (9 параметров), Рунге–Кутта 4, 5
+подшагов на 1 мс; синапсы токовые (setConductances выключен), у каждой связи
+своё время спада (STPtdAMPA у PC, STPtdGABAa у тормозных) и Tsodyks–Markram;
+задержка 1 мс; фоновый ток каждую 1 мс каждой клетке заново:
+lognormal(μ, σ своего типа) × uniform(0, 1), потолок 10 000 пА; μ, σ — табл. 3
+ниже (PC 4.0/1.5; AAC 4.0/1.25; BC 5.5/1.0; CCK 4.0/1.0; BiC 4.0/1.0; Ivy 5.5/1.0;
+MFA 4.0/1.25; QuadD 4.0/1.25). Единицы токового синапса CARLsim (вес × g ×
+ресурс TM) — сверить по исходникам CARLsim4-Hippocampome перед переносом.
 
 Ниже — таблицы 1–3 статьи 2024 (как в тексте; единицы — Izhikevich 2007:
 k нС/мВ, a 1/мс, b нС, d пА, C пФ, V мВ; g нС, τ мс).
@@ -101,4 +114,136 @@ Ivy | 5.5 | 1.0 | 1.40 ± 1.03 | 1.7 ± 0.3* | Rat | urethane-anesthetized | (Fu
 3.0 ± 3.6* | Rat | Awake; freely-moving
 MFA-ORDEN | 4.0 | 1.25 | 1.04 ± 1.02 | N/A | --- | --- | ---
 QuadD-LM | 4.0 | 1.25 | 5.70 ± 0.95 | 6.14 | Rat | urethane-anesthetized | (Lasztóczi 2011 )
+```
+
+
+## Сеть из кода авторов (разбор generateCONFIGStateSTP.h)
+
+```
+ПОПУЛЯЦИИ (тип, клеток, знак):
+  CA3_QuadD_LM         2609 INHIBITORY_NEURON
+  CA3_Axo_Axonic       1482 INHIBITORY_NEURON
+  CA3_Basket            115 INHIBITORY_NEURON
+  CA3_BC_CCK            168 INHIBITORY_NEURON
+  CA3_Bistratified     2281 INHIBITORY_NEURON
+  CA3_Ivy              1459 INHIBITORY_NEURON
+  CA3_MFA_ORDEN         562 INHIBITORY_NEURON
+  CA3_Pyramidal       75377 EXCITATORY_NEURON
+  всего 84053
+
+КЛЕТКИ Izhikevich (C, k, Vr, Vt, a, b, Vpeak, Vmin, d):
+  CA3_QuadD_LM       186 1.776 -73.48 -54.94 0.005843 -3.449 7.066 -64.4 52
+  CA3_Axo_Axonic     165 3.961 -57.1 -51.72 0.004639 8.684 27.8 -73.97 15
+  CA3_Basket         45 0.9952 -57.51 -23.38 0.003846 9.264 18.45 -47.56 -6
+  CA3_BC_CCK         135 0.583 -59 -39.4 0.005745 -1.245 18.27 -42.77 54
+  CA3_Bistratified   107 3.935 -64.67 -58.74 0.001952 16.58 -9.929 -59.7 19
+  CA3_Ivy            364 1.916 -70.43 -40.86 0.009151 1.908 -6.92 -53.4 45
+  CA3_MFA_ORDEN      209 1.38 -57.08 -39.1 0.007838 12.93 16.31 -40.68 0
+  CA3_Pyramidal      102 1.54 -63.12 -23.96 0.008 -35.78 36.4 -38.7 235
+
+СВЯЗИ (пре → пост: вероятность, нач. вес, макс. вес, задержка, g быстр.):
+  CA3_QuadD_LM       → CA3_Axo_Axonic     p 0.00529  вес 1 (макс 2)  задержка 1  g 1.4731
+  CA3_QuadD_LM       → CA3_Basket         p 0.06672  вес 1 (макс 2)  задержка 1  g 1.8153
+  CA3_QuadD_LM       → CA3_BC_CCK         p 0.04957  вес 1 (макс 2)  задержка 1  g 1.3082
+  CA3_QuadD_LM       → CA3_Pyramidal      p 0.07234  вес 0.75 (макс 2)  задержка 1  g 1.1832
+  CA3_Axo_Axonic     → CA3_Pyramidal      p 0.02653  вес 0.75 (макс 2)  задержка 1  g 1.8696
+  CA3_Basket         → CA3_QuadD_LM       p 0.00500  вес 1 (макс 2)  задержка 1  g 1.7508
+  CA3_Basket         → CA3_Axo_Axonic     p 0.02500  вес 1 (макс 2)  задержка 1  g 2.0248
+  CA3_Basket         → CA3_Basket         p 0.00500  вес 1 (макс 2)  задержка 1  g 3.2816
+  CA3_Basket         → CA3_BC_CCK         p 0.00500  вес 1 (макс 2)  задержка 1  g 1.6862
+  CA3_Basket         → CA3_Bistratified   p 0.02500  вес 1 (макс 2)  задержка 1  g 1.7704
+  CA3_Basket         → CA3_MFA_ORDEN      p 0.00500  вес 1 (макс 2)  задержка 1  g 1.8087
+  CA3_Basket         → CA3_Pyramidal      p 0.02653  вес 0.75 (макс 2)  задержка 1  g 1.5724
+  CA3_BC_CCK         → CA3_QuadD_LM       p 0.02500  вес 1 (макс 2)  задержка 1  g 1.3350
+  CA3_BC_CCK         → CA3_Axo_Axonic     p 0.02500  вес 1 (макс 2)  задержка 1  g 1.4938
+  CA3_BC_CCK         → CA3_Basket         p 0.00500  вес 1 (макс 2)  задержка 1  g 1.7452
+  CA3_BC_CCK         → CA3_BC_CCK         p 0.00500  вес 1 (макс 2)  задержка 1  g 0.9656
+  CA3_BC_CCK         → CA3_Bistratified   p 0.02500  вес 1 (макс 2)  задержка 1  g 1.3715
+  CA3_BC_CCK         → CA3_MFA_ORDEN      p 0.00500  вес 1 (макс 2)  задержка 1  g 1.3552
+  CA3_BC_CCK         → CA3_Pyramidal      p 0.02653  вес 0.75 (макс 2)  задержка 1  g 1.3063
+  CA3_Bistratified   → CA3_QuadD_LM       p 0.00775  вес 1 (макс 2)  задержка 1  g 1.4905
+  CA3_Bistratified   → CA3_Axo_Axonic     p 0.00659  вес 1 (макс 2)  задержка 1  g 1.6552
+  CA3_Bistratified   → CA3_Basket         p 0.00926  вес 1 (макс 2)  задержка 1  g 1.9943
+  CA3_Bistratified   → CA3_BC_CCK         p 0.00432  вес 1 (макс 2)  задержка 1  g 1.4426
+  CA3_Bistratified   → CA3_Bistratified   p 0.03258  вес 1 (макс 2)  задержка 1  g 1.5470
+  CA3_Bistratified   → CA3_Ivy            p 0.00386  вес 1 (макс 2)  задержка 1  g 2.0612
+  CA3_Bistratified   → CA3_MFA_ORDEN      p 0.00862  вес 1 (макс 2)  задержка 1  g 1.5677
+  CA3_Bistratified   → CA3_Pyramidal      p 0.01372  вес 0.75 (макс 2)  задержка 1  g 1.4311
+  CA3_Ivy            → CA3_QuadD_LM       p 0.00198  вес 1 (макс 2)  задержка 1  g 1.5673
+  CA3_Ivy            → CA3_Axo_Axonic     p 0.00425  вес 1 (макс 2)  задержка 1  g 1.7584
+  CA3_Ivy            → CA3_Basket         p 0.01630  вес 1 (макс 2)  задержка 1  g 2.1114
+  CA3_Ivy            → CA3_BC_CCK         p 0.01074  вес 1 (макс 2)  задержка 1  g 1.5401
+  CA3_Ivy            → CA3_Bistratified   p 0.01703  вес 1 (макс 2)  задержка 1  g 1.6601
+  CA3_Ivy            → CA3_Ivy            p 0.00375  вес 1 (макс 2)  задержка 1  g 2.1427
+  CA3_Ivy            → CA3_MFA_ORDEN      p 0.01693  вес 1 (макс 2)  задержка 1  g 1.6872
+  CA3_Ivy            → CA3_Pyramidal      p 0.01360  вес 0.75 (макс 2)  задержка 1  g 1.5407
+  CA3_MFA_ORDEN      → CA3_QuadD_LM       p 0.00376  вес 1 (макс 2)  задержка 1  g 1.4720
+  CA3_MFA_ORDEN      → CA3_Axo_Axonic     p 0.00438  вес 1 (макс 2)  задержка 1  g 1.6285
+  CA3_MFA_ORDEN      → CA3_Basket         p 0.00729  вес 1 (макс 2)  задержка 1  g 1.9723
+  CA3_MFA_ORDEN      → CA3_BC_CCK         p 0.00527  вес 1 (макс 2)  задержка 1  g 1.4150
+  CA3_MFA_ORDEN      → CA3_Bistratified   p 0.00480  вес 1 (макс 2)  задержка 1  g 1.5365
+  CA3_MFA_ORDEN      → CA3_Ivy            p 0.00268  вес 1 (макс 2)  задержка 1  g 2.0820
+  CA3_MFA_ORDEN      → CA3_MFA_ORDEN      p 0.00211  вес 1 (макс 2)  задержка 1  g 1.5527
+  CA3_MFA_ORDEN      → CA3_Pyramidal      p 0.00634  вес 0.75 (макс 2)  задержка 1  g 1.3603
+  CA3_Pyramidal      → CA3_QuadD_LM       p 0.01337  вес 0.75 (макс 2)  задержка 1  g 0.8744
+  CA3_Pyramidal      → CA3_Axo_Axonic     p 0.01482  вес 0.75 (макс 2)  задержка 1  g 0.9326
+  CA3_Pyramidal      → CA3_Basket         p 0.01974  вес 0.75 (макс 2)  задержка 1  g 1.1725
+  CA3_Pyramidal      → CA3_BC_CCK         p 0.01730  вес 0.75 (макс 2)  задержка 1  g 0.8475
+  CA3_Pyramidal      → CA3_Bistratified   p 0.01586  вес 0.75 (макс 2)  задержка 1  g 0.8837
+  CA3_Pyramidal      → CA3_Ivy            p 0.02516  вес 0.75 (макс 2)  задержка 1  g 1.3143
+  CA3_Pyramidal      → CA3_MFA_ORDEN      p 0.02099  вес 0.75 (макс 2)  задержка 1  g 0.8803
+  CA3_Pyramidal      → CA3_Pyramidal      p 0.02507  вес 0.625 (макс 21.8182)  задержка 1  g 0.5531
+  связей 51
+
+STP (пре → пост: U, τ_f мс, τ_r мс, τ распада AMPA/GABAa мс):
+  CA3_QuadD_LM       → CA3_Axo_Axonic     U 0.218  τ_f 22.3  τ_r 635.0  τ_d 5.17
+  CA3_QuadD_LM       → CA3_Basket         U 0.232  τ_f 16.4  τ_r 663.2  τ_d 4.29
+  CA3_QuadD_LM       → CA3_BC_CCK         U 0.208  τ_f 17.8  τ_r 596.5  τ_d 4.83
+  CA3_QuadD_LM       → CA3_Pyramidal      U 0.194  τ_f 24.8  τ_r 382.1  τ_d 9.11
+  CA3_Axo_Axonic     → CA3_Pyramidal      U 0.237  τ_f 12.9  τ_r 361.0  τ_d 7.62
+  CA3_Basket         → CA3_QuadD_LM       U 0.245  τ_f 19.3  τ_r 589.2  τ_d 5.16
+  CA3_Basket         → CA3_Axo_Axonic     U 0.273  τ_f 23.2  τ_r 725.0  τ_d 3.80
+  CA3_Basket         → CA3_Basket         U 0.269  τ_f 11.2  τ_r 689.5  τ_d 3.01
+  CA3_Basket         → CA3_BC_CCK         U 0.236  τ_f 16.7  τ_r 636.8  τ_d 4.21
+  CA3_Basket         → CA3_Bistratified   U 0.251  τ_f 16.7  τ_r 680.3  τ_d 4.72
+  CA3_Basket         → CA3_MFA_ORDEN      U 0.241  τ_f 19.6  τ_r 581.9  τ_d 5.23
+  CA3_Basket         → CA3_Pyramidal      U 0.228  τ_f 16.7  τ_r 384.3  τ_d 7.64
+  CA3_BC_CCK         → CA3_QuadD_LM       U 0.175  τ_f 17.3  τ_r 398.2  τ_d 6.48
+  CA3_BC_CCK         → CA3_Axo_Axonic     U 0.176  τ_f 18.5  τ_r 477.4  τ_d 5.44
+  CA3_BC_CCK         → CA3_Basket         U 0.196  τ_f 14.9  τ_r 505.1  τ_d 4.69
+  CA3_BC_CCK         → CA3_BC_CCK         U 0.119  τ_f 23.4  τ_r 283.3  τ_d 4.89
+  CA3_BC_CCK         → CA3_Bistratified   U 0.180  τ_f 15.2  τ_r 478.3  τ_d 5.97
+  CA3_BC_CCK         → CA3_MFA_ORDEN      U 0.168  τ_f 17.8  τ_r 421.4  τ_d 6.54
+  CA3_BC_CCK         → CA3_Pyramidal      U 0.146  τ_f 13.8  τ_r 376.9  τ_d 9.10
+  CA3_Bistratified   → CA3_QuadD_LM       U 0.236  τ_f 17.9  τ_r 594.3  τ_d 5.53
+  CA3_Bistratified   → CA3_Axo_Axonic     U 0.239  τ_f 19.2  τ_r 686.3  τ_d 4.57
+  CA3_Bistratified   → CA3_Basket         U 0.252  τ_f 14.6  τ_r 695.2  τ_d 3.86
+  CA3_Bistratified   → CA3_BC_CCK         U 0.221  τ_f 17.7  τ_r 592.2  τ_d 4.58
+  CA3_Bistratified   → CA3_Bistratified   U 0.247  τ_f 13.6  τ_r 775.0  τ_d 4.58
+  CA3_Bistratified   → CA3_Ivy            U 0.225  τ_f 13.5  τ_r 706.9  τ_d 4.38
+  CA3_Bistratified   → CA3_MFA_ORDEN      U 0.233  τ_f 18.3  τ_r 605.2  τ_d 5.54
+  CA3_Bistratified   → CA3_Pyramidal      U 0.213  τ_f 16.6  τ_r 481.9  τ_d 7.49
+  CA3_Ivy            → CA3_QuadD_LM       U 0.239  τ_f 26.1  τ_r 563.5  τ_d 6.89
+  CA3_Ivy            → CA3_Axo_Axonic     U 0.245  τ_f 25.5  τ_r 651.6  τ_d 5.67
+  CA3_Ivy            → CA3_Basket         U 0.255  τ_f 19.1  τ_r 665.2  τ_d 4.75
+  CA3_Ivy            → CA3_BC_CCK         U 0.230  τ_f 21.0  τ_r 614.0  τ_d 5.40
+  CA3_Ivy            → CA3_Bistratified   U 0.246  τ_f 22.7  τ_r 660.5  τ_d 6.24
+  CA3_Ivy            → CA3_Ivy            U 0.232  τ_f 17.7  τ_r 675.5  τ_d 5.51
+  CA3_Ivy            → CA3_MFA_ORDEN      U 0.236  τ_f 28.4  τ_r 578.9  τ_d 6.96
+  CA3_Ivy            → CA3_Pyramidal      U 0.220  τ_f 23.0  τ_r 439.5  τ_d 9.01
+  CA3_MFA_ORDEN      → CA3_QuadD_LM       U 0.232  τ_f 21.0  τ_r 637.9  τ_d 5.52
+  CA3_MFA_ORDEN      → CA3_Axo_Axonic     U 0.235  τ_f 21.4  τ_r 762.6  τ_d 4.55
+  CA3_MFA_ORDEN      → CA3_Basket         U 0.250  τ_f 15.7  τ_r 759.1  τ_d 3.90
+  CA3_MFA_ORDEN      → CA3_BC_CCK         U 0.221  τ_f 17.1  τ_r 693.9  τ_d 4.32
+  CA3_MFA_ORDEN      → CA3_Bistratified   U 0.241  τ_f 17.3  τ_r 776.6  τ_d 4.96
+  CA3_MFA_ORDEN      → CA3_Ivy            U 0.220  τ_f 13.9  τ_r 806.5  τ_d 4.32
+  CA3_MFA_ORDEN      → CA3_MFA_ORDEN      U 0.228  τ_f 22.5  τ_r 642.1  τ_d 5.53
+  CA3_MFA_ORDEN      → CA3_Pyramidal      U 0.216  τ_f 20.6  τ_r 496.0  τ_d 7.15
+  CA3_Pyramidal      → CA3_QuadD_LM       U 0.200  τ_f 27.2  τ_r 453.3  τ_d 5.82
+  CA3_Pyramidal      → CA3_Axo_Axonic     U 0.197  τ_f 26.3  τ_r 630.7  τ_d 4.92
+  CA3_Pyramidal      → CA3_Basket         U 0.221  τ_f 21.2  τ_r 691.4  τ_d 3.97
+  CA3_Pyramidal      → CA3_BC_CCK         U 0.205  τ_f 22.5  τ_r 530.4  τ_d 4.29
+  CA3_Pyramidal      → CA3_Bistratified   U 0.204  τ_f 23.9  τ_r 569.2  τ_d 5.37
+  CA3_Pyramidal      → CA3_Ivy            U 0.192  τ_f 18.8  τ_r 623.5  τ_d 4.48
+  CA3_Pyramidal      → CA3_MFA_ORDEN      U 0.196  τ_f 29.0  τ_r 445.0  τ_d 5.95
 ```

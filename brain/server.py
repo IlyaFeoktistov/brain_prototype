@@ -390,13 +390,9 @@ class BrainHost:
         self.screen()
         return f"урок «{kind}» окончен"
 
-    def show_letter(self, letter: str) -> dict:
-        """
-        Сценарий «Покажи букву»: буква 350 мс по центру ямки (взгляд держит
-        стенд, не двухолмие — как в tools/letters_us.py), потом пустой экран
-        150 мс. Ответ — группа клеток зоны букв (L4 E, по 20 на букву у ямки,
-        разметка учёбы) с наибольшим числом спайков; молчат все — «не вижу».
-        """
+    def _letter_groups(self, letter: str):
+        """Выученные буквы и группы клеток зоны букв (L4 E, по 20 на букву у
+        ямки, ранг по расстоянию до ямки % числа букв — разметка tools/letters_us.py)."""
 
         mind = self.need()
         chosen = PRESETS.get(mind.cfg.preset)
@@ -405,24 +401,66 @@ class BrainHost:
             raise ValueError("зона букв этого мозга не учена — нужен мозг из пресета «working»")
         if letter not in letters:
             raise ValueError(f"буква «{letter}» не училась; выученные: {letters}")
-
-        b, s = mind.brain, self.session
-        show_ms, rest_ms = 350.0, 150.0
+        b = mind.brain
         L4 = b.areas["letters"].layers["L4"]["E"]
         near = (b.field_cols[L4.name] - b.cfg.fovea_col).abs().argsort()[: 20 * len(letters)].to(b.device)
         group = torch.arange(len(near), device=b.device) % len(letters)
+        return letters, near + L4.start, group
 
+    def _letter_show(self, letter: str, cells, teach: torch.Tensor | None = None) -> torch.Tensor:
+        """Буква 350 мс по центру ямки (взгляд держит стенд, не двухолмие), потом
+        пустой экран 150 мс; teach — клетки, которые учитель заставляет стрелять
+        (cfg.teacher_hz), с правилом учёбы пути V1 → буквы. Возвращает спайки cells."""
+
+        b, s = self.mind.brain, self.session
+        show_ms, rest_ms = 350.0, 150.0
         s.line, s.pointer = letter, None
         s.gaze = s.screen.width(letter) / 2
         self.screen()
-        count = b.observe(show_ms, s._view(show_ms))[near + L4.start] * (show_ms / 1000.0)
+        if teach is not None:
+            b.teach_pop.zero_()
+            b.teach_pop[cells] = True
+            b.teach_target.zero_()
+            b.teach_target[teach] = True
+            b.teach_on = b.us_on = True
+        try:
+            count = b.observe(show_ms, s._view(show_ms))[cells] * (show_ms / 1000.0)
+        finally:
+            b.teach_on = b.us_on = False
         s.line, s.gaze = "", 0.0
         b.observe(rest_ms, s._blank(rest_ms))
         self.screen()
+        return count
 
+    def show_letter(self, letter: str) -> dict:
+        """
+        Сценарий «Покажи букву»: ответ — группа клеток зоны букв с наибольшим
+        числом спайков за показ; молчат все — «не вижу».
+        """
+
+        letters, cells, group = self._letter_groups(letter)
+        count = self._letter_show(letter, cells)
         spikes = {c: int(round(float(count[group == k].sum()))) for k, c in enumerate(letters)}
         best = max(spikes, key=spikes.get)
         return {"letter": letter, "seen": best if spikes[best] > 0 else "", "spikes": spikes}
+
+    def correct_letter(self, shown: str, right: str) -> dict:
+        """
+        «Нет, это буква right»: тот же показ буквы shown, учитель заставляет
+        стрелять группу right, правило Urbanczik & Senn (cfg.us_*) меняет веса
+        пути V1 → буквы — как одна учебная проба tools/letters_us.py. Учитель —
+        зажим кодом (ISSUES 7): так в мозг приходит названная буква, пока нет
+        пути «слово → вид буквы» сверху.
+        """
+
+        letters, cells, group = self._letter_groups(right)
+        if shown not in letters:
+            raise ValueError(f"буква «{shown}» не училась; выученные: {letters}")
+        path = next(p for p in self.mind.brain.projections if p.name == "visual -> letters")
+        w0 = path.weight.clone()
+        self._letter_show(shown, cells, teach=cells[group == letters.index(right)])
+        changed = float((path.weight - w0).abs().mean() / w0.mean())
+        return {"shown": shown, "right": right, "changed": changed}
 
     def health(self, ms: float) -> dict:
         """Частоты ядер и слоёв колонок в покое против записей у бодрствующих."""
@@ -601,6 +639,17 @@ class Letter(BaseModel):
 @app.post("/api/letter")
 async def show_letter(body: Letter) -> dict:
     return await _run(lambda: host.show_letter(body.letter.strip().lower()), "смотрит на букву")
+
+
+class Correction(BaseModel):
+    shown: str
+    right: str
+
+
+@app.post("/api/letter/correct")
+async def correct_letter(body: Correction) -> dict:
+    return await _run(lambda: host.correct_letter(body.shown.strip().lower(), body.right.strip().lower()),
+                      "учит букву")
 
 
 class Phrase(BaseModel):

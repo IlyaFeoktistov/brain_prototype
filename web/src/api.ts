@@ -22,6 +22,8 @@ export const say = (text: string) => post<{ text: string }>("/api/say", { text }
 export const praise = (good: boolean) => post("/api/praise", { good });
 export const showLetter = (letter: string) =>
   post<{ letter: string; seen: string; spikes: Record<string, number> }>("/api/letter", { letter });
+export const correctLetter = (shown: string, right: string) =>
+  post<{ shown: string; right: string; changed: number }>("/api/letter/correct", { shown, right });
 export const repeat = (phrase: string) =>
   post<{ phrases: string[]; said: string[][]; leak: number; leak_windows: number }>("/api/repeat", { phrase });
 export const stop = () => post("/api/stop");

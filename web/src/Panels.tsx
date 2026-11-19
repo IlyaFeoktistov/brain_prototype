@@ -160,6 +160,14 @@ const LETTERS = "абвгдежзик";
 
 function Scenarios({ actions }: { actions: MenuActions }) {
   const [letter, setLetter] = useState("б");
+  const [right, setRight] = useState("б");
+  const correct = () => {
+    actions.info(`нет, это буква «${right}»: показ «${letter}», учитель зажигает группу «${right}», путь V1 → буквы учится`);
+    api
+      .correctLetter(letter, right)
+      .then((r) => actions.info(`исправлено: веса пути изменились на ${(r.changed * 100).toFixed(2)}% — кора учится медленно, с одного раза не запомнит (нужны десятки показов; с одного раза — гиппокамп, шаг 5 плана)`))
+      .catch((e) => actions.info(`Ошибка: ${(e as Error).message}`));
+  };
   const [phrase, setPhrase] = useState("ВГА");
   const [repeating, setRepeating] = useState(false);
   const phraseOk = /^[АБВГД]{1,3}$/.test(phrase);
@@ -197,6 +205,13 @@ function Scenarios({ actions }: { actions: MenuActions }) {
         </select>
         <button type="button" onClick={show}
                 title="буква на экране по центру ямки; ответ — какая из 10 групп клеток зоны букв (по 20 у ямки) выстрелила больше. Только мозг из пресета «working»: у ямки верно ~0.6, случай 0.1">Покажи букву</button>
+      </div>
+      <div className="buttons">
+        <button type="button" onClick={correct}
+                title="«нет, это буква …»: та же буква на экране, учитель заставляет стрелять группу названной буквы, правило учёбы пути V1 → буквы включено — одна учебная проба. Кора учится медленно: одно исправление меняет веса на ~0.07%">Нет, это</button>
+        <select value={right} onChange={(e) => setRight(e.target.value)} title="какая буква на самом деле">
+          {[...LETTERS].map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
       </div>
       <div className="buttons">
         <input value={phrase} maxLength={3} size={4} onChange={(e) => setPhrase(e.target.value.toUpperCase())}

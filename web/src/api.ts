@@ -20,6 +20,10 @@ const get = <T>(path: string) => request<T>("GET", path);
 
 export const say = (text: string) => post<{ text: string }>("/api/say", { text });
 export const praise = (good: boolean) => post("/api/praise", { good });
+export const showLetter = (letter: string) =>
+  post<{ letter: string; seen: string; spikes: Record<string, number> }>("/api/letter", { letter });
+export const repeat = (phrase: string) =>
+  post<{ phrases: string[]; said: string[][]; leak: number; leak_windows: number }>("/api/repeat", { phrase });
 export const stop = () => post("/api/stop");
 export const setLive = (enabled: boolean) => post("/api/live", { enabled });
 export const lesson = (kind: string, n: number, extra: { text?: string; first?: number; last?: number } = {}) =>

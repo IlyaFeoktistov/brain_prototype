@@ -29,6 +29,7 @@ import queue
 import threading
 import time
 
+import torch
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -389,6 +390,40 @@ class BrainHost:
         self.screen()
         return f"урок «{kind}» окончен"
 
+    def show_letter(self, letter: str) -> dict:
+        """
+        Сценарий «Покажи букву»: буква 350 мс по центру ямки (взгляд держит
+        стенд, не двухолмие — как в tools/letters_us.py), потом пустой экран
+        150 мс. Ответ — группа клеток зоны букв (L4 E, по 20 на букву у ямки,
+        разметка учёбы) с наибольшим числом спайков; молчат все — «не вижу».
+        """
+
+        mind = self.need()
+        chosen = PRESETS.get(mind.cfg.preset)
+        letters = chosen.letters if chosen else ""
+        if not letters:
+            raise ValueError("зона букв этого мозга не учена — нужен мозг из пресета «working»")
+        if letter not in letters:
+            raise ValueError(f"буква «{letter}» не училась; выученные: {letters}")
+
+        b, s = mind.brain, self.session
+        show_ms, rest_ms = 350.0, 150.0
+        L4 = b.areas["letters"].layers["L4"]["E"]
+        near = (b.field_cols[L4.name] - b.cfg.fovea_col).abs().argsort()[: 20 * len(letters)].to(b.device)
+        group = torch.arange(len(near), device=b.device) % len(letters)
+
+        s.line, s.pointer = letter, None
+        s.gaze = s.screen.width(letter) / 2
+        self.screen()
+        count = b.observe(show_ms, s._view(show_ms))[near + L4.start] * (show_ms / 1000.0)
+        s.line, s.gaze = "", 0.0
+        b.observe(rest_ms, s._blank(rest_ms))
+        self.screen()
+
+        spikes = {c: int(round(float(count[group == k].sum()))) for k, c in enumerate(letters)}
+        best = max(spikes, key=spikes.get)
+        return {"letter": letter, "seen": best if spikes[best] > 0 else "", "spikes": spikes}
+
     def health(self, ms: float) -> dict:
         """Частоты ядер и слоёв колонок в покое против записей у бодрствующих."""
 
@@ -557,6 +592,49 @@ async def praise(body: Praise) -> dict:
 async def lesson(body: Lesson) -> dict:
     text = await _run(lambda: host.lesson(body.kind, body.n, body.text, body.first, body.last), f"урок: {body.kind}")
     return {"text": text}
+
+
+class Letter(BaseModel):
+    letter: str
+
+
+@app.post("/api/letter")
+async def show_letter(body: Letter) -> dict:
+    return await _run(lambda: host.show_letter(body.letter.strip().lower()), "смотрит на букву")
+
+
+class Phrase(BaseModel):
+    phrase: str
+
+
+# Сценарий «Запомни и повтори» — отдельный блок E1 (tools/e1_recall.py:
+# счётчик позиции, ячейки слов, ворота BG, реле MD), ещё НЕ в мозге
+# (перенос — шаг 4 docs/CHAT_PLAN.md). Считается на CPU в своём потоке,
+# мозг в вебе живёт дальше; одна фраза ~5 мин (15 с времени блока, шаг 0.1 мс).
+_e1_lock = threading.Lock()
+
+
+def _e1_recall(phrase: str) -> dict:
+    import sys
+    tools = str(Path(__file__).resolve().parent.parent / "tools")
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    import e1_recall
+
+    if not _e1_lock.acquire(blocking=False):
+        raise ValueError("блок E1 уже повторяет другую фразу")
+    try:
+        return e1_recall.main({"phrase": phrase, "threads": "2"})
+    finally:
+        _e1_lock.release()
+
+
+@app.post("/api/repeat")
+async def repeat(body: Phrase) -> dict:
+    try:
+        return await asyncio.to_thread(_e1_recall, body.phrase.strip().upper())
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
 
 
 @app.post("/api/stop")

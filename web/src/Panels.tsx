@@ -155,6 +155,59 @@ function Lessons({ actions }: { actions: MenuActions }) {
   );
 }
 
+// Сценарии: что мозг уже умеет показать (docs/CHAT_PLAN.md, шаг 0).
+const LETTERS = "абвгдежзик";
+
+function Scenarios({ actions }: { actions: MenuActions }) {
+  const [letter, setLetter] = useState("б");
+  const [phrase, setPhrase] = useState("ВГА");
+  const [repeating, setRepeating] = useState(false);
+  const phraseOk = /^[АБВГД]{1,3}$/.test(phrase);
+  const repeat = () => {
+    setRepeating(true);
+    actions.info(`запомни и повтори «${phrase}» — блок E1, ещё не в мозге; считается ~5 мин, мозг живёт дальше`);
+    api
+      .repeat(phrase)
+      .then((r) => {
+        const outs = r.said[0].map((w) => w.replace(/·+$/, "") || "(молчит)");
+        const right = outs.every((w) => w === r.phrases[0]);
+        actions.info(`блок E1: «${r.phrases[0]}» → ${outs.map((w) => `«${w}»`).join(", затем ")}${right ? " — верно оба раза" : " — ошибка"}`
+          + (r.leak ? `; во время записи ответ «говорил» в ${r.leak}/${r.leak_windows} окнах (дефект, шаг 4)` : ""));
+      })
+      .catch((e) => actions.info(`Ошибка: ${(e as Error).message}`))
+      .finally(() => setRepeating(false));
+  };
+  const show = () => {
+    actions.info(`покажи букву «${letter}»: 350 мс по центру ямки, взгляд держит учитель`);
+    api
+      .showLetter(letter)
+      .then((r) => {
+        const top = Object.entries(r.spikes).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([c, n]) => `${c} ${n}`).join(", ");
+        const verdict = r.seen ? `вижу «${r.seen}»${r.seen === r.letter ? " — верно" : " — ошибка"}` : "не вижу (зона букв молчит)";
+        actions.info(`${verdict}; спайков у групп: ${top}`);
+      })
+      .catch((e) => actions.info(`Ошибка: ${(e as Error).message}`));
+  };
+  return (
+    <div className="menu-group">
+      <h4>Сценарии</h4>
+      <div className="buttons">
+        <select value={letter} onChange={(e) => setLetter(e.target.value)} title="буквы, которым учили зону букв рабочего мозга">
+          {[...LETTERS].map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <button type="button" onClick={show}
+                title="буква на экране по центру ямки; ответ — какая из 10 групп клеток зоны букв (по 20 у ямки) выстрелила больше. Только мозг из пресета «working»: у ямки верно ~0.6, случай 0.1">Покажи букву</button>
+      </div>
+      <div className="buttons">
+        <input value={phrase} maxLength={3} size={4} onChange={(e) => setPhrase(e.target.value.toUpperCase())}
+               title="1–3 слова-метки из А Б В Г Д" />
+        <button type="button" disabled={!phraseOk || repeating} onClick={repeat}
+                title="отдельный блок E1 (счётчик позиции, ячейки слов, ворота базальных ганглиев, реле таламуса), ещё НЕ в мозге: запоминает фразу по словам, по «повтори» выводит её дважды. На 3 зёрнах верно 22/24. Считается ~5 мин на процессоре">{repeating ? "повторяет…" : "Запомни и повтори (блок)"}</button>
+      </div>
+    </div>
+  );
+}
+
 function SummaryView({ data }: { data: Summary }) {
   return (
     <>
@@ -261,6 +314,7 @@ export function Menu({ status, actions }: { status: Status; actions: MenuActions
           <button type="button" onClick={() => api.stop().then(() => actions.info("остановлено")).catch(fail)} title="прервать ответ или урок (жизнь в тишине выключается отдельно, флажком ниже)">Стоп</button>
         </div>
       </div>
+      <Scenarios actions={actions} />
       <Lessons actions={actions} />
       <div className="menu-group">
         <h4>Наблюдение</h4>

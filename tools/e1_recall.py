@@ -19,7 +19,7 @@ tools/e1_phrase.py; вывод:
 пусты; удерживающего «стопа» ещё нет); вывод дважды подряд без повторной
 записи. Испытания: длины фразы 2 и 3 вперемешку; 0 — «ААА», 1 — «АБВ».
 
-    PYTHONPATH=tools python tools/e1_recall.py [trials=8] [seed=1] [g_ans=8] [reads=4] [repeats=2] [trace=0] [reset=burst|inhib] [reset_adv=burst|inhib]
+    PYTHONPATH=tools python tools/e1_recall.py [phrase=АБВ] [trials=8] [seed=1] [g_ans=8] [reads=4] [repeats=2] [trace=0] [reset=inhib|burst] [reset_adv=burst|inhib]
 
 trace=1 — диагностика без изменений сети (тот же поток случайных чисел):
 временные ряды по цепочке, бины 50 мс, среднее по испытаниям, позиции 1 и 2,
@@ -40,6 +40,7 @@ from e1_slot import C_EXT, C_SEL, DT, P, R_RESET, R_SEL, Slot
 
 T = 1200.0
 NANS = 40
+WORDS = "АБВГД"                                    # P слов блока — метки, не настоящие слова
 
 
 class Trace:
@@ -109,7 +110,7 @@ def trace_report(tr: Trace, TB: float, periods: list, rec_starts: list) -> None:
             print(f"  {b * TB - zero:+5.0f} " + " ".join(f"{float(x[b, j, k]):9.1f}" for j in idx))
 
 
-def main(opts: dict) -> None:
+def main(opts: dict) -> dict:
     dev = opts.get("device", "cpu")
     torch.set_num_threads(int(opts.get("threads", 2)))
     torch.manual_seed(int(opts.get("seed", 1)))
@@ -123,6 +124,16 @@ def main(opts: dict) -> None:
     phrase[1] = torch.arange(LMAX)
     length = torch.where(torch.arange(B) % 2 == 0, LMAX, LMAX - 1)
     length[0] = length[1] = LMAX
+    if opts.get("phrase"):
+        # Одна заданная фраза (сценарий веба «Запомни и повтори»): слова А–Д, 1–3 слова.
+        text = opts["phrase"].upper()
+        if not 1 <= len(text) <= LMAX or any(c not in WORDS for c in text):
+            raise ValueError(f"фраза — 1–{LMAX} слова из {' '.join(WORDS)}")
+        given = [WORDS.index(c) for c in text]
+        B = 1
+        phrase = torch.zeros(1, LMAX, dtype=torch.long)
+        phrase[0, : len(given)] = torch.tensor(given)
+        length = torch.tensor([len(given)])
     cur, nxt = Slot(B, dev), Slot(B, dev)
     g1, g2 = Relay(B, dev, 16.0, 1.0, 4.0), Relay(B, dev, 16.0, 1.0, 4.0)
     src_cur, src_nxt = sources(cur, NSRC), sources(nxt, NSRC)
@@ -134,11 +145,13 @@ def main(opts: dict) -> None:
     # Форма сброса ячеек счётчика (шаг 5в, tools/e1_counter_reset.py): burst — залп авторов
     # Brunel–Wang на все E и I; inhib — тот же залп только на тормозные (как сброс nengo
     # InputGatedMemory — торможение клеток памяти): без вспышки всех позиций и хвоста NMDA.
-    reset_mode = opts.get("reset", "burst")
+    # По умолчанию (шаг 5в, 3 зерна): «повтори» — торможение, сдвиги — залп: вывод 22/24,
+    # запись как прежде (при сдвигах форма не менялась); inhib везде — запись 20/24.
+    reset_mode = opts.get("reset", "inhib")
     reset_e = None if reset_mode == "inhib" else torch.full((B, cur.ne), C_EXT * R_RESET * 1e-3)
-    # Сброс при сдвигах счётчика — своя форма (reset_adv, по умолчанию как reset): у записи
+    # Сброс при сдвигах счётчика — своя форма (reset_adv, по умолчанию залп): у записи
     # фразы тормозной сброс при сдвигах даёт 20/24 против 23/24 (шаг 5в) — разделяем.
-    adv_mode = opts.get("reset_adv", reset_mode)
+    adv_mode = opts.get("reset_adv", "burst")
     reset_e_adv = None if adv_mode == "inhib" else torch.full((B, cur.ne), C_EXT * R_RESET * 1e-3)
     reset_i = torch.full((B, cur.ni), C_EXT * R_RESET * 1e-3)
     start = (cur.lab[None, :] == 0).float().expand(B, cur.ne) * (C_SEL * R_SEL * 1e-3)
@@ -249,6 +262,7 @@ def main(opts: dict) -> None:
             line.append(f"поз. {k + 1}: верно {int((good & (k < length)).sum())}/{int((k < length).sum())},"
                         f" молчит после конца {int((good & (k >= length)).sum())}/{int((k >= length).sum())}")
         print(f"  вывод {r + 1}: " + "; ".join(line) + f" → фраза целиком {int(ok.sum())}/{B}")
+    said = []
     for b in range(B):
         outs = []
         for r in range(repeats):
@@ -257,7 +271,10 @@ def main(opts: dict) -> None:
                 a = ans_read[r, k, b]
                 w += "АБВГД"[int(a.argmax())] if (a > th).sum() == 1 else ("·" if (a > th).sum() == 0 else "?")
             outs.append(w)
+        said.append(outs)
         print(f"    {''.join('АБВГД'[x] for x in phrase[b, :length[b]].tolist()):3s} → " + " | ".join(outs))
+    return {"phrases": ["".join(WORDS[x] for x in phrase[b, :length[b]].tolist()) for b in range(B)],
+            "said": said, "leak": int(leak.sum()), "leak_windows": leak.numel()}
 
 
 if __name__ == "__main__":

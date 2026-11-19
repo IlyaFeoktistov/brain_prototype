@@ -50,6 +50,10 @@ class Preset:
     trn_scale: float = 1.0                      # множитель весов TRN → LGN
     us_paths: tuple[str, ...] = ()              # пути с учёбой с учителем (cfg.us_paths)
     weights: dict[str, str] = field(default_factory=dict)   # путь → файл весов ~/.brain/<шаблон с {seed}>
+    # Буквы, которым учили зону букв (tools/letters_us.py): группы по 20 клеток
+    # L4 E у ямки, ранг по расстоянию до ямки % числа букв — та же разметка, что
+    # при учёбе; пусто — зона букв не учена.
+    letters: str = ""
 
     def config(self, seed: int = 1) -> BrainConfig:
         cfg = BrainConfig()
@@ -111,6 +115,7 @@ PRESETS: dict[str, Preset] = {
             "working", "рабочий мозг: подогнанный зрительный путь, учит буквы",
             fit="lgn-a", homeo="lgn-d-pop-tcind", relay_v_t_mv=-59.0, trn_scale=0.1,
             us_paths=(LETTERS_PATH,), weights={LETTERS_PATH: "letters_us_phi60_s{seed}.pt"},
+            letters="абвгдежзик",
         ),
     )
 }

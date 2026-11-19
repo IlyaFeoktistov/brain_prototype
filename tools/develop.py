@@ -15,7 +15,8 @@ organs — какие органы строятся (cfg.organs); organs=words �
 без обучения и без гомеостаза: по популяциям частота против цели (±20% —
 критерий пресета ROADMAP «подберётся ли фон сам»), медиана и 10–90% клеток,
 доли молчащих и > 3× цели, у предела гомеостаза; стабильность — первая
-половина против второй.
+половина против второй. cut=путь[,путь] — диагностическая перерезка: веса
+путей, чьё имя начинается так, обнуляются после сборки (не механизм).
 
 scope=population — общий шаг популяции (cfg.homeostasis_scope): разброс
 клеток остаётся от проводки; в отчёте — распределение частот клеток зрительных
@@ -212,6 +213,9 @@ def main(opts: dict) -> None:
     for p in b.projections:
         if p.name == "trn -> lgn":
             p.weight.mul_(float(opts.get("trn_scale", 1.0)))
+        if any(p.name.startswith(c.strip()) for c in opts.get("cut", "").split(",") if c.strip()):
+            p.weight.zero_()
+            print(f"перерезан путь {p.name}", flush=True)
     b.run(2500.0, s._blank(2500.0))
     win, every = float(opts.get("win", 1000)), int(opts.get("every", 10))
     windows = int(float(opts.get("seconds", 60)) * 1000 / win)

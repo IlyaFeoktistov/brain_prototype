@@ -424,6 +424,7 @@ class SpikingBrain:
         self._init_projections()
         self._init_background()
         self._init_state()
+        self._init_circuits()
 
         self.sensory_spikes = torch.zeros(
             self.n_receptors, device=self.device
@@ -2882,6 +2883,66 @@ class SpikingBrain:
             self.bg_fast_decay = math.exp(-cfg.dt_ms / cfg.background_fast_ms)
             self.bg_slow_decay = math.exp(-cfg.dt_ms / cfg.background_slow_ms)
 
+    def _init_circuits(self) -> None:
+        """
+        Зоны с сетью по готовой модели (AreaSpec.circuit, brain/circuit.py):
+        клетки зоны живут по своей модели (Izhikevich, проводимости по связи,
+        фон авторов). Мозг даёт им свой вход (пути, вещества) и берёт их
+        спайки и v; свой фон, адаптация и сдвиг возбудимости мозга этим
+        клеткам не идут.
+        """
+
+        from brain import circuit
+
+        self.circuits: dict[str, circuit.TypedCircuit] = {}
+        compact = _kernels.compact_events is not None and self.device.type == "cuda"
+
+        for spec in self.cfg.areas:
+            if not spec.circuit:
+                continue
+
+            area = self.areas[spec.name]
+            self._reseed(f"circuit:{spec.name}")
+            c = circuit.TypedCircuit(circuit.load(spec.circuit), area, self.cfg.dt_ms, self.device, self.generator,
+                                     compact, capacity=self.cfg.event_capacity)
+            c.set_input_gain(self.tau_m, self.tau_syn)
+            c.set_rest_input(self._rest_input(area))
+            cells = area.cells
+            self.noise_gain[cells] = 0.0
+            self.adapt_b[cells] = 0.0
+            self.v[cells] = c.v
+            self.circuits[spec.name] = c
+
+    def _rest_input(self, area: Area) -> torch.Tensor:
+        """
+        Вход мозга клеткам зоны (мВ, как inputs в _step) при частотах покоя
+        источников (anatomy.RATES_HZ): построенные синапсы — k × вес × частота
+        × τm, недостающие — среднее поле при той же частоте. Возбуждение — при
+        множителе движущей силы 1 (как у измеренного ВПСП).
+        """
+
+        from brain import anatomy
+
+        rest = torch.zeros(self.n_slots, device=self.device)
+        cells = area.cells
+        tau = self.tau_m
+
+        for p in self.projections:
+            if p.source != "net" or isinstance(p, ProceduralProjection) or p.post.start < cells.start \
+                    or p.post.stop > cells.stop:
+                continue
+
+            src = next(a for a in self.areas.values() if a.cells.start <= int(p.pre.flatten()[0]) < a.cells.stop)
+            hz = anatomy.RATES_HZ.get(src.name, 1.0)
+            w = p.weight.float().clamp(min=0.0).sum(1)
+            rest[p.post.slice] += w * hz / 1000.0 * tau[p.post.slice]
+
+        for post, _, coeff, rate, _, _ in self.mean_field:
+            if cells.start <= post.start < cells.stop and coeff > 0:
+                rest[post.slice] += coeff * rate
+
+        return rest
+
     def _init_state(self) -> None:
         cfg = self.cfg
         z = lambda: torch.zeros(self.n_slots, device=self.device)
@@ -3409,11 +3470,9 @@ class SpikingBrain:
         # T-ток (IFB): ток в мВ покоя = g_T / g_L · h · (E_T − V) при V ≥ V_h.
         t_open = self.t_mask & (self.v >= cfg.t_vh_mv)
         t_current = torch.where(t_open, cfg.t_gt_ratio * self.t_h * (cfg.t_et_mv - self.v), 0.0)
-        dv = (
-            cfg.v_rest - self.v + exp_term - self.adapt
-            + synaptic + self.bias + modulated + self.clock_mv
-            + self.kick_current * (self.kick_left > 0) + t_current
-        ) * self.decay_m
+        # Вход клетки от мозга (пути, вещества, часы, толчок, T-ток), мВ.
+        inputs = synaptic + modulated + self.clock_mv + self.kick_current * (self.kick_left > 0) + t_current
+        dv = (cfg.v_rest - self.v + exp_term - self.adapt + inputs + self.bias) * self.decay_m
         # Ворота h: ниже V_h восстанавливаются (τ+) до равновесия h∞(V), выше —
         # закрываются (τ−).
         h_inf = torch.sigmoid((cfg.t_h_half_mv - self.v) / cfg.t_h_slope_mv)
@@ -3427,6 +3486,13 @@ class SpikingBrain:
         self.refractory.sub_(cfg.dt_ms)
 
         fired = v >= self.v_peak
+
+        for name, c in self.circuits.items():
+            # Клетки зоны с сетью по готовой модели (_init_circuits).
+            cells = self.areas[name].cells
+            c_v, c_fired = c.step(inputs[cells], self.spikes[cells] > 0)
+            v[cells] = c_v
+            fired[cells] = c_fired
 
         if self.clamp_on:
             fired = torch.where(self.clamp_mask, self.clamp_now, fired)
@@ -3457,6 +3523,10 @@ class SpikingBrain:
         self.acetylcholine.copy_(occupancy[self.ach_chemistry : self.ach_chemistry + 1])
 
         self.v.copy_(torch.where(reset, cfg.v_reset, v))
+
+        for name, c in self.circuits.items():
+            # Сброс — по модели клетки сети (v = c), уже в c.v.
+            self.v[self.areas[name].cells] = c.v
         self.refractory.copy_(torch.where(reset, cfg.refractory_ms, self.refractory))
         self.adapt.mul_(self.decay_adapt).add_(self.adapt_b * self.spikes)
         # Ресурс путей ядер с депрессией восстанавливается к 1, спайк тратит
@@ -3809,7 +3879,7 @@ class SpikingBrain:
         отсчёт заново.
         """
 
-        lost = float(self.dropped)
+        lost = float(self.dropped) + sum(float(c.dropped) for c in self.circuits.values())
         seen = getattr(self, "_dropped_seen", 0.0)
 
         if lost < seen:
@@ -4049,10 +4119,19 @@ class SpikingBrain:
 
     def _snapshot(self) -> dict:
         # Следов блока Diehl & Cook (dc_*) нет у мозга без cfg.dc_paths.
-        return {name: getattr(self, name).clone() for name in self._DYNAMIC if hasattr(self, name)}
+        out = {name: getattr(self, name).clone() for name in self._DYNAMIC if hasattr(self, name)}
+
+        for name, c in getattr(self, "circuits", {}).items():
+            out[f"circuit:{name}"] = c.state_dict()
+
+        return out
 
     def _restore(self, saved: dict) -> None:
         for name, value in saved.items():
+            if name.startswith("circuit:"):
+                self.circuits[name.split(":", 1)[1]].load_state_dict(value)
+                continue
+
             target = getattr(self, name)
 
             target.copy_(value)
@@ -4106,6 +4185,10 @@ class SpikingBrain:
             by_layer = {layer: dict(zip(KINDS, v)) for layer, *v in cfg.column_target_hz}
 
             for name, area in self.areas.items():
+                if name in self.circuits:
+                    # Своя модель клетки, без сдвига фона мозга.
+                    continue
+
                 if area.layers is None:
                     if name in anatomy.RATES_HZ and name not in skip:
                         target[area.E.slice] = anatomy.RATES_HZ[name]

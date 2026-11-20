@@ -8,7 +8,7 @@ homeostasis_update): мозг живёт с пустым экраном окна
 
     PYTHONPATH=. python tools/develop.py [seconds=60] [win=1000] [seed=42] [fit=lgn-a]
         [relay_v_t_mv=-59] [trn_scale=0.1] [out=lgn-d-pop-s1] [every=10] [scope=population|cell] [built_shares=0|1] [map_ee_sheet=зоны]
-        [coincidence=0|1] [dend_count=15] [dend_window=5] [probe=1] [organs=eye,ear,hand|words] [check=10]
+        [coincidence=0|1] [dend_count=15] [dend_window=5] [probe=1] [organs=eye,ear,hand|words] [check=10] [overflow=error|warn]
 
 organs — какие органы строятся (cfg.organs); organs=words — словесный мозг
 (CHAT_PLAN шаг 3), тишина — порт слов молчит. check=N — после адаптации N с
@@ -58,6 +58,7 @@ def report(b, rates, label: str) -> None:
         edge = float((shift.abs() >= lim - 1e-3).float().mean())
         print(f"   {name:22s} {float(rates[sl].mean()):6.2f} / {float(t.mean()):5.2f}   {float(shift.mean()):+6.2f}"
               + (f"   {edge:.0%}" if edge > 0 else ""), flush=True)
+    circuits(b, rates)
     for name in ("visual.L23E", "visual.L4E", "letters.L4E", "letters.L23E"):
         sl = dict(populations(b)).get(name)
         if sl is None:
@@ -124,6 +125,25 @@ class Silence:
         return self.port.hear(None, ms)
 
 
+def circuits(b, rates, r1=None, r2=None) -> None:
+    """Зоны с сетью по готовой модели (brain/circuit.py): частоты по типам против модели авторов."""
+
+    from tools.ca3_kopsick import PAPER_HZ
+
+    for name, c in b.circuits.items():
+        cells = b.areas[name].cells
+        print(f"   сеть {name} по типам — Гц (модель авторов, покой); 1-я → 2-я половина:", flush=True)
+        for i, g in enumerate(c.names):
+            mask = c.type_of == i
+            x = rates[cells][mask].float()
+            ref = PAPER_HZ.get(g)
+            halves = f"   {float(r1[cells][mask].mean()):6.2f} → {float(r2[cells][mask].mean()):6.2f}" if r1 is not None else ""
+            print(f"      {g:18s} {float(x.mean()):6.2f} ± {float(x.std()):5.2f}"
+                  + (f"  ({ref[0]:.2f} ± {ref[1]:.2f})" if ref else "") + halves, flush=True)
+        if float(c.dropped):
+            print(f"      потеряно спайков/событий сети: {float(c.dropped):.0f}", flush=True)
+
+
 def check(b, s, seconds: float) -> None:
     """Критерии пресета (ROADMAP): N с без обучения и без гомеостаза."""
 
@@ -154,6 +174,7 @@ def check(b, s, seconds: float) -> None:
               f"{float(q[0]):5.2f}–{float(q[2]):6.2f}  молчат {float((x == 0).float().mean()):4.0%}  "
               f"> 3× {float((x > 3 * target).float().mean()):4.0%}  предел {float(edge.mean()):4.0%}  "
               f"{float(r1[sl].mean()):6.2f} → {float(r2[sl].mean()):6.2f}", flush=True)
+    circuits(b, rates, r1, r2)
     edge_all = torch.cat(edge_all)
     print(f"итог: в ±20% от цели {ok} из {ok + bad} популяций; у предела гомеостаза {float(edge_all.mean()):.1%} клеток "
           f"(критерий ≤ 5%)", flush=True)
@@ -201,6 +222,9 @@ def main(opts: dict) -> None:
         cfg.dendrite_coincidence = opts["coincidence"] != "0"
         cfg.dendrite_count_threshold = float(opts.get("dend_count", cfg.dendrite_count_threshold))
         cfg.dendrite_window_ms = float(opts.get("dend_window", cfg.dendrite_window_ms))
+    if opts.get("overflow"):
+        # Потеря событий шага: error — стоп, warn — печатать (cfg.event_overflow).
+        cfg.event_overflow = opts["overflow"]
     if opts.get("organs"):
         cfg.organs = tuple(x for x in opts["organs"].split(",") if x)
     if opts.get("fit"):

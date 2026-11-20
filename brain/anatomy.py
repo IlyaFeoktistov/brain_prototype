@@ -112,7 +112,9 @@ NUCLEI = {
     # гранулярных [сверить], мшистые волокна бьют в основном по тормозным
     # (Acsády et al. 1998) — разреженность кода от этого, а не от «целевой
     # активности».
-    **{name: (0.10, (2000, 1.0, 200, -1.5, 20, -1.0, 15.0)) for name in ("ca3", "ca1")},
+    # CA3 — сеть Kopsick et al. 2024 с типами клеток (CA3_CIRCUIT), местный
+    # контур — внутри неё.
+    "ca1": (0.10, (2000, 1.0, 200, -1.5, 20, -1.0, 15.0)),
     "entorhinal": (0.20, (30, 1.0, 30, -1.5, 10, -1.0, 15.0)),
     # Слой V: сильное возбуждение, слабое торможение — обратно слою II
     # (Jones & Woodhall 2005, обзор, https://pmc.ncbi.nlm.nih.gov/articles/PMC1665486);
@@ -148,6 +150,18 @@ NUCLEI = {
     # 20 × −1 мВ торможения [сверить число и ВПСП].
     "ic": (0.25, (20, 1.0, 20, -1.0, 10, -1.0, 10.0, 4, 0.5)),
 }
+
+
+# Сеть CA3 (brain/circuit.py) — файл в data/.
+CA3_CIRCUIT = "hippocampus/ca3_kopsick.json"
+
+
+def _circuit_inhibitory(name: str) -> float:
+    """Доля тормозных клеток сети авторов (у ядра — местные тормозные)."""
+
+    from brain import circuit
+
+    return circuit.inhibitory_share(circuit.load(name))
 
 
 def _nucleus(name, title, share=0.0, **kw) -> AreaSpec:
@@ -194,13 +208,18 @@ def areas(cfg) -> list[AreaSpec]:
         # ---- гиппокамп (клеток — HIPPOCAMPUS_CELLS) ----
         _nucleus("entorhinal", "энторинальная кора (вход гиппокампа)", cells=HIPPOCAMPUS_CELLS["entorhinal"]),
         _nucleus("dentate", "зубчатая извилина", cells=HIPPOCAMPUS_CELLS["dentate"]),
-        # Коллатерали CA3 — STDP симметричное: МЫШЬ, пары CA3–CA3 (Mishra et
-        # al. 2016, https://doi.org/10.1038/ncomms11552). У человека
-        # (гиппокамп, поле не указано) пост раньше пре усиливает до −80 мс, а
-        # от −80 до −130 мс ослабляет (Testa-Silva et al. 2010,
-        # https://doi.org/10.3389/fnsyn.2010.00012) — наше окно с этим не
-        # совпадает [долг: окно по данным человека].
-        _nucleus("ca3", "CA3 гиппокампа", cells=HIPPOCAMPUS_CELLS["ca3"], ee_symmetric=True),
+        # CA3 — сеть Kopsick et al. 2024 (МЫШЬ, Hippocampome.org; код авторов,
+        # https://doi.org/10.1007/s10827-024-00881-3): 8 типов клеток, 51
+        # связь, клетки Izhikevich, проводимости и STP по связи, фон по типу
+        # (brain/circuit.py, docs/CA3_TRANSFER.md). Прежний CA3 «E + 10% I»
+        # был двустабилен (молчал или горел 17 Гц, CHAT_PLAN шаг 3); без
+        # специфичности типов сеть CA3 неустойчива (Kopsick et al. 2023).
+        # Пирамидных — HIPPOCAMPUS_CELLS, тормозных — по долям авторов.
+        # Коллатерали PC → PC — внутри сети, пока без STDP [долг: STDP авторов
+        # (setESTDP) — шаг 5; у человека окно Testa-Silva et al. 2010,
+        # https://doi.org/10.3389/fnsyn.2010.00012].
+        AreaSpec("ca3", "CA3 гиппокампа", cells=HIPPOCAMPUS_CELLS["ca3"], circuit=CA3_CIRCUIT,
+                 local_inhibitory=_circuit_inhibitory(CA3_CIRCUIT)),
         _nucleus("ca1", "CA1 гиппокампа", cells=HIPPOCAMPUS_CELLS["ca1"]),
         # ---- зрение и рука (колонки) ----
         # V1 — простые клетки L4 (вход сетчатки) и сложные L2/3 (Hubel &
@@ -517,13 +536,7 @@ def pathways(cfg) -> list[PathwaySpec]:
         _path("ca3", "ca1", 200, 0.13, k_data=20000, plastic=True, modulator="acetylcholine", ach_suppressed=True,
               k_data_inhibitory=13800, psp_inhibitory_mv=0.13),
         _path("entorhinal", "ca1", 200, 0.1, k_data=1700, k_data_inhibitory=1550, psp_inhibitory_mv=0.1),
-        # Рекуррентные коллатерали CA3: ~12 тыс. синапсов (Amaral 1990) —
-        # ~6 тыс. связей по ~2 синапса, связь ~0.6 мВ (Guzman et al. 2016;
-        # Miles & Wong 1986 — до ~1), STDP симметричное (Mishra et al. 2016 —
-        # AreaSpec.ee_symmetric), пишутся при ацетилхолине. Прежние 200 по
-        # 0–0.05 / потолок 3 подбирались стендом (связь зоны выключена в apply).
-        _path("ca3", "ca3", 200, 0.6, k_data=6000, plastic=True, modulator="acetylcholine",
-              ach_suppressed=True, name="ca3: коллатерали"),
+        # Рекуррентные коллатерали CA3 — внутри сети CA3 (AreaSpec.circuit).
     ]
     # ---- миндалина (LeDoux 2000; Paré et al. 2004) ----
     # Базолатеральная → центральная; центральная (ГАМК) → LC, VTA, Мейнерт.

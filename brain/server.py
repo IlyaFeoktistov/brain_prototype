@@ -69,6 +69,32 @@ SYSTEMS = (
 )
 
 
+class WordsLife:
+    """
+    Жизнь мозга без глаза (cfg.organs без "eye", словесный мозг): окно за
+    окном мозг слушает тишину порта слов (brain/body.Words). Экрана мира нет —
+    поля экрана пустые, чтобы веб показывал пустую строку.
+    """
+
+    def __init__(self, mind):
+        from brain.body import Words
+
+        self.mind = mind
+        self.brain = mind.brain
+        self.port = Words.of(self.brain) if "words" in mind.cfg.organs else None
+        self.line, self.gaze, self.pointer = "", 0.0, None
+        self.halt = False
+
+    def live(self, ms: float) -> str:
+        sensory = self.port.hear(None, ms) if self.port is not None else None
+        self.brain.observe(ms, sensory)
+        return ""
+
+    def reply(self, text: str) -> str:
+        return ("Чат словами в вебе ещё не подключён (порт слов есть — CHAT_PLAN шаги 4–6); "
+                "мозг живёт, его клетки видны на карте и в срезах.")
+
+
 class BrainHost:
     """Мозг в своём потоке и рассылка событий всем вкладкам."""
 
@@ -304,11 +330,18 @@ class BrainHost:
             # (BrainConfig.event_overflow).
             self.mind.cfg.event_overflow = overflow
             self.mind.brain.cfg.event_overflow = overflow
-        self.session = Session(self.mind)
-        self.session.on_typed = self._typed
-        self.session.on_saccade = self._saccade
-        self.sight = Sight(self.session)
-        self.teacher = Teacher(self.session, report=self.info)
+        if "eye" not in self.mind.cfg.organs:
+            # Мозг без глаза (словесный): живёт, слушая тишину порта слов;
+            # экрана мира, руки и уроков у него нет.
+            self.session = WordsLife(self.mind)
+            self.sight = None
+            self.teacher = None
+        else:
+            self.session = Session(self.mind)
+            self.session.on_typed = self._typed
+            self.session.on_saccade = self._saccade
+            self.sight = Sight(self.session)
+            self.teacher = Teacher(self.session, report=self.info)
         self.watch()
         self.emit(self.anatomy())
         self.screen()
@@ -379,6 +412,8 @@ class BrainHost:
 
         self.need()
         s = self.session
+        if isinstance(s, WordsLife):
+            return s.reply(text)
         s.line, s.gaze = text + " ", 0.0
         self.screen()
         answer = s.reply(text)
@@ -387,6 +422,8 @@ class BrainHost:
 
     def lesson(self, kind: str, n: int, text: str, first: int, last: int) -> str:
         self.need()
+        if self.teacher is None:
+            raise ValueError("уроки — у мозга с глазом и рукой")
         t, s = self.teacher, self.session
         s.halt = False
 
@@ -429,6 +466,8 @@ class BrainHost:
         (cfg.teacher_hz), с правилом учёбы пути V1 → буквы. Возвращает спайки cells."""
 
         b, s = self.mind.brain, self.session
+        if isinstance(s, WordsLife):
+            raise ValueError("буквы — у мозга с глазом")
         show_ms, rest_ms = 350.0, 150.0
         s.line, s.pointer = letter, None
         s.gaze = s.screen.width(letter) / 2
@@ -510,7 +549,7 @@ class BrainHost:
         return self.mind.cfg.save_path
 
     def new(self, name: str, neurons: int, preset: str | None = None, seed: int = 1,
-            chosen_flags: dict[str, bool] | None = None) -> str:
+            chosen_flags: dict[str, bool] | None = None, organs: list[str] | None = None) -> str:
         """Новый мозг: голый заданного размера или по пресету (brain/presets.py, размер — пресета);
         зерно и флаги (brain/flags.py) — в конфиг, он сохраняется с мозгом."""
 
@@ -524,7 +563,16 @@ class BrainHost:
         if self.mind is not None and self.mind.cfg.autosave:
             self.mind.save()
 
+        if organs is not None:
+            unknown = set(organs) - set(anatomy.ORGAN_AREAS)
+            if unknown or not organs:
+                raise ValueError(f"органы: {', '.join(sorted(unknown)) or 'ни одного не выбрано'}")
+            if chosen and "eye" not in organs:
+                raise ValueError(f"пресет «{chosen.name}» подогнан под зрительный путь — нужен глаз")
+
         cfg = chosen.config(seed) if chosen else BrainConfig()
+        if organs is not None:
+            cfg.organs = tuple(o for o in anatomy.ORGAN_AREAS if o in organs)
         cfg.seed = int(seed)
         cfg.preset = chosen.name if chosen else ""
         flags.configure(cfg, chosen_flags)
@@ -590,6 +638,8 @@ class New(BaseModel):
     preset: str | None = None
     seed: int = 1
     flags: dict[str, bool] = {}
+    # Органы мозга (BrainConfig.organs): None — как в сборке по умолчанию.
+    organs: list[str] | None = None
 
 
 class Switch(BaseModel):
@@ -775,7 +825,8 @@ async def new(body: New) -> dict:
     if not name:
         raise HTTPException(400, "нужно имя")
 
-    return {"brain": await _run(lambda: host.new(name, body.neurons, body.preset, body.seed, body.flags), "новый мозг")}
+    return {"brain": await _run(lambda: host.new(name, body.neurons, body.preset, body.seed, body.flags, body.organs),
+                                "новый мозг")}
 
 
 @app.post("/api/save")

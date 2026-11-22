@@ -356,6 +356,14 @@ export function Menu({ status, actions }: { status: Status; actions: MenuActions
 
 // ---- выбор мозга ----
 
+// Органы мозга (brain/anatomy.ORGAN_AREAS): что строится вместе с центральными зонами.
+const ORGANS = [
+  { key: "eye", title: "глаз (сетчатка, LGN, V1, буквы, двухолмие)", hint: "зрение: читает реплику с экрана мира" },
+  { key: "ear", title: "ухо (слуховой ствол, MGN, A1)", hint: "слух" },
+  { key: "hand", title: "рука (карта руки, зона Экснера, мозжечок)", hint: "печатает ответ на клавиатуре мира" },
+  { key: "words", title: "порт слов (слово включает популяцию в смысловой коре)", hint: "вход и выход чата словами, без глаза и руки" },
+];
+
 export function Chooser({ brains, onClose, info }: { brains: Brains; onClose?: () => void; info: (text: string) => void }) {
   const [name, setName] = useState("");
   const [neurons, setNeurons] = useState(brains.minNeurons);
@@ -365,6 +373,10 @@ export function Chooser({ brains, onClose, info }: { brains: Brains; onClose?: (
   const [busy, setBusy] = useState(false);
   const [seed, setSeed] = useState(1);
   const [chosen, setChosen] = useState<Record<string, boolean>>({});
+  // Что включать в мозг (органы, BrainConfig.organs): минимум для чата — порт
+  // слов; весь мозг — глаз, ухо, рука и порт слов.
+  const [organs, setOrgans] = useState<Record<string, boolean>>({ eye: true, ear: true, hand: true, words: true });
+  const chosenOrgans = ORGANS.filter((o) => organs[o.key]).map((o) => o.key);
   const small = !preset && !!chosen.small_columns;
   const flagsShown = brains.flags.filter((f) => !(preset && f.key === "small_columns"));
 
@@ -402,7 +414,7 @@ export function Chooser({ brains, onClose, info }: { brains: Brains; onClose?: (
         <form onSubmit={(e) => {
           e.preventDefault();
           const fl = Object.fromEntries(Object.entries(chosen).filter(([k, v]) => v && !(preset && k === "small_columns")));
-          act(api.newBrain(name.trim(), neurons, preset || null, seed, fl), `создаю ${name}`);
+          act(api.newBrain(name.trim(), neurons, preset || null, seed, fl, chosenOrgans), `создаю ${name}`);
         }}>
           <label>имя <input value={name} onChange={(e) => setName(e.target.value)} placeholder="например, первый" /></label>
           <label>сборка <select value={preset} onChange={(e) => {
@@ -429,13 +441,30 @@ export function Chooser({ brains, onClose, info }: { brains: Brains; onClose?: (
             колонках. Колонка не меньше {small ? "1 тыс." : "20 тыс."} клеток, минимум — {(small ? brains.minNeuronsSmall : brains.minNeurons).toLocaleString("ru")}.
             {preview && <> Получится <strong>{preview.total.toLocaleString("ru")}</strong> нейронов.</>}
           </p>}
+          <fieldset className="flags organs">
+            <legend>Что включать в мозг</legend>
+            <p>
+              <button type="button" onClick={() => setOrgans({ eye: false, ear: false, hand: false, words: true })}
+                      title="только то, что нужно для чата: порт слов и центральные зоны (смысловая, лобная, гиппокамп, ганглии)">минимум для чата</button>{" "}
+              <button type="button" onClick={() => setOrgans({ eye: true, ear: true, hand: true, words: true })}
+                      title="все органы и их зоны">весь мозг</button>
+            </p>
+            {ORGANS.map((o) => (
+              <label key={o.key} className="flag" title={o.hint}>
+                <input type="checkbox" checked={!!organs[o.key]} onChange={(e) => setOrgans({ ...organs, [o.key]: e.target.checked })} />
+                {" "}{o.title}
+              </label>
+            ))}
+            {preset && !organs.eye && <p className="muted">Пресет подогнан под зрительный путь — без глаза выберите голый мозг.</p>}
+            {!organs.eye && <p className="muted">Без глаза мозг живёт и виден на карте; чат словами в вебе — следующим шагом.</p>}
+          </fieldset>
           <fieldset className="flags">
             <legend>Флаги (опыты; по умолчанию всё выключено — как в пресете)</legend>
             {flagsShown.map((f) => (
               <FlagRow key={f.key} flag={f} checked={!!chosen[f.key]} onChange={(on) => setChosen({ ...chosen, [f.key]: on })} />
             ))}
           </fieldset>
-          <button type="submit" disabled={busy || !name.trim()} title="собрать новый мозг (по сборке или голый) и сразу сохранить его">Создать</button>
+          <button type="submit" disabled={busy || !name.trim() || chosenOrgans.length === 0 || (!!preset && !organs.eye)} title="собрать новый мозг (по сборке или голый) и сразу сохранить его">Создать</button>
         </form>
       </section>
     </div>

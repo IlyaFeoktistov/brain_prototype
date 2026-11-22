@@ -32,8 +32,9 @@ export const lesson = (kind: string, n: number, extra: { text?: string; first?: 
   post<{ text: string }>("/api/lesson", { kind, n, ...extra });
 
 export const load = (name: string) => post<{ brain: string }>("/api/load", { name });
-export const newBrain = (name: string, neurons: number, preset: string | null, seed = 1, flags: Record<string, boolean> = {}) =>
-  post<{ brain: string }>("/api/new", { name, neurons, preset, seed, flags });
+export const newBrain = (name: string, neurons: number, preset: string | null, seed = 1, flags: Record<string, boolean> = {},
+                         organs: string[] | null = null) =>
+  post<{ brain: string }>("/api/new", { name, neurons, preset, seed, flags, organs });
 export const flagState = () => get<FlagState>("/api/flags");
 export const setFlag = (key: string, enabled: boolean) => post<FlagState>("/api/flag", { key, enabled });
 export const save = () => post<{ brain: string }>("/api/save");

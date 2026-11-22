@@ -35,6 +35,25 @@ from brain.mind import Mind
 from brain.session import Session
 
 
+def override_external(cfg, spec: str) -> None:
+    """
+    extpop=зона:м[,зона:м] — подобранный множитель внешнего фона колонки
+    (anatomy.COLUMN_EXTERNAL_POP) всех популяций зоны → м (1 — внешний вход по
+    данным: K_ext Potjans минус явные пути, без подгонки). Диагностика.
+    """
+
+    from brain import anatomy
+
+    if not spec:
+        return
+    table = list(cfg.column_gain_external_pop or anatomy.COLUMN_EXTERNAL_POP)
+    for item in spec.split(","):
+        zone, value = item.split(":")
+        table = [(*e[:3], float(value)) if len(e) == 4 and e[0] == zone else e for e in table]
+        print(f"внешний фон {zone}: подобранные множители → {value}", flush=True)
+    cfg.column_gain_external_pop = tuple(table)
+
+
 def populations(b) -> list[tuple[str, slice]]:
     out = []
     for name, area in b.areas.items():

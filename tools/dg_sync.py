@@ -48,6 +48,7 @@ def main(opts: dict) -> None:
     cfg.homeostasis = True
     cfg.event_overflow = "warn"
     cfg.organs = ("words",)
+    develop.override_external(cfg, opts.get("extpop", ""))
     b = Mind(cfg).brain
     b.plasticity = False
     s = develop.Silence(b)

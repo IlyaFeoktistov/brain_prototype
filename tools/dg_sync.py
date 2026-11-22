@@ -26,7 +26,7 @@ smooth=src->dst — тот же средний вход пути без коле
 (недостающим входам, mf_exc/mf_inh/mf_ach пары популяций). Гомеостаз и
 силы не меняются.
 
-    PYTHONPATH=. python tools/dg_sync.py [seed=42] [adapt=10] [record=4] [cut=ca1->entorhinal_vb]
+    PYTHONPATH=. python tools/dg_sync.py [seed=42] [adapt=10] [record=4] [cut=ca1->entorhinal_vb] [save_ec=путь.pt]
 """
 
 from __future__ import annotations
@@ -165,6 +165,9 @@ def main(opts: dict) -> None:
         print(f"  корреляция пар гранулярных, окно {5 * w} мс: средняя {float(off.mean()):.3f}, "
               f"медиана {float(off.median()):.3f} (пар {n * (n - 1) // 2}, без молчащих)")
 
+    if opts.get("save_ec"):
+        # Частота EC II/III по окнам 5 мс — для tools/ca3_margin.py trace=.
+        torch.save(ec.cpu(), opts["save_ec"])
     e_cv = float(ec.std() / ec.mean())
     a, z = ec - ec.mean(), g_pop - g_pop.mean()
     lags = range(-10, 11)

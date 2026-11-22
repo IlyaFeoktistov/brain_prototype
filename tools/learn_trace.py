@@ -73,8 +73,8 @@ def hear(text: str) -> torch.Tensor:
     return b.observe(raster.shape[0] * cfg.dt_ms, sensory)
 
 
-facts = body("data/course/06-факты.txt")
-questions = [l.split("|")[0] for l in body("data/course/07-вопрос-ответ.txt")][: int(opts["questions"])]
+facts = body("data/learning/course/06-факты.txt")
+questions = [l.split("|")[0] for l in body("data/learning/course/07-вопрос-ответ.txt")][: int(opts["questions"])]
 L23 = {a: b.areas[a].layers["L23"]["E"] for a in ("association", "prefrontal")}
 
 

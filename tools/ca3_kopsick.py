@@ -3,7 +3,7 @@
 feat/ca3net (контроль переноса; запускать их код нельзя: setupNetwork на
 ~10⁸ синапсов PC → PC съел всю ОЗУ, 2026-11-19).
 
-Сеть — data/hippocampus/ca3_kopsick.json (tools/ca3_kopsick_extract.py из
+Сеть — data/anatomy/hippocampus/ca3_kopsick.json (tools/ca3_kopsick_extract.py из
 кода авторов). Счёт повторяет ядро CARLsim6 ветки feat/ca3net с флагами
 авторов (JK_CA3_SNN, CSTP_DOUBLES; snn_gpu_module.cu, snn_manager.cpp):
 
@@ -42,7 +42,7 @@ from pathlib import Path
 
 import torch
 
-NET = Path(__file__).resolve().parent.parent / "data" / "hippocampus" / "ca3_kopsick.json"
+NET = Path(__file__).resolve().parent.parent / "data" / "anatomy" / "hippocampus" / "ca3_kopsick.json"
 
 # Частоты модели авторов в покое (Kopsick et al. 2024, табл. 3, «Model
 # Firing Rate», Гц, среднее ± s.d.).

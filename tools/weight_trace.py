@@ -91,7 +91,7 @@ def body(path: str) -> list[str]:
     return [l for l in Path(path).read_text(encoding="utf-8").splitlines() if l.strip() and not l.startswith("#")]
 
 
-facts = body("data/course/06-факты.txt")
+facts = body("data/learning/course/06-факты.txt")
 b.plasticity = False
 b.run(2500.0)
 report("до учёбы")

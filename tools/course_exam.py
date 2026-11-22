@@ -1,5 +1,5 @@
 """
-Экзамен по курсу data/course на контрольных наборах data/course/проверка
+Экзамен по курсу data/learning/course на контрольных наборах data/learning/course/проверка
 (в учёбе их нет): пластичность выключена, вкуса-награды нет, порядок
 перемешан.
 
@@ -31,7 +31,7 @@ b = mind.brain
 b.plasticity = False
 s = Session(mind)
 rng = random.Random(int(opts["seed"]))
-checks = {p.name.split("-")[0]: p for p in sorted(Path("data/course/проверка").glob("[0-9]*.txt"))}
+checks = {p.name.split("-")[0]: p for p in sorted(Path("data/learning/course/проверка").glob("[0-9]*.txt"))}
 
 
 def clean(line: str) -> str:

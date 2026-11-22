@@ -90,9 +90,9 @@ def pattern(rates: torch.Tensor) -> dict[str, torch.Tensor]:
     return {a: rates[c].float() for a, c in cells.items()}
 
 
-facts = [l for l in body("data/course/06-факты.txt")]
-qa = [(words(q), words(a)[-1]) for q, a in (l.split("|")[:2] for l in body("data/course/07-вопрос-ответ.txt"))]
-para = [(words(q), words(a)[-1]) for q, a in (l.split("|")[:2] for l in body("data/course/проверка/07-вопрос-ответ.txt"))]
+facts = [l for l in body("data/learning/course/06-факты.txt")]
+qa = [(words(q), words(a)[-1]) for q, a in (l.split("|")[:2] for l in body("data/learning/course/07-вопрос-ответ.txt"))]
+para = [(words(q), words(a)[-1]) for q, a in (l.split("|")[:2] for l in body("data/learning/course/проверка/07-вопрос-ответ.txt"))]
 answers = sorted({a for _, a in qa + para})
 print(f"фактов {len(facts)}, вопросов {len(qa)} + перефразированных {len(para)}, ответов-кандидатов {len(answers)}")
 

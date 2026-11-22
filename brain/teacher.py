@@ -3,7 +3,7 @@
 указку, что похвалить (вкус). Что увидеть, куда посмотреть, что нажать и что
 выучить — решает мозг (brain/session.py, веса меняются сами).
 
-Уроки: азбука, лепет руки, копирование букв, курс data/course (азбука →
+Уроки: азбука, лепет руки, копирование букв, курс data/learning/course (азбука →
 слоги → слова → фразы → предложения → факты → вопросы), чтение текста с
 указкой. Любой урок прерывается session.halt.
 """
@@ -16,7 +16,7 @@ from pathlib import Path
 
 ALPHABET = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
 VOWELS = set("аеёиоуыэюя")
-COURSE = Path(__file__).resolve().parent.parent / "data" / "course"
+COURSE = Path(__file__).resolve().parent.parent / "data" / "learning" / "course"
 
 
 def syllables(word: str) -> list[str]:
@@ -154,7 +154,7 @@ class Teacher:
         return right
 
     def course(self, laps: int = 1, first: int = 1, last: int = 99) -> None:
-        """Курс data/course по номерам: шаг показа — из заголовка файла."""
+        """Курс data/learning/course по номерам: шаг показа — из заголовка файла."""
 
         s = self.session
 

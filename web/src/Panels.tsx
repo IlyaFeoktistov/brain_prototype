@@ -141,7 +141,7 @@ function Lessons({ actions }: { actions: MenuActions }) {
       <div className="buttons">
         <label className="inline">курс с <input type="number" min={1} max={7} value={first} onChange={(e) => setFirst(Number(e.target.value))} /></label>
         <label className="inline">по <input type="number" min={1} max={7} value={last} onChange={(e) => setLast(Number(e.target.value))} /></label>
-        <button type="button" onClick={() => run("course", { first, last })} title="data/course: азбука → слоги → слова → фразы → факты → вопросы; повторов — кругов">Курс</button>
+        <button type="button" onClick={() => run("course", { first, last })} title="data/learning/course: азбука → слоги → слова → фразы → факты → вопросы; повторов — кругов">Курс</button>
       </div>
       <textarea rows={3} value={text} placeholder="текст: учитель покажет его по словам с указкой" onChange={(e) => setText(e.target.value)} />
       <div className="buttons">

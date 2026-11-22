@@ -13,7 +13,7 @@
 клеткам); корреляция колебаний возбуждения между клетками (выборка 200
 клеток) — общий ли вход.
 
-    PYTHONPATH=. python tools/column_input.py [area=prefrontal] [seed=42] [adapt=3] [record=3] [extcopy=…] [extpop=…]
+    PYTHONPATH=. python tools/column_input.py [area=prefrontal] [seed=42] [adapt=3] [record=3] [extcopy=…] [extpop=…] [smooth=src->dst] [mf_frozen=1]
 """
 
 from __future__ import annotations
@@ -40,6 +40,11 @@ def main(opts: dict) -> None:
     b = Mind(cfg).brain
     b.plasticity = False
     s = develop.Silence(b)
+    if opts.get("mf_frozen") == "1":
+        # Среднее поле на частотах покоя по данным (старт mf_rate), без
+        # колебаний частоты колонки: до первого шага (шаг пишется в CUDA-граф).
+        b.mf_decay = 1.0
+        print("среднее поле заморожено на частотах покоя", flush=True)
     area = b.areas[opts.get("area", "prefrontal")]
     pops = {f"{layer}.{kind}": p for layer, group in area.layers.items() for kind, p in group.items()}
 
@@ -47,6 +52,8 @@ def main(opts: dict) -> None:
     for _ in range(int(opts.get("adapt", 3))):
         b.homeostasis_update(b.observe(1000.0, s._blank(1000.0)))
     b.cfg.homeostasis = False
+    # После адаптации: замена путей средним по фактической частоте (develop.smooth_paths).
+    develop.smooth_paths(b, opts.get("smooth", ""))
 
     bins = int(float(opts.get("record", 3)) * 1000 / 5)
     gen = torch.Generator().manual_seed(1)

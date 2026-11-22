@@ -75,6 +75,40 @@ def copy_external(cfg, spec: str) -> None:
     cfg.column_gain_external_pop = tuple(table)
 
 
+def smooth_paths(b, spec: str) -> None:
+    """
+    smooth=src->dst[,…] — тот же средний вход пути без колебаний: построенные
+    синапсы (ветви «src -> dst» и «src -> dst.I») → 0, их средний ток (Σw ×
+    частота × τm) — в среднее поле (сглажено mean_field_tau_ms). Убирает и
+    общую часть колебаний пути, и его собственный разброс. Диагностика.
+    """
+
+    for pair in (x for x in spec.split(",") if x):
+        src, dst = pair.split("->")
+        i = int(b.mf_pre_id[b.areas[src].E.start])
+        if i == b.mf_rate.numel() - 1:
+            # У источника нет столбца среднего поля (последний — заглушка):
+            # постоянный ток по фактической частоте источника за последнее окно
+            # и среднему ресурсу его синапсов (депрессия) — в фон клетки (bias).
+            src_cells = b.areas[src].E.slice
+            r_khz = float(b.observe(1000.0, Silence(b)._blank(1000.0))[src_cells].mean()) / 1000.0
+            resource = float(b.stp_x[src_cells].mean()) if hasattr(b, "stp_x") else 1.0
+            for p in [p for p in b.projections if p.name == f"{src} -> {dst}" or p.name.startswith(f"{src} -> {dst}.")]:
+                dc = p.weight.float().sum(1) * r_khz * resource * b.tau_m[p.post.slice]
+                b.bias[p.post.slice] += dc
+                p.weight.zero_()
+                print(f"сглажен {p.name}: построенные → постоянный ток {float(dc.mean()):.1f} мВ "
+                      f"(частота {r_khz * 1000:.1f} Гц, ресурс {resource:.2f})", flush=True)
+            continue
+        hit = [p for p in b.projections if p.name == f"{src} -> {dst}" or p.name.startswith(f"{src} -> {dst}.")]
+        for p in hit:
+            q = int(b.mf_post_id[p.post.start])
+            coeff = float(p.weight.float().sum(1).mean()) * float(b.tau_m[p.post.start])
+            b.mf_exc[q, i] += coeff
+            p.weight.zero_()
+            print(f"сглажен {p.name}: построенные → поле, +{coeff:.1f} мВ/кГц", flush=True)
+
+
 def populations(b) -> list[tuple[str, slice]]:
     out = []
     for name, area in b.areas.items():

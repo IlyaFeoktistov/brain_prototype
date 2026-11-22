@@ -34,6 +34,7 @@ def main(opts: dict) -> None:
     cfg.event_overflow = "warn"
     cfg.organs = ("words",)
     develop.override_external(cfg, opts.get("extpop", ""))
+    develop.copy_external(cfg, opts.get("extcopy", ""))
     b = Mind(cfg).brain
     b.plasticity = False
     s = develop.Silence(b)
@@ -91,6 +92,8 @@ def main(opts: dict) -> None:
         rise = float(torch.stack([y[t - 2: t + 3].mean() for t in starts]).mean()) / base if base > 0 else float("nan")
         return sum(lags) / len(lags), rise
 
+    print("внешний фон по популяциям (среднее / разброс, мВ):",
+          "  ".join(f"{k} {float(b.noise_mean[p.slice].mean()):.1f}/{float(b.noise_std[p.slice].mean()):.1f}" for k, p in pops.items()))
     print("популяция        частота   в залпе ±10 мс / в случайном окне   пик относительно начала, мс   × средней")
     for k, p in pops.items():
         hz = float(series[k].mean()) / p.size / 0.005

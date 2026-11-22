@@ -54,6 +54,27 @@ def override_external(cfg, spec: str) -> None:
     cfg.column_gain_external_pop = tuple(table)
 
 
+def copy_external(cfg, spec: str) -> None:
+    """
+    extcopy=куда<откуда[,…] — подобранные множители внешнего фона колонки
+    (anatomy.COLUMN_EXTERNAL_POP) зоны «куда» по каждой популяции берутся у
+    зоны «откуда» (из исходной таблицы; обмен — «a<b,b<a»). Диагностика.
+    """
+
+    from brain import anatomy
+
+    if not spec:
+        return
+    source = list(cfg.column_gain_external_pop or anatomy.COLUMN_EXTERNAL_POP)
+    table = list(source)
+    for item in spec.split(","):
+        dst, src = item.split("<")
+        own = {(e[1], e[2]): e[3] for e in source if len(e) == 4 and e[0] == src}
+        table = [(*e[:3], own.get((e[1], e[2]), e[3])) if len(e) == 4 and e[0] == dst else e for e in table]
+        print(f"внешний фон {dst}: множители {src}", flush=True)
+    cfg.column_gain_external_pop = tuple(table)
+
+
 def populations(b) -> list[tuple[str, slice]]:
     out = []
     for name, area in b.areas.items():

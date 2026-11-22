@@ -1,7 +1,7 @@
 """
 Зона с типами клеток по готовой модели: CA3 Kopsick et al. 2024 (J Comput
 Neurosci, https://doi.org/10.1007/s10827-024-00881-3; сеть — код авторов,
-data/hippocampus/ca3_kopsick.json, разбор — tools/ca3_kopsick_extract.py,
+data/anatomy/hippocampus/ca3_kopsick.json, разбор — tools/ca3_kopsick_extract.py,
 docs/CA3_TRANSFER.md). 8 типов клеток (пирамидные + 7 тормозных), клетки
 Izhikevich 2007 (9 параметров), 51 связь со своими проводимостью, временем
 спада и Tsodyks–Markram, фон по типу. Без специфичности типов сеть CA3
@@ -9,7 +9,7 @@ Izhikevich 2007 (9 параметров), 51 связь со своими про
 — у нас прежний CA3 «E + 10% I» был двустабилен (CHAT_PLAN шаг 3, циклы 3–4).
 
 Зубчатая — та же сеть зоны: 4 типа Dyhrfjeld-Johnsen et al. 2007, без фона
-авторов, HIPP — AdEx (data/hippocampus/dg_dyhrfjeld.json, tools/dg_extract.py).
+авторов, HIPP — AdEx (data/anatomy/hippocampus/dg_dyhrfjeld.json, tools/dg_extract.py).
 
 Счёт — как в эталоне tools/ca3_kopsick.py (ядро CARLsim6 feat/ca3net),
 перенесённый на шаг мозга dt (0.5 мс):
@@ -45,7 +45,7 @@ from pathlib import Path
 
 import torch
 
-DATA = Path(__file__).resolve().parent.parent / "data"
+DATA = Path(__file__).resolve().parent.parent / "data" / "anatomy"
 
 # Реверсия AMPA / ГАМК-А у авторов (CARLsim6: 0 и −70 мВ).
 E_AMPA, E_GABAA = 0.0, -70.0
@@ -53,6 +53,9 @@ E_AMPA, E_GABAA = 0.0, -70.0
 RK4_MAX_MS = 0.2
 # Нижняя граница v у CARLsim (−90 мВ).
 V_FLOOR = -90.0
+# Сглаживание частоты источника недостающих входов (как у недостающих
+# таламических, cfg.tc_missing_tau_ms) [допущение].
+MISSING_TAU_MS = 50.0
 
 
 def largest_remainder(total: int, weights: list[float]) -> list[int]:
@@ -173,6 +176,13 @@ class TypedCircuit:
         self.delay_steps = max(1, round(delays.pop() / dt))
         stp_pre, stp_U, stp_iu, stp_ix, stp_scale = [], [], [], [], []
         g_cell, g_decay, g_exc = [], [], []
+        # Топография (поле bins у сети, axon_profile у типов — зубчатая,
+        # Morgan & Soltesz 2008): построенные синапсы — с вероятностью пары у
+        # авторов на том же расстоянии по длине зоны (доля общих источников
+        # — их), недостающие до числа входов по данным — независимыми
+        # событиями своей клетки (_missing_step).
+        self.topo = "bins" in net and all("axon_profile" in groups[g] for g in self.names)
+        stp_link, g_link = [], []
         stp_off, g_off = [], []
         s_total = g_total = 0
 
@@ -188,7 +198,10 @@ class TypedCircuit:
             # Входов у клетки по данным больше, чем клеток-источников у нас:
             # связь со всеми, сила × недостающая доля (средний вход тот же)
             # [своё: при малой популяции-источнике].
-            stp_scale.append(torch.full((npre,), link["weight"] * link["g"] / link["U"] * max(1.0, self._p(link, groups, sizes))))
+            factor = 1.0 if self.topo else max(1.0, self._p(link, groups, sizes))
+            stp_scale.append(torch.full((npre,), link["weight"] * link["g"] / link["U"] * factor))
+            stp_link.append(torch.full((npre,), len(stp_link), dtype=torch.long))
+            g_link.append(torch.full((npost,), len(g_link), dtype=torch.long))
             g_cell.append(torch.arange(npost) + self.start[post])
             g_decay.append(torch.full((npost,), 1.0 - dt / link["tau_d_ms"]))
             g_exc.append(torch.full((npost,), bool(groups[pre]["excitatory"])))
@@ -211,6 +224,32 @@ class TypedCircuit:
         self.g_decay = cat(g_decay)
         self.g_exc = cat(g_exc, torch.bool, False)
         self.n_g = g_total
+        self.stp_link = cat(stp_link, torch.long, len(links))
+        self.g_link = torch.cat(g_link).to(device)
+        self.link_pre = torch.tensor([self.names.index(link["pre"]) for link in links], device=device)
+        self.link_npre = torch.tensor([float(sizes[link["pre"]]) for link in links], device=device)
+        self.link_scale = torch.tensor([link["weight"] * link["g"] / link["U"] for link in links], device=device)
+        self.n_links = len(links)
+        self.type_sizes = torch.tensor([float(sizes[g]) for g in self.names], device=device)
+        # Недостающих входов на слот проводимости (связь × получатель).
+        missing = torch.zeros(g_total, device=device)
+
+        if self.topo:
+            bins = int(net["bins"])
+            bin_of = {g: (torch.arange(sizes[g], device=device) * bins // sizes[g]) for g in self.names}
+            profile = {g: torch.tensor(groups[g]["axon_profile"], device=device) for g in self.names}
+            centre = (len(profile[self.names[0]]) - 1) // 2
+            offsets = torch.arange(bins, device=device)
+            # S[b] — сумма профиля по всем местам источника для получателя в b.
+            reach = {g: profile[g][(offsets[None, :] - offsets[:, None]) + centre].sum(1) for g in self.names}
+            self.link_A = []
+            for i, link in enumerate(links):
+                pre = link["pre"]
+                conv = link["p"] * groups[pre]["cells"]
+                # Вероятность пары у авторов: A × профиль(смещение); A — чтобы у
+                # клетки было conv входов (их клеток источника на место × S).
+                self.link_A.append(conv / (groups[pre]["cells"] / bins * float(reach[pre].mean())))
+            self._bins, self._bin_of, self._profile, self._centre, self._reach = bins, bin_of, profile, centre, reach
 
         # Синапсы: случайно с вероятностью авторов × (их клеток получателя /
         # наших) — у клетки число входов авторов; по пресинаптической клетке.
@@ -231,14 +270,35 @@ class TypedCircuit:
                 for i in mine:
                     link = links[i]
                     npost = sizes[link["post"]]
-                    p = min(1.0, self._p(link, groups, sizes))
+
+                    if self.topo:
+                        shift = self._bin_of[g][lo:hi, None] - self._bin_of[link["post"]][None, :] + self._centre
+                        p = (self.link_A[i] * self._profile[g][shift]).clamp(max=1.0)
+                    else:
+                        p = min(1.0, self._p(link, groups, sizes))
                     mask = torch.rand((hi - lo, npost), generator=generator, device=device) < p
                     pre_l, post_l = mask.nonzero(as_tuple=True)
                     del mask
                     pre_l = pre_l + lo
                     keys.append(pre_l + self.start[g])
+                    if self.topo:
+                        missing.index_add_(0, post_l + g_off[i], torch.full_like(post_l, -1, dtype=torch.float32))
                     syn_g.append((post_l + g_off[i]).int())
                     syn_s.append((pre_l + stp_off[i]).int())
+
+        if self.topo:
+            # Недостающие: входов у клетки по данным (у края зоны — меньше, как у
+            # авторов: conv × S[место] / среднее S) минус построенные.
+            for i, link in enumerate(links):
+                pre, post = link["pre"], link["post"]
+                conv = link["p"] * groups[pre]["cells"]
+                target = conv * self._reach[pre][self._bin_of[post]] / self._reach[pre].mean()
+                missing[g_off[i]: g_off[i] + sizes[post]] += target
+            self.g_missing = missing.clamp(min=0.0)
+        else:
+            self.g_missing = missing
+        # Частота типа (спайков на клетку за шаг), сглажена, — для недостающих.
+        self.rate_decay = 1.0 - dt / MISSING_TAU_MS
 
         keys = torch.cat(keys)
         self.synapses = len(keys)
@@ -295,8 +355,9 @@ class TypedCircuit:
         self.ext = torch.zeros(n, device=dev)
         self.tick = torch.zeros(1, dtype=torch.long, device=dev)
         self.dropped = torch.zeros(1, device=dev)
+        self.type_rate = torch.zeros(len(self.names), device=dev)
 
-    STATE = ("v", "u", "ref", "su", "sx", "G", "queue", "ext", "tick")
+    STATE = ("v", "u", "ref", "su", "sx", "G", "queue", "ext", "tick", "type_rate")
 
     def state_dict(self) -> dict:
         return {k: getattr(self, k).clone() for k in self.STATE}
@@ -306,6 +367,25 @@ class TypedCircuit:
             getattr(self, k).copy_(state[k])
 
     # ------------------------------------------------------------------
+
+    def _missing_step(self, arrived: torch.Tensor, u: torch.Tensor, x: torch.Tensor) -> None:
+        """
+        Недостающие входы (топография): у каждого слота — свой пуассон с
+        частотой популяции-источника (сглажена MISSING_TAU_MS), прирост g —
+        средняя по источникам связи сила спайка сейчас (Tsodyks–Markram:
+        (u + U(1 − u))·x). Независимые события — без лишнего общего входа
+        (так же недостающие таламические, van Albada, Helias & Diesmann 2015,
+        https://doi.org/10.1371/journal.pcbi.1004490).
+        """
+
+        dev = self.device
+        counts = torch.zeros(len(self.names), device=dev).index_add_(0, self.type_of, arrived.float())
+        self.type_rate.mul_(self.rate_decay).add_(counts / self.type_sizes * (1.0 - self.rate_decay))
+        now = (u + self.stp_U * (1.0 - u)) * x
+        eff = torch.zeros(self.n_links + 1, device=dev).index_add_(0, self.stp_link, now)[: self.n_links]
+        eff = eff / self.link_npre * self.link_scale
+        lam = self.g_missing * self.type_rate.index_select(0, self.link_pre).index_select(0, self.g_link)
+        self.G[: self.n_g] += torch.poisson(lam) * eff.index_select(0, self.g_link)
 
     def _membrane(self, v, u, current, h):
         """Один подшаг RK4 Izhikevich 2007 (ток — по v начала подшага, как у CARLsim)."""
@@ -426,6 +506,9 @@ class TypedCircuit:
         else:
             syn, _ = self.table.events(fired)
         self.G.index_add_(0, self.syn_g.index_select(0, syn), eff.index_select(0, self.syn_s.index_select(0, syn)))
+
+        if self.topo:
+            self._missing_step(arrived, u, x)
         live = self.G[: self.n_g]
         cells = self.g_cell[: self.n_g]
         exc = self.g_exc[: self.n_g]

@@ -1,5 +1,5 @@
 """
-Сеть CA3 Kopsick et al. (2023, 2024) из кода авторов → data/hippocampus/ca3_kopsick.json.
+Сеть CA3 Kopsick et al. (2023, 2024) из кода авторов → data/anatomy/hippocampus/ca3_kopsick.json.
 
 Источник — файл сети авторов generateCONFIGStateSTP.h (вызовы CARLsim:
 createGroup, setNeuronParameters, connect, setSTP), репозиторий
@@ -21,7 +21,7 @@ import re
 import sys
 from pathlib import Path
 
-OUT = Path(__file__).resolve().parent.parent / "data" / "hippocampus" / "ca3_kopsick.json"
+OUT = Path(__file__).resolve().parent.parent / "data" / "anatomy" / "hippocampus" / "ca3_kopsick.json"
 SOURCE = ("https://github.com/jkopsick/simulate_formation_and_retrieval/blob/"
           "1989764942516bf110dafc29ad08d815fd699f4c/formation/project/"
           "ca3_full_net_lognormalI_09_05_23_assem_275/generateCONFIGStateSTP.h")

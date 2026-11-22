@@ -1,5 +1,5 @@
 """
-Сеть зубчатой извилины → data/hippocampus/dg_dyhrfjeld.json (формат
+Сеть зубчатой извилины → data/anatomy/hippocampus/dg_dyhrfjeld.json (формат
 brain/circuit.py, как CA3 Kopsick).
 
 Четыре типа клеток функциональной модели DG Dyhrfjeld-Johnsen et al. 2007
@@ -37,10 +37,17 @@ brain/circuit.py, как CA3 Kopsick).
     аксонов Hippocampome их не видит, у Dyhrfjeld-Johnsen они есть) — синапс
     того же источника на гранулярную [своё: нет готового].
 
+Топография — как у авторов матрицы (Morgan & Soltesz 2008, ModelDB 124513,
+50knet.hoc): клетки равномерно по 100 местам вдоль 6 мм зубчатой (60 мкм),
+вероятность пары ∝ профилю аксона типа-источника по смещению места
+(<тип>dist.hoc, 199 значений, смещение −99…+99 = место пре − место пост):
+гранулярные и корзинчатые — узко (±150–200 мкм), мшистые — широко и
+двугорбо (обходят свою пластинку, пик ~800 мкм), HIPP — широкий колокол.
+
 Фона нет: у Hippocampome сеть DG без фонового тока, вход — извне (EC); у
 нас — пути мозга (brain/circuit.py: без фона вход мозга идёт целиком).
 
-    python3 tools/dg_extract.py <каталог full_scale_DG_snn>
+    python3 tools/dg_extract.py <каталог full_scale_DG_snn> <каталог ModelDB 124513>
 """
 
 from __future__ import annotations
@@ -52,7 +59,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ca3_kopsick_extract import parse  # noqa: E402
 
-OUT = Path(__file__).resolve().parent.parent / "data" / "hippocampus" / "dg_dyhrfjeld.json"
+OUT = Path(__file__).resolve().parent.parent / "data" / "anatomy" / "hippocampus" / "dg_dyhrfjeld.json"
 SOURCE = "https://hippocampome.org/php/data/default_zipfiles/full_scale_DG_snn.zip"
 
 # Тип Hippocampome → наше имя; численность у крысы (Dyhrfjeld-Johnsen 2007, табл. 1).
@@ -93,7 +100,11 @@ DIVERGENCE = {
 }
 
 
-def main(project: str) -> None:
+PROFILE_FILE = {"DG_Granule": "gcdist.hoc", "DG_Mossy": "mcdist.hoc", "DG_Basket": "bcdist.hoc",
+                "DG_HIPP": "hcdist.hoc"}
+
+
+def main(project: str, morgan: str) -> None:
     hc_groups, hc_links = parse((Path(project) / "generateCONFIGStateSTP.h").read_text())
     groups = {}
 
@@ -103,6 +114,11 @@ def main(project: str) -> None:
         groups[name] = g
 
     groups["DG_HIPP"] = {"cells": TYPES["DG_HIPP"][1], "excitatory": False, **HIPP_ADEX}
+
+    for name, fname in PROFILE_FILE.items():
+        values = [float(x) for x in (Path(morgan) / fname).read_text().split()]
+        assert int(values[0]) == len(values) - 1 == 199, fname
+        groups[name]["axon_profile"] = values[1:]
 
     links = []
 
@@ -130,6 +146,7 @@ def main(project: str) -> None:
                  "Δg = weight × g × u⁺x⁻/U на спайк; E_AMPA 0, E_GABAa −70 мВ; RK4 по 0.2 мс. "
                  "Фона нет — вход извне (пути мозга)."),
         "principal": "DG_Granule",
+        "bins": 100,
         "background_cap_pa": 0.0,
         "groups": groups,
         "links": links,
@@ -142,4 +159,4 @@ def main(project: str) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(sys.argv[1], sys.argv[2])

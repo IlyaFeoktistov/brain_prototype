@@ -264,7 +264,7 @@ connectRandom, спад 1 − 1/τ):
 
 - tools/ca3_kopsick_extract.py — разбор файла сети авторов (createGroup,
   setNeuronParameters, connect, setSTP, фон из main) в
-  data/hippocampus/ca3_kopsick.json; числа не переписаны руками;
+  data/anatomy/hippocampus/ca3_kopsick.json; числа не переписаны руками;
 - tools/ca3_kopsick.py — счёт: STP и проводимость своя у каждой связи
   (у CARLsim — на каждом синапсе; одна пара пре–связь ведёт себя одинаково,
   поэтому состояние на (пре, связь) и (получатель, связь) — то же самое),

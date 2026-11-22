@@ -44,3 +44,4 @@ export const neuron = (index: number) => get<NeuronInfo>(`/api/neuron/${index}`)
 export const synapse = (id: number) => get<SynapseInfo>(`/api/synapse/${id}`);
 export const summary = () => get<Summary>("/api/summary");
 export const health = (ms = 500) => get<Health>(`/api/health?ms=${ms}`);
+export const places = () => get<{ areas: unknown[] }>("/api/places");

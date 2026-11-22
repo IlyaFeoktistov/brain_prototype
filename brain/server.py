@@ -35,7 +35,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from brain import anatomy, flags, neuron
+from brain import anatomy, flags, neuron, places
 from brain.config import BRAINS, BrainConfig, brain_path
 from brain.presets import PRESETS
 from brain.engine import KINDS
@@ -703,6 +703,13 @@ async def live(body: Flag) -> dict:
 @app.get("/api/health")
 async def health(ms: float = 500.0) -> dict:
     return await _run(lambda: host.health(ms), "здоровье")
+
+
+@app.get("/api/places")
+async def cell_places() -> dict:
+    """Места клеток для карты нейронов (brain/places.py)."""
+
+    return await _read(places.places)
 
 
 @app.get("/api/summary")

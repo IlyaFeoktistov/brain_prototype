@@ -6,6 +6,7 @@ import { Face } from "./Face";
 import { Guide } from "./Guide";
 import { NeuronCard, SynapseCard } from "./Inspector";
 import { Fluorescence, type Hover, HoverTip, type Link, Microscope } from "./Microscope";
+import { NeuronMap } from "./NeuronMap";
 import { Chemistry, Chooser, Conversation, type Entry, Menu, type WorldScreen } from "./Panels";
 import { Pathways } from "./Pathways";
 import { Sight } from "./Sight";
@@ -40,6 +41,24 @@ export function App() {
   const [presses, setPresses] = useState<Press[]>([]);
   const [view, setView] = useState<View | null>(null);
   const [side, setSide] = useStoredSize("brain.side", 460);
+  // Вид клеток: срезы по зонам или карта всего мозга (места клеток по анатомии).
+  const [mapMode, setMapMode] = useState<boolean>(() => {
+    const asked = new URLSearchParams(window.location.search).get("view");
+    if (asked) return asked === "map";
+    try {
+      return localStorage.getItem("brain.view") === "map";
+    } catch {
+      return false;
+    }
+  });
+  const chooseView = (map: boolean) => {
+    setMapMode(map);
+    try {
+      localStorage.setItem("brain.view", map ? "map" : "slices");
+    } catch {
+      /* без памяти браузера — только на эту вкладку */
+    }
+  };
   const nextId = useRef(1);
   const fluoRef = useRef<Fluorescence | null>(null);
 
@@ -174,15 +193,26 @@ export function App() {
 
       <main className="bench" style={{ "--side": `${side}px` } as CSSProperties}>
         <div className="stage">
-          <Microscope
-            anatomy={anatomy}
-            fluo={fluo}
-            selected={selected}
-            links={selected === null ? [] : links}
-            onHover={setHover}
-            onSelect={select}
-            onActivity={setActivity}
-          />
+          <nav className="view-switch">
+            <button type="button" className={mapMode ? "" : "on"} onClick={() => chooseView(false)}
+                    title="каждая зона своим срезом, клетки по номеру">срезы</button>
+            <button type="button" className={mapMode ? "on" : ""} onClick={() => chooseView(true)}
+                    title="весь мозг одним холстом с зумом: зоны от входа к выходу, клетки на своих местах">карта</button>
+          </nav>
+          {mapMode ? (
+            <NeuronMap anatomy={anatomy} fluo={fluo} selected={selected} onHover={setHover} onSelect={select}
+                       onActivity={setActivity} />
+          ) : (
+            <Microscope
+              anatomy={anatomy}
+              fluo={fluo}
+              selected={selected}
+              links={selected === null ? [] : links}
+              onHover={setHover}
+              onSelect={select}
+              onActivity={setActivity}
+            />
+          )}
           <dl className="legend">
             <div><dt className="swatch swatch-E" /><dd>главная клетка</dd></div>
             <div><dt className="swatch swatch-PV" /><dd>PV / местная тормозная</dd></div>

@@ -60,8 +60,8 @@ export class Fluorescence {
 }
 
 // Окраска: главные — гематоксилин, тормозные по типам — свои красители.
-type RGB = [number, number, number];
-const GLASS: RGB = [245, 243, 247];
+export type RGB = [number, number, number];
+export const GLASS: RGB = [245, 243, 247];
 const DYES: Record<string, [RGB, RGB]> = {
   E: [[222, 216, 236], [44, 30, 120]],
   PV: [[244, 222, 230], [205, 40, 98]],
@@ -71,9 +71,9 @@ const DYES: Record<string, [RGB, RGB]> = {
   LAMP5: [[222, 236, 240], [20, 120, 150]],
 };
 
-const pack = ([r, g, b]: RGB) => (255 << 24) | (b << 16) | (g << 8) | r;
-const STEPS = 32;
-const RAMPS: Record<string, number[]> = Object.fromEntries(
+export const pack = ([r, g, b]: RGB) => (255 << 24) | (b << 16) | (g << 8) | r;
+export const STEPS = 32;
+export const RAMPS: Record<string, number[]> = Object.fromEntries(
   Object.entries(DYES).map(([kind, [a, b]]) => [
     kind,
     Array.from({ length: STEPS + 1 }, (_, i) =>

@@ -291,3 +291,53 @@ fieldset.flags { border: 1px solid var(--line, #ddd); border-radius: 6px; paddin
 /* ---- живой режим в шапке ---- */
 .live-toggle { font: inherit; font-size: 13px; padding: 1px 10px; border-radius: 10px; border: 1px solid currentColor; background: none; color: inherit; cursor: pointer; }
 .live-toggle.on { color: #2e7d32; }
+
+/* Переключатель вида клеток: срезы / карта. */
+.view-switch {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.view-switch button {
+  padding: 2px 10px;
+  border: 1px solid #b9b2c8;
+  background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.view-switch button.on {
+  background: #2c1e78;
+  color: #fff;
+  border-color: #2c1e78;
+}
+
+/* Карта нейронов (NeuronMap.tsx). */
+.neuron-map {
+  display: flex;
+  flex-direction: column;
+  height: min(78vh, 900px);
+  min-height: 320px;
+}
+.map-tools {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.map-hint {
+  opacity: 0.6;
+}
+.map-error {
+  color: #c0392b;
+  font-size: 12px;
+}
+.map-canvas {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border-radius: 6px;
+  cursor: grab;
+  touch-action: none;
+}
+

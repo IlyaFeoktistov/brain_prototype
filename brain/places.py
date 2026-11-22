@@ -7,7 +7,8 @@
     по ним строятся местные связи по расстоянию): каждый слой — своя плитка
     (на листе все слои на одном квадрате);
   - зубчатая (сеть с топографией, brain/circuit.py): место по длине зоны
-    (100 мест по 60 мкм, Morgan & Soltesz 2008), тип клеток — своя плитка;
+    (100 мест по 60 мкм, Morgan & Soltesz 2008) — по горизонтали, поперёк
+    места в модели нет — случайно; тип клеток — своя плитка;
   - остальное (ядра, CA3, CA1) — места нет: карта кладёт клетки плотной
     группой по номеру и подписывает «без места».
 
@@ -55,22 +56,16 @@ def places(brain) -> dict:
             mode = "line"
             offset = 0
 
+            # Координата модели — только место по длине; поперёк места нет —
+            # случайно внутри полосы типа (постоянное зерно), чтобы не рисовать
+            # несуществующих рядов.
+            rng = np.random.default_rng(area.cells.start)
+
             for k, g in enumerate(c.names):
                 bins = c._bin_of[g].cpu().numpy()
                 n = len(bins)
-                rank = np.zeros(n)
-                count = np.bincount(bins, minlength=c._bins)
-                seen = np.zeros(c._bins, dtype=np.int64)
-                for i, b in enumerate(bins):
-                    rank[i] = seen[b]
-                    seen[b] += 1
-                # Клетки одного места — столбиком на своём месте по длине.
-                per = np.maximum(count[bins], 1)
-                cols = np.ceil(np.sqrt(per / 4.0))
-                col = rank % cols
-                row = rank // cols
-                xy[offset: offset + n, 0] = (bins + (col + 0.5) / cols) / c._bins
-                xy[offset: offset + n, 1] = (row + 0.5) / np.ceil(per / cols)
+                xy[offset: offset + n, 0] = (bins + rng.random(n)) / c._bins
+                xy[offset: offset + n, 1] = rng.random(n)
                 tile[offset: offset + n] = k
                 offset += n
         else:

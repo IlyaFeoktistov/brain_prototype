@@ -224,8 +224,9 @@ class BrainConfig:
     # не теряют (tools/kernel_check.py).
     event_capacity: float = 0.02
     # Переполнение таблицы событий: "error" — прогон останавливается,
-    # "warn" — печать (диагностика). Молча — никогда.
-    event_overflow: str = "error"
+    # "warn" — печать (диагностика). Молча — никогда. BRAIN_EVENT_OVERFLOW=warn
+    # — для веба, пока залпы CA3 переполняют таблицу (CHAT_PLAN шаг 3).
+    event_overflow: str = os.environ.get("BRAIN_EVENT_OVERFLOW", "error")
     # Не меньше стольких строк в таблице шага (но не больше 20% мозга).
     min_spike_table: int = 2000
 

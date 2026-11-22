@@ -298,6 +298,12 @@ class BrainHost:
         self.thread.start()
 
     def _attach(self) -> None:
+        overflow = os.environ.get("BRAIN_EVENT_OVERFLOW")
+        if overflow:
+            # Сохранённый мозг несёт свою настройку; переменная веба — сильнее
+            # (BrainConfig.event_overflow).
+            self.mind.cfg.event_overflow = overflow
+            self.mind.brain.cfg.event_overflow = overflow
         self.session = Session(self.mind)
         self.session.on_typed = self._typed
         self.session.on_saccade = self._saccade
@@ -316,7 +322,17 @@ class BrainHost:
                     # Жизнь в тишине: мозг смотрит на экран и живёт. Без неё
                     # мозг стоит — время мозга идёт, только пока считаются
                     # нейроны (ответ, урок, жизнь в тишине).
-                    self.session.live(LIVE_WINDOW_MS)
+                    try:
+                        self.session.live(LIVE_WINDOW_MS)
+                    except Exception as error:  # noqa: BLE001 — поток мозга не должен умирать молча
+                        # Мозг на паузу, причина — в разговор; реплики и уроки
+                        # по-прежнему принимаются.
+                        import traceback
+
+                        traceback.print_exc()
+                        self.live = False
+                        self.info(f"Мозг остановлен: {error}")
+                        self.emit(self.status())
                 continue
 
             if job is None:

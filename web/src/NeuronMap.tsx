@@ -12,7 +12,7 @@ import { type Fluorescence, GLASS, type Hover, pack, RAMPS, STEPS } from "./Micr
 // сплошь (плиткой), площадь ∝ клеткам. Внутри зоны клетка лежит на своём
 // месте, только если оно задано анатомией модели (brain/places.py): лист коры
 // — место на листе, слои друг под другом (L2/3 сверху, как на срезе); зубчатая
-// — по длине, типы полосами. У ядер места нет — клетки по номеру, строками.
+// — по длине, типы полосами. У ядер места нет — клетки случайно по площади.
 // Линии между зонами (по желанию) — только существующие пути.
 
 type Side = "center" | "top" | "left" | "right" | "bottom";
@@ -109,6 +109,25 @@ function treemap(list: Area[], r: Rect): [Area, Rect][] {
   return [...treemap(a, { x: r.x, y: r.y, w: r.w, h }), ...treemap(b, { x: r.x, y: r.y + h, w: r.w, h: r.h - h })];
 }
 
+// n клеткам — разные пиксели из cells (перемешивание Фишера–Йейтса с
+// постоянным зерном, xorshift32).
+function scatter(cells: number, n: number, seed: number): Int32Array {
+  const order = new Int32Array(cells);
+  for (let i = 0; i < cells; i++) order[i] = i;
+  let x = (seed * 2654435761) >>> 0 || 1;
+  for (let i = cells - 1; i > 0; i--) {
+    x ^= x << 13;
+    x ^= x >>> 17;
+    x ^= x << 5;
+    x >>>= 0;
+    const j = x % (i + 1);
+    const t = order[i];
+    order[i] = order[j];
+    order[j] = t;
+  }
+  return order.subarray(0, Math.min(n, cells));
+}
+
 function build(anatomy: Anatomy, places: PlaceArea[]): World {
   const placeOf = new Map(places.map((p) => [p.name, p]));
   const tileOf = new Map(places.map((p) => [p.name, decode(p.tile)]));
@@ -169,8 +188,9 @@ function build(anatomy: Anatomy, places: PlaceArea[]): World {
     const ids = place ? tileOf.get(area.name)! : null;
     const xy = place && place.mode !== "none" ? new Uint16Array(decode(place.xy).buffer) : null;
     const grid = block.tiles[0];
-    // Ядро: клетки по номеру строками, равномерно по всей площади зоны.
-    const step = (grid.w * grid.h) / Math.max(1, area.size);
+    // Места нет — клетки случайно по площади зоны (постоянное зерно — номер
+    // первой клетки): типы вперемешку, как в ткани, без полос «по номеру».
+    const slots = xy ? null : scatter(grid.w * grid.h, area.size, area.start);
     for (const pop of area.populations) {
       for (let k = 0; k < pop.size; k++) {
         const index = pop.start + k;
@@ -184,7 +204,8 @@ function build(anatomy: Anatomy, places: PlaceArea[]): World {
           px = t.x + Math.min(t.w - 1, Math.floor((xy[2 * local] / 65535) * t.w));
           py = t.y + Math.min(t.h - 1, Math.floor((xy[2 * local + 1] / 65535) * t.h));
         } else {
-          const slot = Math.min(grid.w * grid.h - 1, Math.floor(local * step));
+          // Площадь зоны (округление плитки) могла выйти меньше клеток — лишние делят пиксель.
+          const slot = slots![local % slots!.length];
           px = grid.x + (slot % grid.w);
           py = grid.y + Math.floor(slot / grid.w);
         }

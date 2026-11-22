@@ -4,7 +4,7 @@ MD → ПФК (CHAT_PLAN шаг 3, цикл 15): перекрытие постр
 синхронность самих клеток MD (CV популяции по окнам 5 мс, корреляция пар
 спайков) в опыте B (organs=words, адаптация 3 с, запись 3 с).
 
-    PYTHONPATH=. python tools/md_overlap.py [seed=42] [extpop=prefrontal:1]
+    PYTHONPATH=. python tools/md_overlap.py [seed=42] [extpop=prefrontal:1] [cut=src->dst] [t_off=1]
 """
 
 from __future__ import annotations
@@ -30,6 +30,22 @@ def main(opts: dict) -> None:
     b = Mind(cfg).brain
     b.plasticity = False
     md = b.areas["md"].E
+    # cut=src->dst[,…] — перерезка (построенные и среднее поле); t_off=1 — без
+    # T-тока у MD. Диагностика: среднее входа не сохраняется.
+    for pair in (x for x in opts.get("cut", "").split(",") if x):
+        src, dst = pair.split("->")
+        hit = [p for p in b.projections if p.name == f"{src} -> {dst}" or p.name.startswith(f"{src} -> {dst}.")]
+        for p in hit:
+            p.weight.zero_()
+        if b.mf_on:
+            q = b.mf_post_id[b.areas[dst].cells].unique()
+            i = b.mf_pre_id[b.areas[src].cells].unique()
+            for m in (b.mf_exc, b.mf_inh, b.mf_ach):
+                m[q[:, None], i[None, :]] = 0.0
+        print(f"перерезан {src} → {dst}: путей {len(hit)}", flush=True)
+    if opts.get("t_off") == "1":
+        b.t_mask[md.slice] = False
+        print("T-ток MD выключен", flush=True)
     gen = torch.Generator().manual_seed(1)
     for p in b.projections:
         if not p.name.startswith("md -> prefrontal"):
@@ -67,6 +83,10 @@ def main(opts: dict) -> None:
     z = x[:, live] / sd[live]
     cc = (z.T @ z) / (z.shape[0] - 1)
     corr = float(cc[~torch.eye(cc.shape[0], dtype=torch.bool, device=cc.device)].mean())
+    share = pop / md.size
+    big = share > 5 * share.mean()
+    print(f"доля клеток MD в окне 5 мс: средняя {float(share.mean()):.1%}, 95-я перцентиль {float(torch.quantile(share, 0.95)):.1%}, "
+          f"максимум {float(share.max()):.1%}; окон-событий (> 5× средней) {float(big.float().mean()):.1%}")
     print(f"MD: {rate:.2f} Гц, CV популяции по окнам 5 мс {cv:.2f} (независимые — {cv_ind:.2f}), "
           f"корреляция пар спайков {corr:.3f} (клеток {int(live.sum())})")
 

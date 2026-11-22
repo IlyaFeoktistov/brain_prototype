@@ -66,14 +66,20 @@ def main(opts: dict) -> None:
     for _ in range(3):
         b.homeostasis_update(b.observe(1000.0, s._blank(1000.0)))
     b.cfg.homeostasis = False
+    # smooth=src->dst — после адаптации: тот же средний вход пути без колебаний
+    # (develop.smooth_paths: у источника без поля — постоянный ток по фактической
+    # частоте и ресурсу).
+    develop.smooth_paths(b, opts.get("smooth", ""))
     bins = 600
     pick = torch.randperm(md.size, generator=gen)[:200].to(b.device) + md.start
     pop = torch.zeros(bins, device=b.device)
     cells = torch.zeros(bins, 200, device=b.device)
+    tsum = torch.zeros(bins, device=b.device)
     for t in range(bins):
         r = b.observe(5.0, s._blank(5.0))
         pop[t] = r[md.slice].sum() * 0.005
         cells[t] = r[pick] * 0.005
+        tsum[t] = r[b.areas["trn_md"].E.slice].sum() * 0.005
     rate = float(pop.mean()) / md.size / 0.005
     cv = float(pop.std() / pop.mean())
     cv_ind = 1.0 / (md.size * rate * 0.005) ** 0.5
@@ -87,6 +93,14 @@ def main(opts: dict) -> None:
     big = share > 5 * share.mean()
     print(f"доля клеток MD в окне 5 мс: средняя {float(share.mean()):.1%}, 95-я перцентиль {float(torch.quantile(share, 0.95)):.1%}, "
           f"максимум {float(share.max()):.1%}; окон-событий (> 5× средней) {float(big.float().mean()):.1%}")
+    trn = b.areas["trn_md"].E
+    t_rate = float(tsum.mean()) / trn.size / 0.005
+    t_cv = float(tsum.std() / tsum.mean()) if float(tsum.mean()) > 0 else float("nan")
+    t_ind = 1.0 / max(1e-9, trn.size * t_rate * 0.005) ** 0.5
+    a, z = tsum - tsum.mean(), pop - pop.mean()
+    lag = max(range(-10, 11), key=lambda k: float((a[max(0, -k): bins - max(0, k)] * z[max(0, k): bins - max(0, -k)]).mean()))
+    print(f"TRN MD: {trn.size} клеток, {t_rate:.2f} Гц, CV {t_cv:.2f} (независимые — {t_ind:.2f}); "
+          f"MD после TRN на {lag * 5:+d} мс (наибольшая связь)")
     print(f"MD: {rate:.2f} Гц, CV популяции по окнам 5 мс {cv:.2f} (независимые — {cv_ind:.2f}), "
           f"корреляция пар спайков {corr:.3f} (клеток {int(live.sum())})")
 

@@ -20,7 +20,8 @@ organs=words): 2.5 с разгона, адаптация с гомеостазо
     (окна 5 мс) CA3, CA1, EC Vb, гранулярных относительно EC II/III;
     корреляция пар клеток EC.
 
-cut=src->dst[,src->dst] — диагностическая перерезка (не механизм): нули
+smooth=src->dst — тот же средний вход пути без колебаний (построенные →
+среднее поле). cut=src->dst[,src->dst] — диагностическая перерезка (не механизм): нули
 построенным синапсам пути (имя «src -> dst…») и его среднему полю
 (недостающим входам, mf_exc/mf_inh/mf_ach пары популяций). Гомеостаз и
 силы не меняются.
@@ -65,6 +66,20 @@ def main(opts: dict) -> None:
                 mf += int((block != 0).sum())
                 m[q[:, None], i[None, :]] = 0.0
         print(f"перерезан {src} → {dst}: путей {len(hit)}, членов среднего поля {mf}", flush=True)
+
+    for pair in (x for x in opts.get("smooth", "").split(",") if x):
+        # Тот же средний вход пути, без колебаний: построенные синапсы → 0, их
+        # средний ток (Σw × частота × τm) — в среднее поле (сглажено
+        # mean_field_tau_ms). Диагностика, не механизм.
+        src, dst = pair.split("->")
+        i = int(b.mf_pre_id[b.areas[src].E.start])
+        for p in [p for p in b.projections if p.name in (f"{src} -> {dst}", f"{src} -> {dst}.I")]:
+            post = p.post
+            q = int(b.mf_post_id[post.start])
+            coeff = float(p.weight.float().sum(1).mean()) * float(b.tau_m[post.start])
+            b.mf_exc[q, i] += coeff
+            p.weight.zero_()
+            print(f"сглажен {p.name}: построенные → поле, +{coeff:.1f} мВ/кГц", flush=True)
 
     c = b.circuits["dentate"]
     gc = c.type_of == 0

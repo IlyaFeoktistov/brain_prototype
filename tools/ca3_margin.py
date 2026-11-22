@@ -17,7 +17,7 @@ k = 0 — EC молчит.
 trace=путь.pt — вход EC с волнами мозга (tools/dg_sync.py save_ec=): доля EC
 × k × r(t)/r̄ по окнам 5 мс.
 
-    PYTHONPATH=. python tools/ca3_margin.py [seed=42] [ms=2000] [k=0,1,1.1,1.2,1.3,1.5,2] [trace=ec.pt]
+    PYTHONPATH=. python tools/ca3_margin.py [seed=42] [ms=2000] [k=0,1,1.1,1.2,1.3,1.5,2] [trace=ec.pt] [bgvar=1]
 """
 
 from __future__ import annotations
@@ -94,6 +94,8 @@ def main(opts: dict) -> None:
     gen = torch.Generator(device=dev).manual_seed(seed)
     net = circuit.load(spec.circuit)
     c = circuit.TypedCircuit(net, SimpleNamespace(E=E, I=I), dt, dev, gen, compact=dev.type == "cuda", capacity=0.02)
+    # bgvar= — разброс фона авторов вокруг среднего (1 — как у авторов).
+    c.bg_scale = float(opts.get("bgvar", 1.0))
     c.gain = gain.to(dev)
     c.rest_mv = rest.to(dev)
     ec_dev = by_src.get("entorhinal", torch.zeros_like(rest)).to(dev)

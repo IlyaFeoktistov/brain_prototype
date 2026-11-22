@@ -160,6 +160,12 @@ class TypedCircuit:
         if self.has_background:
             self.mu, self.sigma = per_cell("background_mu"), per_cell("background_sigma")
         self.cap = float(net["background_cap_pa"])
+        # Разброс фона вокруг его среднего (диагностика стыка, tools/ca3_margin.py
+        # bgvar=): 1 — фон авторов; среднее (E[lognormal × U(0,1)] =
+        # e^(μ+σ²/2)/2) не меняется.
+        self.bg_scale = 1.0
+        if self.has_background:
+            self.bg_mean = torch.exp(self.mu + self.sigma ** 2 / 2) / 2
         self.type_of = torch.cat([torch.full((sizes[g],), i, dtype=torch.long) for i, g in enumerate(self.names)]).to(device)
         # Шаги мозга на 1 мс (фон и задержка авторов — по 1 мс).
         self.per_ms = max(1, round(1.0 / dt))
@@ -519,6 +525,8 @@ class TypedCircuit:
         if self.has_background:
             fresh = torch.exp(self.mu + self.sigma * torch.randn(self.n, device=dev))
             fresh = (fresh * torch.rand(self.n, device=dev)).clamp(max=self.cap)
+            if self.bg_scale != 1.0:
+                fresh = self.bg_mean + (fresh - self.bg_mean) * self.bg_scale
             self.ext.copy_(torch.where(self.tick % self.per_ms == 0, fresh, self.ext))
         # Вход мозга — сверх его величины при частотах покоя источников: фон
         # авторов — уже весь внешний вход клетки в покое.

@@ -120,6 +120,11 @@ def main(opts: dict) -> None:
     ec_e = b.areas["entorhinal"].E.slice
     zones = {"CA3": b.areas["ca3"].E.slice, "CA1": b.areas["ca1"].E.slice,
              "EC Vb": b.areas["entorhinal_vb"].E.slice}
+    # Корковые входы EC (association, prefrontal → entorhinal): слои L2/3 и L5.
+    for zone in ("association", "prefrontal"):
+        for layer in ("L23", "L5"):
+            layer_pop = b.areas[zone].layers[layer]["E"]
+            zones[f"{zone[:5]} {layer}"] = layer_pop.slice
     series = {k: torch.zeros(bins, device=c.device) for k in zones}
     ec_n = ec_e.stop - ec_e.start
     ec_sample = torch.randperm(ec_n, generator=gen)[:500].to(c.device) + ec_e.start

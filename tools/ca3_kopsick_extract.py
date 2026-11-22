@@ -43,11 +43,14 @@ def strip_comments(src: str) -> str:
     return re.sub(r"//[^\n]*", "", src)
 
 
-def main(project: str) -> None:
-    root = Path(project)
-    src = strip_comments((root / "generateCONFIGStateSTP.h").read_text())
-    main_cpp = strip_comments(next((root / "src").glob("main_*.cpp")).read_text())
+def parse(src: str) -> tuple[dict, dict]:
+    """
+    Группы и связи из файла сети CARLsim (generateCONFIGStateSTP.h, формат
+    Hippocampome.org): createGroup, setNeuronParameters, connect, setSTP.
+    Возвращает (группы, связи по паре (пре, пост)).
+    """
 
+    src = strip_comments(src)
     groups = {}
     for name, count, kind in re.findall(r'createGroup\("(\w+)",\s*(\d+),\s*(\w+)', src):
         groups[name] = {"cells": int(count), "excitatory": kind == "EXCITATORY_NEURON"}
@@ -57,6 +60,9 @@ def main(project: str) -> None:
     keys = ("C", "k", "vr", "vt", "a", "b", "vpeak", "c", "d")
     for m in re.finditer(r"setNeuronParameters\((\w+),([^;]*)\);", src):
         values = [number(x.strip()) for x in m.group(2).split(",")]
+        if len(values) == 10:
+            # Набор Hippocampome: 9 параметров без разброса + рефрактерность.
+            values = [x for v in values[:9] for x in (v, 0.0)] + values[9:]
         assert len(values) == 19, m.group(0)
         assert all(v == 0.0 for v in values[1:18:2]), f"разброс параметров у {m.group(1)}"
         groups[m.group(1)].update({k: values[2 * i] for i, k in enumerate(keys)}, refractory_ms=values[18])
@@ -80,6 +86,14 @@ def main(project: str) -> None:
                     tau_d_ms=number(fields["STPtdAMPA" if excitatory else "STPtdGABAa"]))
 
     assert all("U" in link for link in links.values()), "связь без setSTP"
+    return groups, links
+
+
+def main(project: str) -> None:
+    root = Path(project)
+    main_cpp = strip_comments(next((root / "src").glob("main_*.cpp")).read_text())
+
+    groups, links = parse((root / "generateCONFIGStateSTP.h").read_text())
 
     # Фон покоя: std::lognormal_distribution<float> <тип>_distribution(μ, σ);
     # имя распределения → группа (как в main: pyr → PC и т.д.).

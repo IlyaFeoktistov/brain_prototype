@@ -8,6 +8,9 @@ Izhikevich 2007 (9 параметров), 51 связь со своими про
 неустойчива (Kopsick et al. 2023, https://doi.org/10.1007/s12559-021-09954-2)
 — у нас прежний CA3 «E + 10% I» был двустабилен (CHAT_PLAN шаг 3, циклы 3–4).
 
+Зубчатая — та же сеть зоны: 4 типа Dyhrfjeld-Johnsen et al. 2007, без фона
+авторов, HIPP — AdEx (data/hippocampus/dg_dyhrfjeld.json, tools/dg_extract.py).
+
 Счёт — как в эталоне tools/ca3_kopsick.py (ядро CARLsim6 feat/ca3net),
 перенесённый на шаг мозга dt (0.5 мс):
   - спад STP по связи: u ×(1 − dt/τ_u), x += (1 − x)·dt/τ_x;
@@ -67,19 +70,39 @@ def load(name: str) -> dict:
     return json.loads((DATA / name).read_text(encoding="utf-8"))
 
 
-def inhibitory_share(net: dict) -> float:
-    """Доля тормозных клеток сети авторов — для AreaSpec.local_inhibitory."""
+def principal(net: dict) -> str:
+    """
+    Главный тип сети (главные клетки зоны, area.E): поле «principal» или
+    единственный возбуждающий тип (CA3 Kopsick).
+    """
 
-    groups = net["groups"].values()
-    total = sum(g["cells"] for g in groups)
-    return sum(g["cells"] for g in groups if not g["excitatory"]) / total
+    if "principal" in net:
+        return net["principal"]
+
+    exc = [g for g, x in net["groups"].items() if x["excitatory"]]
+
+    if len(exc) != 1:
+        raise ValueError("сеть зоны: возбуждающих типов несколько — укажите principal")
+    return exc[0]
+
+
+def inhibitory_share(net: dict) -> float:
+    """
+    Доля клеток сети не главного типа — для AreaSpec.local_inhibitory: они
+    стоят на местах area.I (у CA3 — тормозные, у зубчатой ещё и мшистые).
+    """
+
+    groups = net["groups"]
+    total = sum(g["cells"] for g in groups.values())
+    return 1.0 - groups[principal(net)]["cells"] / total
 
 
 class TypedCircuit:
     """
     Сеть зоны по данным авторов на клетках зоны мозга: главные (area.E) —
-    возбуждающий тип сети, местные тормозные (area.I) — тормозные типы по
-    долям авторов. Состояние клеток (v, u) — своё; мозг видит их спайки и v.
+    главный тип сети (principal), места area.I — остальные типы по долям
+    авторов (тормозные и, у зубчатой, мшистые). Состояние клеток (v, u) —
+    своё; мозг видит их спайки и v.
     """
 
     def __init__(self, net: dict, area, dt: float, device: torch.device, generator: torch.Generator,
@@ -88,16 +111,13 @@ class TypedCircuit:
         self.device = device
         self.dt = dt
         groups = net["groups"]
-        exc = [g for g in groups if groups[g]["excitatory"]]
-        inh = [g for g in groups if not groups[g]["excitatory"]]
+        main = principal(net)
+        rest = [g for g in groups if g != main]
 
-        if len(exc) != 1:
-            raise ValueError("сеть зоны: нужен один возбуждающий тип (главные клетки)")
-
-        # Клеток по типам: главные — area.E, тормозные — area.I по долям авторов.
-        sizes = {exc[0]: area.E.size}
-        sizes.update(zip(inh, largest_remainder(area.I.size, [groups[g]["cells"] for g in inh])))
-        self.names = exc + inh
+        # Клеток по типам: главные — area.E, остальные — area.I по долям авторов.
+        sizes = {main: area.E.size}
+        sizes.update(zip(rest, largest_remainder(area.I.size, [groups[g]["cells"] for g in rest])))
+        self.names = [main] + rest
         self.size = sizes
         offsets = [0]
         for g in self.names[:-1]:
@@ -112,10 +132,30 @@ class TypedCircuit:
         def per_cell(key):
             return torch.cat([torch.full((sizes[g],), float(groups[g][key])) for g in self.names]).to(device)
 
+        # Тип с моделью AdEx (Brette & Gerstner 2005; поле model: "adex"):
+        # C dv/dt = −gL(v − EL) + gL·ΔT·exp((v − VT)/ΔT) − w + I, τw dw/dt =
+        # a(v − EL) − w — то же, что u Izhikevich при a = 1/τw, b = a_AdEx,
+        # vr = EL; k = 0 (квадратичного члена нет). У Izhikevich gL = 0.
+        for g in self.names:
+            x = groups[g]
+            if x.get("model") == "adex":
+                x.setdefault("k", 0.0)
+                x.setdefault("vt", x["VT"])
+            else:
+                x.setdefault("gL", 0.0)
+                x.setdefault("EL", 0.0)
+                x.setdefault("VT", 0.0)
+                x.setdefault("deltaT", 1.0)
+        self.gL, self.EL, self.VT, self.dT = per_cell("gL"), per_cell("EL"), per_cell("VT"), per_cell("deltaT")
         self.C, self.k, self.vr, self.vt = per_cell("C"), per_cell("k"), per_cell("vr"), per_cell("vt")
         self.a, self.b, self.vpeak = per_cell("a"), per_cell("b"), per_cell("vpeak")
         self.c, self.d = per_cell("c"), per_cell("d")
-        self.mu, self.sigma = per_cell("background_mu"), per_cell("background_sigma")
+        # Фон авторов (lognormal по типу) — у сети, подобранной на покой без
+        # входных зон (CA3 Kopsick); у сети без фона (зубчатая Hippocampome)
+        # весь вход — пути мозга.
+        self.has_background = all("background_mu" in groups[g] for g in self.names)
+        if self.has_background:
+            self.mu, self.sigma = per_cell("background_mu"), per_cell("background_sigma")
         self.cap = float(net["background_cap_pa"])
         self.type_of = torch.cat([torch.full((sizes[g],), i, dtype=torch.long) for i, g in enumerate(self.names)]).to(device)
         # Шаги мозга на 1 мс (фон и задержка авторов — по 1 мс).
@@ -145,7 +185,10 @@ class TypedCircuit:
             stp_U.append(torch.full((npre,), link["U"]))
             stp_iu.append(torch.full((npre,), dt / link["tau_u_ms"]))
             stp_ix.append(torch.full((npre,), dt / link["tau_x_ms"]))
-            stp_scale.append(torch.full((npre,), link["weight"] * link["g"] / link["U"]))
+            # Входов у клетки по данным больше, чем клеток-источников у нас:
+            # связь со всеми, сила × недостающая доля (средний вход тот же)
+            # [своё: при малой популяции-источнике].
+            stp_scale.append(torch.full((npre,), link["weight"] * link["g"] / link["U"] * max(1.0, self._p(link, groups, sizes))))
             g_cell.append(torch.arange(npost) + self.start[post])
             g_decay.append(torch.full((npost,), 1.0 - dt / link["tau_d_ms"]))
             g_exc.append(torch.full((npost,), bool(groups[pre]["excitatory"])))
@@ -188,7 +231,7 @@ class TypedCircuit:
                 for i in mine:
                     link = links[i]
                     npost = sizes[link["post"]]
-                    p = min(1.0, link["p"] * groups[link["post"]]["cells"] / npost)
+                    p = min(1.0, self._p(link, groups, sizes))
                     mask = torch.rand((hi - lo, npost), generator=generator, device=device) < p
                     pre_l, post_l = mask.nonzero(as_tuple=True)
                     del mask
@@ -223,6 +266,17 @@ class TypedCircuit:
         # при частотах покоя источников, мВ (set_rest_input; до вызова — 0).
         self.gain = torch.ones(n, device=device)
         self.rest_mv = torch.zeros(n, device=device)
+
+    @staticmethod
+    def _p(link: dict, groups: dict, sizes: dict) -> float:
+        """
+        Вероятность связи у нас: авторов × (их клеток получателя / наших) —
+        у клетки столько же входов, сколько у авторов (их вероятность × их
+        клеток источника) при тех же долях типов. Больше 1 — входов по
+        данным больше, чем у нас клеток источника.
+        """
+
+        return link["p"] * groups[link["post"]]["cells"] / sizes[link["post"]]
 
     # ------------------------------------------------------------------
 
@@ -259,7 +313,8 @@ class TypedCircuit:
         inv_c = h / self.C
 
         def fv(vv, ww):
-            return (self.k * (vv - self.vr) * (vv - self.vt) - ww + current) * inv_c
+            adex = self.gL * (self.EL - vv + self.dT * torch.exp(((vv - self.VT) / self.dT).clamp(max=10.0)))
+            return (self.k * (vv - self.vr) * (vv - self.vt) + adex - ww + current) * inv_c
 
         def fu(vv, ww):
             return self.a * (self.b * (vv - self.vr) - ww) * h
@@ -292,7 +347,7 @@ class TypedCircuit:
         decay = torch.exp(-dt / tau_syn)
         # Izhikevich: малый ток eps·S пА, отклик линеен.
         eps = 1e-2
-        params = {k: getattr(self, k) for k in ("C", "k", "vr", "vt", "a", "b")}
+        params = {k: getattr(self, k) for k in ("C", "k", "vr", "vt", "a", "b", "gL", "EL", "VT", "dT")}
 
         for k, x in params.items():
             setattr(self, k, x.double())
@@ -329,7 +384,9 @@ class TypedCircuit:
         _external_minus_modeled).
         """
 
-        self.rest_mv.copy_(rest_mv[self.first: self.first + self.n])
+        if self.has_background:
+            # Без фона авторов вход мозга идёт целиком (rest_mv остаётся 0).
+            self.rest_mv.copy_(rest_mv[self.first: self.first + self.n])
 
     # ------------------------------------------------------------------
 
@@ -376,9 +433,10 @@ class TypedCircuit:
         g_i = torch.zeros(self.n, device=dev).index_add_(0, cells, torch.where(exc, 0.0, live))
 
         # 4. Фон: lognormal × U(0, 1), потолок; новый каждую 1 мс.
-        fresh = torch.exp(self.mu + self.sigma * torch.randn(self.n, device=dev))
-        fresh = (fresh * torch.rand(self.n, device=dev)).clamp(max=self.cap)
-        self.ext.copy_(torch.where(self.tick % self.per_ms == 0, fresh, self.ext))
+        if self.has_background:
+            fresh = torch.exp(self.mu + self.sigma * torch.randn(self.n, device=dev))
+            fresh = (fresh * torch.rand(self.n, device=dev)).clamp(max=self.cap)
+            self.ext.copy_(torch.where(self.tick % self.per_ms == 0, fresh, self.ext))
         # Вход мозга — сверх его величины при частотах покоя источников: фон
         # авторов — уже весь внешний вход клетки в покое.
         drive = self.ext + (ext_mv - self.rest_mv) * self.gain
@@ -390,20 +448,32 @@ class TypedCircuit:
         v, uu = self.v, self.u
 
         for j in range(self.substeps):
+            # Выстрелившая в этом шаге клетка до конца шага стоит в сбросе (v
+            # = c, u не меняется): один спайк — одно u += d. У CARLsim спайк
+            # возможен в каждом подшаге 1 мс, d прибавляется за каждый, а
+            # спайк считается один — с отрицательным d (HIPP Hippocampome,
+            # −58 пА) клетка от этого залипала на 700–1000 Гц (CHAT_PLAN
+            # шаг 3, цикл 6); при покое CA3 двойных спайков за шаг нет.
+            hold = refr | spikes
             current = drive - g_e * (v - E_AMPA) - g_i * (v - E_GABAA)
             v_next, u_next = self._membrane(v, uu, current, h)
-            spike = v_next > self.vpeak
+            spike = (v_next > self.vpeak) & ~hold
             v_next = torch.where(spike, self.c, v_next).clamp(min=V_FLOOR)
             u_next = u_next + torch.where(spike, self.d, 0.0)
 
             if j == self.substeps - 1:
                 v_next = torch.where(refr, self.c, v_next)
-                self.ref.copy_(torch.where(refr, self.ref - 1, torch.where(spike, self.ref_steps, self.ref)))
             else:
                 v_next = torch.where(refr, v, v_next)
-            uu = torch.where(refr, uu, u_next)
+            v_next = torch.where(spikes, self.c, v_next)
+            uu = torch.where(hold, uu, u_next)
             v = v_next
-            spikes |= spike & ~refr
+            spikes |= spike
+
+        # Рефрактерность 1 мс — после спайка в любом подшаге (у CARLsim — на
+        # последнем подшаге 1 мс; у нас шаг 0.5 мс, спайк в начале шага иначе
+        # давал второй через 0.5 мс).
+        self.ref.copy_(torch.where(refr, self.ref - 1, torch.where(spikes, self.ref_steps, self.ref)))
 
         self.v.copy_(v)
         self.u.copy_(uu)

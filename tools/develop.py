@@ -31,6 +31,7 @@ import torch
 
 from brain import anatomy
 from brain.config import BRAIN_HOME, BrainConfig
+from brain.develop import develop
 from brain.mind import Mind
 from brain.session import Session
 
@@ -314,17 +315,22 @@ def main(opts: dict) -> None:
         if any(p.name.startswith(c.strip()) for c in opts.get("cut", "").split(",") if c.strip()):
             p.weight.zero_()
             print(f"перерезан путь {p.name}", flush=True)
-    b.run(2500.0, s._blank(2500.0))
     win, every = float(opts.get("win", 1000)), int(opts.get("every", 10))
-    windows = int(float(opts.get("seconds", 60)) * 1000 / win)
+    probe = opts.get("probe", "1") != "0"
+    shown = lambda w: w == 0 or (w + 1) % every == 0
+    count = [0]
 
-    for w in range(windows):
-        shown = w == 0 or (w + 1) % every == 0
+    def window(ms: float) -> torch.Tensor:
         # Окна отчёта — кусками со снимками веток (probed_window); частоты те же, шум генератора — свой.
-        rates = probed_window(b, s, win) if shown and opts.get("probe", "1") != "0" else b.observe(win, s._blank(win))
-        b.homeostasis_update(rates)
-        if shown:
-            report(b, rates, f"окно {w + 1} из {windows}")
+        w = count[0]
+        count[0] += 1
+        return probed_window(b, s, ms) if shown(w) and probe else b.observe(ms, s._blank(ms))
+
+    def on_window(w: int, n: int, rates: torch.Tensor) -> None:
+        if shown(w):
+            report(b, rates, f"окно {w + 1} из {n}")
+
+    develop(mind, float(opts.get("seconds", 60)), win, on_window=on_window, window=window, quiet=s._blank)
 
     out = opts.get("out", "lgn-a")
     path = BRAIN_HOME / "fits" / f"{out}-homeo.pt"

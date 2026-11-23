@@ -67,13 +67,13 @@ class Preset:
             cfg.us_paths = self.us_paths
         return cfg
 
-    def missing(self, seed: int = 1) -> list[Path]:
-        """Файлы пресета, которых нет на диске."""
+    def missing(self, seed: int = 1, develop: bool = False) -> list[Path]:
+        """Файлы пресета, которых нет на диске (develop — сдвиги гомеостаза считаются заново, файл не нужен)."""
 
         need = [preset_file(f.format(seed=seed)) for f in self.weights.values()]
         if self.fit:
             need.append(preset_file(f"fits/{self.fit}.json"))
-        if self.homeo:
+        if self.homeo and not develop:
             need.append(self.homeo_file(seed))
         return [p for p in need if not p.exists()]
 
@@ -85,13 +85,18 @@ class Preset:
     def homeo_file(self, seed: int) -> Path:
         return preset_file(f"fits/{self.homeo}-s{seed}-homeo.pt")
 
-    def finish(self, mind: Mind, seed: int = 1) -> None:
-        """Правки после сборки: TRN, гомеостаз, выученные веса."""
+    def finish(self, mind: Mind, seed: int = 1, develop_s: float = 0.0, on_window=None) -> None:
+        """
+        Правки после сборки: TRN, гомеостаз, выученные веса. develop_s > 0 —
+        вместо сохранённых сдвигов гомеостаза мозг развивается develop_s с
+        (brain/develop.py) и сдвигает фон под ту анатомию, что собрана сейчас;
+        on_window — прогресс развития.
+        """
 
         b = mind.brain
         if self.trn_scale != 1.0:
             next(p for p in b.projections if p.name == TRN_TO_LGN).weight.mul_(self.trn_scale)
-        if self.homeo:
+        if self.homeo and not develop_s:
             # Сдвиги — по клеткам на момент подгонки; зоны, добавленные в конец
             # анатомии позже (слой V энторинальной, 2026-11-19), сдвига не имеют.
             shift = torch.load(self.homeo_file(seed), map_location=b.device)
@@ -99,15 +104,19 @@ class Preset:
         for path, f in self.weights.items():
             w = torch.load(preset_file(f.format(seed=seed)), map_location=b.device)["weight"]
             next(p for p in b.projections if p.name == path).weight.copy_(w)
+        if develop_s:
+            from brain.develop import develop
 
-    def build(self, seed: int = 1, cfg: BrainConfig | None = None) -> Mind:
+            develop(mind, develop_s, on_window=on_window)
+
+    def build(self, seed: int = 1, cfg: BrainConfig | None = None, develop_s: float = 0.0, on_window=None) -> Mind:
         """Собрать мозг пресета (cfg — уже настроенный self.config(seed) с правками вызывающего)."""
 
-        lost = self.missing(seed)
+        lost = self.missing(seed, develop=bool(develop_s))
         if lost:
             raise FileNotFoundError("нет файлов пресета «%s»: %s" % (self.name, ", ".join(map(str, lost))))
         mind = Mind(cfg or self.config(seed))
-        self.finish(mind, seed)
+        self.finish(mind, seed, develop_s, on_window)
         return mind
 
 

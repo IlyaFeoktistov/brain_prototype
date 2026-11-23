@@ -549,15 +549,18 @@ class BrainHost:
         return self.mind.cfg.save_path
 
     def new(self, name: str, neurons: int, preset: str | None = None, seed: int = 1,
-            chosen_flags: dict[str, bool] | None = None, organs: list[str] | None = None) -> str:
+            chosen_flags: dict[str, bool] | None = None, organs: list[str] | None = None,
+            develop_s: float = 0.0) -> str:
         """Новый мозг: голый заданного размера или по пресету (brain/presets.py, размер — пресета);
-        зерно и флаги (brain/flags.py) — в конфиг, он сохраняется с мозгом."""
+        зерно и флаги (brain/flags.py) — в конфиг, он сохраняется с мозгом. develop_s > 0 —
+        развитие при создании (brain/develop.py): develop_s с гомеостаза на тишине сдвигают
+        фон клеток под собранную анатомию (у пресета — вместо сохранённых сдвигов)."""
 
         chosen = PRESETS[preset] if preset else None
         chosen_flags = {k: v for k, v in (chosen_flags or {}).items() if v}
         if chosen and chosen_flags.get("small_columns"):
             raise ValueError("малые колонки — только у голого мозга: подгонки пресета посчитаны на колонках 20 тыс.")
-        if chosen and chosen.missing(seed):
+        if chosen and chosen.missing(seed, develop=develop_s > 0):
             raise ValueError(f"у пресета «{chosen.name}» нет файлов для зерна {seed} (в репозитории — только зерно 1)")
 
         if self.mind is not None and self.mind.cfg.autosave:
@@ -583,7 +586,18 @@ class BrainHost:
         if Path(cfg.save_path).exists():
             raise ValueError(f"мозг {Path(cfg.save_path).name} уже есть")
 
-        self.mind = chosen.build(seed, cfg=cfg) if chosen else Mind(cfg)
+        def progress(w: int, n: int, rates) -> None:
+            self.busy = f"развитие: {w + 1} из {n} с"
+            self.emit(self.status())
+
+        if chosen:
+            self.mind = chosen.build(seed, cfg=cfg, develop_s=develop_s, on_window=progress)
+        else:
+            self.mind = Mind(cfg)
+            if develop_s > 0:
+                from brain.develop import develop
+
+                develop(self.mind, develop_s, on_window=progress)
         flags.after_build(self.mind)
         self.mind.save()
         return cfg.save_path
@@ -640,6 +654,8 @@ class New(BaseModel):
     flags: dict[str, bool] = {}
     # Органы мозга (BrainConfig.organs): None — как в сборке по умолчанию.
     organs: list[str] | None = None
+    # Развитие при создании, с (brain/develop.py); 0 — без развития.
+    develop: float = 0.0
 
 
 class Switch(BaseModel):
@@ -825,7 +841,8 @@ async def new(body: New) -> dict:
     if not name:
         raise HTTPException(400, "нужно имя")
 
-    return {"brain": await _run(lambda: host.new(name, body.neurons, body.preset, body.seed, body.flags, body.organs),
+    return {"brain": await _run(lambda: host.new(name, body.neurons, body.preset, body.seed, body.flags,
+                                                     body.organs, body.develop),
                                 "новый мозг")}
 
 

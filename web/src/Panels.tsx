@@ -376,6 +376,13 @@ export function Chooser({ brains, onClose, info }: { brains: Brains; onClose?: (
   // Что включать в мозг (органы, BrainConfig.organs): минимум для чата — порт
   // слов; весь мозг — глаз, ухо, рука и порт слов.
   const [organs, setOrgans] = useState<Record<string, boolean>>({ eye: true, ear: true, hand: true, words: true });
+  // Развитие при создании (brain/develop.py): N с гомеостаза на тишине сдвигают
+  // фон клеток под собранную анатомию. У пресета — вместо сохранённых сдвигов,
+  // которые после правок анатомии ложатся по номеру на чужие клетки.
+  // По умолчанию включено: сохранённые сдвиги пресета после роста гиппокампа
+  // легли на чужие клетки (буквы 8/20 против 14/20 с развитием, DESIGN 2026-11-23).
+  const [develop, setDevelop] = useState(true);
+  const [developS, setDevelopS] = useState(30);
   const chosenOrgans = ORGANS.filter((o) => organs[o.key]).map((o) => o.key);
   const small = !preset && !!chosen.small_columns;
   const flagsShown = brains.flags.filter((f) => !(preset && f.key === "small_columns"));
@@ -414,7 +421,8 @@ export function Chooser({ brains, onClose, info }: { brains: Brains; onClose?: (
         <form onSubmit={(e) => {
           e.preventDefault();
           const fl = Object.fromEntries(Object.entries(chosen).filter(([k, v]) => v && !(preset && k === "small_columns")));
-          act(api.newBrain(name.trim(), neurons, preset || null, seed, fl, chosenOrgans), `создаю ${name}`);
+          act(api.newBrain(name.trim(), neurons, preset || null, seed, fl, chosenOrgans, develop ? developS : 0),
+            `создаю ${name}${develop ? ` (развитие ${developS} с)` : ""}`);
         }}>
           <label>имя <input value={name} onChange={(e) => setName(e.target.value)} placeholder="например, первый" /></label>
           <label>сборка <select value={preset} onChange={(e) => {
@@ -457,6 +465,16 @@ export function Chooser({ brains, onClose, info }: { brains: Brains; onClose?: (
             ))}
             {preset && !organs.eye && <p className="muted">Пресет подогнан под зрительный путь — без глаза выберите голый мозг.</p>}
             {!organs.eye && <p className="muted">Без глаза мозг живёт и виден на карте; чат словами в вебе — следующим шагом.</p>}
+          </fieldset>
+          <fieldset className="flags">
+            <legend>Развитие</legend>
+            <label className="flag" title="мозг живёт в тишине с гомеостазом: клетки сдвигают фон к частоте покоя своего типа, потом сдвиг замораживается">
+              <input type="checkbox" checked={develop} onChange={(e) => setDevelop(e.target.checked)} />
+              {" "}развитие при создании:{" "}
+              <input type="number" min={1} max={600} step={10} value={developS} disabled={!develop}
+                     onChange={(e) => setDevelopS(Math.max(1, Number(e.target.value)))} style={{ width: "5em" }} /> с гомеостаза
+            </label>
+            {develop && preset && <p className="muted">Вместо сохранённых сдвигов пресета — свои, под текущую анатомию.</p>}
           </fieldset>
           <fieldset className="flags">
             <legend>Флаги (опыты; по умолчанию всё выключено — как в пресете)</legend>

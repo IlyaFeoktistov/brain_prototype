@@ -329,6 +329,30 @@ def _path(src, dst, k, psp, direction="", **kw) -> PathwaySpec:
     return PathwaySpec(src, dst, k=k, psp_mv=psp, direction=direction, **kw)
 
 
+def _mid_thalamic(src: str, dst: str) -> list[PathwaySpec]:
+    """
+    MD → гранулярная префронтальная кора (dlPFC, поля 9/46): метка от MD —
+    в глубоком слое III и в слое IV, у макаки (Giguère & Goldman-Rakic 1988,
+    https://doi.org/10.1002/cne.902770202 [сверить DOI]; ещё слой I — у нас
+    его нет); таламические окончания на PV — только в средней зоне, слои 3–4
+    (Melchitzky, Sesack & Lewis 1999, https://doi.org/10.1002/(SICI)1096-9861(19990524)408:1<11::AID-CNE2>3.0.CO;2-T
+    [сверить DOI]); у мыши MD сильнее всего возбуждает пирамидные L2/3 и PV
+    L3 (Delevich et al. 2015, https://doi.org/10.1523/JNEUROSCI.4565-14.2015;
+    Collins et al. 2018, https://doi.org/10.1016/j.neuron.2018.03.024).
+    L3 — тела L2/3 E и PV L2/3 (отдельного L3 в колонке нет), L4 — E и PV,
+    как у сенсорного реле. Доля L3 : L4 не мерена — поровну [сверить]; число
+    входов и ВПСП — доза сенсорного таламуса (engine._thalamic_path; для
+    MD → dlPFC не найдены), делится на оба слоя. Было — только L4: общий
+    вход MD гнал L4, поле L4 → L2/3 раздавало его колонке (CHAT_PLAN циклы
+    28–29).
+    """
+
+    return [
+        _path(src, dst, 20, 0.6, "thalamic"),
+        _path(src, dst, 20, 0.6, "thalamic_l3pv", name=f"{src} -> {dst} (L3)"),
+    ]
+
+
 def _motor_thalamic(src: str, dst: str) -> list[PathwaySpec]:
     """
     Моторный таламус → агранулярная и дисгранулярная моторная кора: не в
@@ -420,9 +444,10 @@ def pathways(cfg) -> list[PathwaySpec]:
             _path(trn, relay, 20, -1.5, mapped=mapped, topographic=local),
         ]
 
-    # Реле ПФК: MD → ПФК и цель (в L4, как вход таламуса).
+    # Реле ПФК: MD → ПФК — в L3 и L4 одной дозой (_mid_thalamic); MD → цель —
+    # в L4, как вход таламуса (слой не сверен).
     out += [
-        _path("md", "prefrontal", 20, 0.6, "thalamic"),
+        *_mid_thalamic("md", "prefrontal"),
         _path("md", "goal", 20, 0.6, "thalamic"),
     ]
     # ---- базальные ганглии (Gerfen & Surmeier 2011; Lindahl & Hellgren

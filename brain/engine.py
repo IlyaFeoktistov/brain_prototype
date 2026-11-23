@@ -940,7 +940,7 @@ class SpikingBrain:
         direction = path.direction or next(
             (d for s, t, d in self.cfg.pathway_directions if (s, t) == (path.src, path.dst)), "",
         )
-        return direction in ("thalamic", "thalamic_l1", "thalamic_l3") and dst.layers is not None
+        return direction in ("thalamic", "thalamic_l1", "thalamic_l3", "thalamic_l3pv") and dst.layers is not None
 
     def _thalamic_path(self, path, pre: Population, post: Population, inhibitory: bool) -> tuple[int, float]:
         """
@@ -971,6 +971,11 @@ class SpikingBrain:
                 return 0, 0.0
 
             k_data /= sum(1 for p in cfg.pathways if p.dst == path.dst and p.direction in motor)
+        elif any(p.src == path.src and p.dst == path.dst and p.direction == "thalamic_l3pv" for p in cfg.pathways):
+            # Таламус ассоциативной коры в L3 и L4 одной дозой
+            # (anatomy._mid_thalamic): доза клетки — на все слои ядра.
+            k_data /= sum(1 for p in cfg.pathways if p.src == path.src and p.dst == path.dst
+                          and p.direction in ("thalamic", "thalamic_l3pv"))
 
         self.modeled_inputs[post.name] = self.modeled_inputs.get(post.name, 0.0) + k_data
         psp = cfg.thalamic_psp_mv * (cfg.thalamic_pv_ratio if inhibitory else 1.0)
@@ -1177,6 +1182,10 @@ class SpikingBrain:
                 # Моторный таламус (anatomy._motor_thalamic): L1 — ветки
                 # дендрита L2/3, L3 — тела L2/3; тормозным — нет.
                 post, inhibitory, top_down = dst.layers["L23"]["E"], None, direction == "thalamic_l1"
+            elif direction == "thalamic_l3pv":
+                # Таламус ассоциативной коры — и в L3: тела L2/3 E и PV L3
+                # (anatomy._mid_thalamic).
+                post, inhibitory = dst.layers["L23"]["E"], dst.layers["L23"]["PV"]
             elif direction in ("ff", "thalamic") and "L4" in dst.layers:
                 post, inhibitory = dst.layers["L4"]["E"], dst.layers["L4"]["PV"]
             elif direction == "fb":

@@ -17,7 +17,7 @@
 old=1 — прежняя петля реле ↔ TRN (случайная проводка, topographic 0, до
 цикла 24) через tools/develop.override_paths; path= — любые другие пути.
 
-    PYTHONPATH=. python tools/chain_sync.py [seed=42] [adapt=10] [record=6] [old=1] [path=…]
+    PYTHONPATH=. python tools/chain_sync.py [seed=42] [adapt=10] [record=6] [old=1] [extpop=prefrontal:1] [path=…]
 """
 
 from __future__ import annotations
@@ -86,14 +86,19 @@ def report(name: str, y: torch.Tensor, fired: torch.Tensor, sample: torch.Tensor
     ibi_s = f"{float(ibi.mean()):.0f} мс, CV {float(ibi.std() / ibi.mean()):.2f}" if len(ibi) > 1 else "—"
     amp = sum(float(y[t: t + n].max()) for t, n in ev) / len(ev) / mean
 
+    def parts(ts: list[int]) -> torch.Tensor:
+        return torch.stack([fired[max(0, t - 2): t + 3].any(0).float().mean() for t in ts])
+
     def share(ts: list[int]) -> float:
-        return float(torch.stack([fired[max(0, t - 2): t + 3].any(0).float().mean() for t in ts]).mean())
+        return float(parts(ts).mean())
 
     gen = torch.Generator().manual_seed(1)
     rand = torch.randint(2, bins - 3, (200,), generator=gen).tolist()
     print(f"{head}\n   событий (> {thr:g}× средней) {len(ev) / sec:.2f}/с, длительность {dur:.1f} мс, "
           f"интервалы {ibi_s}, пик × средней {amp:.1f}, в событии ±10 мс {share(starts):.1%} клеток "
           f"(в случайном окне {share(rand):.1%})", flush=True)
+    q = parts(starts).quantile(torch.tensor([0.5, 0.9, 1.0], device=fired.device)).tolist()
+    print(f"   размер событий (доля клеток ±10 мс): медиана {q[0]:.1%}, 90% {q[1]:.1%}, наибольшее {q[2]:.1%}", flush=True)
 
 
 def main(opts: dict) -> None:
@@ -106,6 +111,7 @@ def main(opts: dict) -> None:
     cfg.homeostasis = True
     cfg.event_overflow = "warn"
     cfg.organs = ("words",)
+    develop.override_external(cfg, opts.get("extpop", ""))
     b = Mind(cfg).brain
     b.plasticity = False
     s = develop.Silence(b)
@@ -118,6 +124,8 @@ def main(opts: dict) -> None:
     levels = {
         "MD": (b.areas["md"].E, 5.0),
         "ПФК L2/3 E": (b.areas["prefrontal"].layers["L23"]["E"], 5.0),
+        "ПФК L2/3 PV": (b.areas["prefrontal"].layers["L23"]["PV"], 5.0),
+        "ПФК L4 E": (b.areas["prefrontal"].layers["L4"]["E"], 5.0),
         "ПФК L5 E": (b.areas["prefrontal"].layers["L5"]["E"], 5.0),
         "EC II/III": (b.areas["entorhinal"].E, 2.0),
         "CA3 PC": (b.areas["ca3"].E, 5.0),
@@ -138,10 +146,20 @@ def main(opts: dict) -> None:
             fired[k][t] = x > 0
             sample[k][t] = r[picks[k]]
 
-    print(f"зерно {cfg.seed}, {'прежняя петля реле ↔ TRN' if opts.get('old') == '1' else 'сборка по умолчанию'}, "
+    print(f"зерно {cfg.seed}, {'прежняя петля реле ↔ TRN' if opts.get('old') == '1' else 'сборка по умолчанию'}"
+          f"{', внешний фон ' + opts['extpop'] if opts.get('extpop') else ''}, "
           f"запись {bins * 0.005:.0f} с", flush=True)
     for k, (p, thr) in levels.items():
         report(k, series[k], fired[k], sample[k], thr, p.size, bins)
+    # Регулятор (гомеостаз возбудимости): сдвиг фона после адаптации и доля
+    # клеток в упоре ±homeostasis_max_mv — упор значит, что частоту держит
+    # не механизм, а край регулятора.
+    shift = getattr(b, "homeo_shift", None)
+    if shift is not None:
+        cap = b.cfg.homeostasis_max_mv
+        print("гомеостаз, сдвиг фона мВ (в упоре):", "  ".join(
+            f"{k} {float(shift[p.slice].mean()):+.1f} ({float((shift[p.slice].abs() >= cap - 1e-3).float().mean()):.0%})"
+            for k, (p, _) in levels.items()), flush=True)
     lost = float(b.dropped) - dropped0
     print(f"потеряно событий за запись: мозг {lost:.3g}, " + ", ".join(
         f"{k} {float(x.dropped) - cdrop0[k]:.3g}" for k, x in b.circuits.items()), flush=True)

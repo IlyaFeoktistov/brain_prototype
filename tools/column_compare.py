@@ -21,7 +21,7 @@ CHUNK → 1 мс, как в tools/md_sync.py). По популяциям каж�
 extpop=prefrontal:1 — внешний фон ПФК по данным (цикл 26: с подобранным фоном
 регулятор ПФК при 30 с в упоре).
 
-    PYTHONPATH=. python tools/column_compare.py [areas=prefrontal,association] [seed=42] [adapt=30] [record=3] [extpop=…] [smooth=md->prefrontal]
+    PYTHONPATH=. python tools/column_compare.py [areas=prefrontal,association] [seed=42] [adapt=30] [record=3] [extpop=…] [smooth=md->prefrontal] [indep_md=1] [md_scale=1]
 """
 
 from __future__ import annotations
@@ -55,6 +55,33 @@ def xcorr(a: torch.Tensor, b: torch.Tensor, lag: int) -> list[float]:
     return [float((a[max(0, -k): n - max(0, k)] * b[max(0, k): n - max(0, -k)]).mean()) for k in range(-lag, lag + 1)]
 
 
+def independent_md(b, s, scale: float = 1.0) -> None:
+    """
+    indep_md=1 — вход MD → ПФК (L4 E и L4 PV) без общей части: построенные
+    синапсы → 0, у каждой клетки свой пуассон (engine.tc_missing — механизм
+    недостающих таламических входов, van Albada et al. 2015): k событий с
+    частотой её собственных клеток MD (сглажена cfg.tc_missing_tau_ms), вес
+    синапса тот же, × ресурс депрессии тех же клеток MD. Среднее и разброс
+    у клетки те же; убраны перекрытие источников и корреляции пар MD.
+    scale — множитель веса событий: подогнать средний ток L4 к контролю
+    (синхронные спайки построенных синапсов дают меньше тока — депрессия
+    и движущая сила в залпе). Диагностика, не механизм.
+    """
+
+    rate = b.observe(1000.0, s._blank(1000.0)) / 1000.0
+    for p in [p for p in b.projections if p.name in ("md -> prefrontal", "md -> prefrontal.I")]:
+        pre = p.pre.long()
+        w = p.weight.float().mean(1).clone() * scale
+        b.tc_missing.append((p.post, pre, float(pre.shape[1]), w))
+        print(f"{p.name}: построенные → независимые события, {pre.shape[1]} на клетку, вес {float(w.mean()):.3f}, "
+              f"частота MD {float(rate[pre].mean()) * 1000:.1f} Гц", flush=True)
+        p.weight.zero_()
+    b.tc_rate = rate[: b.n_slots].clone() if rate.numel() >= b.n_slots else torch.cat(
+        [rate, torch.zeros(b.n_slots - rate.numel(), device=rate.device)])
+    b._graphs.clear()
+    b.observe(2000.0, s._blank(2000.0))
+
+
 def main(opts: dict) -> None:
     cfg = BrainConfig()
     cfg.size = "small"
@@ -80,6 +107,8 @@ def main(opts: dict) -> None:
     if opts.get("smooth"):
         develop.smooth_paths(b, opts["smooth"])
         b.observe(1000.0, s._blank(1000.0))
+    if opts.get("indep_md") == "1":
+        independent_md(b, s, float(opts.get("md_scale", 1.0)))
 
     b.CHUNK = int(round(1.0 / b.cfg.dt_ms))
     b._graphs.clear()
@@ -103,7 +132,8 @@ def main(opts: dict) -> None:
     w5 = bins // 5
     print(f"зерно {cfg.seed}, адаптация {opts.get('adapt', 30)} с, запись {bins / 1000:.0f} с"
           f"{', внешний фон ' + opts['extpop'] if opts.get('extpop') else ''}"
-          f"{', сглажен ' + opts['smooth'] if opts.get('smooth') else ''}")
+          f"{', сглажен ' + opts['smooth'] if opts.get('smooth') else ''}"
+          f"{', MD → ПФК независимыми событиями' if opts.get('indep_md') == '1' else ''}")
     for a in names:
         print(f"== {a}: популяция  частота | CV 5 мс, корр. пар | возб.: среднее, σ, r | торм.: среднее, σ, r | гомеостаз (в упоре)")
         for (area, k), p in pops.items():

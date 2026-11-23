@@ -18,6 +18,43 @@ from brain.mind import Mind
 from tools import develop
 
 
+def pair_corr(cells: torch.Tensor) -> float:
+    """Средняя корреляция пар клеток по окнам [окна, клетки] (молчащие — мимо)."""
+
+    x = cells - cells.mean(0)
+    sd = x.std(0)
+    live = sd > 0
+    z = x[:, live] / sd[live]
+    cc = (z.T @ z) / (z.shape[0] - 1)
+    return float(cc[~torch.eye(cc.shape[0], dtype=torch.bool, device=cc.device)].mean())
+
+
+def inhibition(b, tcells: torch.Tensor, md, trn) -> None:
+    """
+    Тормозный вход TRN MD → MD по построенным синапсам: сумма весов спайков
+    источников за окно 5 мс [мВ·спайк] на клетку MD. Среднее, колебания во
+    времени (CV средней по MD), разброс по клеткам (CV средней за запись).
+    """
+
+    paths = [p for p in b.projections if p.name.startswith("trn_md -> md")]
+    if not paths:
+        return
+    inp = torch.zeros(tcells.shape[0], md.size, device=tcells.device)
+    for p in paths:
+        pre = p.pre.long() - trn.start
+        w = p.weight.float()
+        ok = (pre >= 0) & (pre < trn.size)
+        post = torch.arange(p.post.slice.start, p.post.slice.stop, device=tcells.device) - md.start
+        # [окна, пост, k] — спайки источников × вес; построенные пути — на E MD.
+        got = tcells[:, pre.clamp(0, trn.size - 1)] * (w * ok)
+        inp[:, post] += got.sum(-1)
+    mean_t = inp.mean(1)
+    per_cell = inp.mean(0)
+    print(f"вход TRN → MD: {float(mean_t.mean()):+.2f} мВ·сп за 5 мс на клетку; во времени CV {float(mean_t.std() / mean_t.mean().abs()):.2f}, "
+          f"окна > 3× среднего {float((mean_t.abs() > 3 * mean_t.mean().abs()).float().mean()):.1%}; "
+          f"по клеткам CV {float(per_cell.std() / per_cell.mean().abs()):.2f}")
+
+
 def main(opts: dict) -> None:
     cfg = BrainConfig()
     cfg.size = "small"
@@ -75,11 +112,14 @@ def main(opts: dict) -> None:
     pop = torch.zeros(bins, device=b.device)
     cells = torch.zeros(bins, 200, device=b.device)
     tsum = torch.zeros(bins, device=b.device)
+    trn = b.areas["trn_md"].E
+    tcells = torch.zeros(bins, trn.size, device=b.device)
     for t in range(bins):
         r = b.observe(5.0, s._blank(5.0))
         pop[t] = r[md.slice].sum() * 0.005
         cells[t] = r[pick] * 0.005
-        tsum[t] = r[b.areas["trn_md"].E.slice].sum() * 0.005
+        tcells[t] = r[trn.slice] * 0.005
+        tsum[t] = tcells[t].sum()
     rate = float(pop.mean()) / md.size / 0.005
     cv = float(pop.std() / pop.mean())
     cv_ind = 1.0 / (md.size * rate * 0.005) ** 0.5
@@ -93,7 +133,6 @@ def main(opts: dict) -> None:
     big = share > 5 * share.mean()
     print(f"доля клеток MD в окне 5 мс: средняя {float(share.mean()):.1%}, 95-я перцентиль {float(torch.quantile(share, 0.95)):.1%}, "
           f"максимум {float(share.max()):.1%}; окон-событий (> 5× средней) {float(big.float().mean()):.1%}")
-    trn = b.areas["trn_md"].E
     t_rate = float(tsum.mean()) / trn.size / 0.005
     t_cv = float(tsum.std() / tsum.mean()) if float(tsum.mean()) > 0 else float("nan")
     t_ind = 1.0 / max(1e-9, trn.size * t_rate * 0.005) ** 0.5
@@ -101,6 +140,8 @@ def main(opts: dict) -> None:
     lag = max(range(-10, 11), key=lambda k: float((a[max(0, -k): bins - max(0, k)] * z[max(0, k): bins - max(0, -k)]).mean()))
     print(f"TRN MD: {trn.size} клеток, {t_rate:.2f} Гц, CV {t_cv:.2f} (независимые — {t_ind:.2f}); "
           f"MD после TRN на {lag * 5:+d} мс (наибольшая связь)")
+    print(f"TRN MD: корреляция пар спайков {pair_corr(tcells):.3f}")
+    inhibition(b, tcells, md, trn)
     print(f"MD: {rate:.2f} Гц, CV популяции по окнам 5 мс {cv:.2f} (независимые — {cv_ind:.2f}), "
           f"корреляция пар спайков {corr:.3f} (клеток {int(live.sum())})")
 

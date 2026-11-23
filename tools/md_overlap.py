@@ -150,8 +150,12 @@ def main(opts: dict) -> None:
     b.run(2500.0, s._blank(2500.0))
     # adapt=N — окон гомеостаза (с): частоты возвращаются к покою при новой
     # проводимости (фон ядер подобран без неё).
-    for _ in range(int(opts.get("adapt", 3))):
-        b.homeostasis_update(b.observe(1000.0, s._blank(1000.0)))
+    for w in range(int(opts.get("adapt", 3))):
+        r = b.observe(1000.0, s._blank(1000.0))
+        b.homeostasis_update(r)
+        if (w + 1) % 10 == 0:
+            print(f"   адаптация {w + 1} с: MD {float(r[md.slice].mean()):.2f} Гц, TRN {float(r[b.areas['trn_md'].E.slice].mean()):.2f} Гц, "
+                  f"сдвиг MD {float(b.homeo_shift[md.slice].mean()):+.1f} мВ", flush=True)
     b.cfg.homeostasis = False
     lim = b.cfg.homeostasis_max_mv
     for zone in ("md", "trn_md"):
@@ -213,6 +217,7 @@ def main(opts: dict) -> None:
     print(f"MD: потенциал {float(v_md.mean()):.1f} мВ, ниже V_h T-тока {float(below.mean()):.0%} клеток; "
           f"ПФК L4 E {float(pfc_pop.mean()):.2f} Гц, CV по окнам {float(pfc_pop.std() / pfc_pop.mean().clamp_min(1e-9)):.2f}")
     inhibition(b, tcells, md, trn)
+    print(f"MD: спайков в пачках (≥ 2 за 5 мс) {float((cells * (cells >= 1.5)).sum() / cells.sum().clamp_min(1)):.0%}")
     print(f"MD: {rate:.2f} Гц, CV популяции по окнам 5 мс {cv:.2f} (независимые — {cv_ind:.2f}), "
           f"корреляция пар спайков {corr:.3f} (клеток {int(live.sum())})")
 

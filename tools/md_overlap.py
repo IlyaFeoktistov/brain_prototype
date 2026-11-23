@@ -64,7 +64,7 @@ def main(opts: dict) -> None:
     cfg.homeostasis = True
     cfg.event_overflow = "warn"
     cfg.organs = ("words",)
-    cfg.thalamic_ach = opts.get("ach", "both") != "none"
+    cfg.thalamic_ach = opts.get("ach", "both") != "none" or opts.get("mono") == "1"
     develop.override_external(cfg, opts.get("extpop", ""))
     b = Mind(cfg).brain
     b.plasticity = False
@@ -84,13 +84,17 @@ def main(opts: dict) -> None:
         print(f"перерезан {src} → {dst}: путей {len(hit)}", flush=True)
     # ach=none|trn|md|both — у каких клеток петли действует проводимость ACh
     # (anatomy.RECEPTOR_CONDUCTANCE; по умолчанию — как в сборке, both).
+    # mono=1 — у TRN MD ещё и NA + 5-HT (закрывают K⁺); без него их строки нулевые.
     ach = opts.get("ach", "both")
-    keep = {"none": (), "trn": ("trn_md",), "md": ("md",), "both": ("trn_md", "md")}[ach]
-    for zone in ("trn_md", "md"):
-        if zone not in keep:
-            b.receptor_g[:, b.areas[zone].E.slice] = 0.0
+    names = list(b.MODULATORS)
+    zones = {"trn": "trn_md", "md": "md"}
+    for i, name in enumerate(names):
+        for key, zone in zones.items():
+            on = (ach in (key, "both")) if name == "acetylcholine" else (key == "trn" and opts.get("mono") == "1")
+            if not on:
+                b.receptor_g[i, b.areas[zone].E.slice] = 0.0
     b.receptor_g_on = bool(b.receptor_g.abs().sum() > 0)
-    print(f"проводимость ACh: {ach}", flush=True)
+    print(f"проводимость ACh: {ach}, NA + 5-HT на TRN: {opts.get('mono') == '1'}", flush=True)
     if opts.get("t_off") == "1":
         b.t_mask[md.slice] = False
         print("T-ток MD выключен", flush=True)
@@ -136,6 +140,7 @@ def main(opts: dict) -> None:
     v_md = torch.zeros(bins, device=b.device)
     below = torch.zeros(bins, device=b.device)
     ach_occ = 0.0
+    g_trn = 0.0
     for t in range(bins):
         r = b.observe(5.0, s._blank(5.0))
         pop[t] = r[md.slice].sum() * 0.005
@@ -146,6 +151,8 @@ def main(opts: dict) -> None:
         v_md[t] = b.v[md.slice].mean()
         below[t] = (b.v[md.slice] < b.cfg.t_vh_mv).float().mean()
         ach_occ += float(b.occupancy("acetylcholine")) / bins
+        occ = torch.tensor([b.occupancy(n) for n in b.MODULATORS], device=b.device)
+        g_trn += float((occ @ b.receptor_g[:, trn.slice]).mean()) / bins
     rate = float(pop.mean()) / md.size / 0.005
     cv = float(pop.std() / pop.mean())
     cv_ind = 1.0 / (md.size * rate * 0.005) ** 0.5
@@ -168,7 +175,9 @@ def main(opts: dict) -> None:
           f"MD после TRN на {lag * 5:+d} мс (наибольшая связь)")
     print(f"TRN MD: корреляция пар спайков {pair_corr(tcells):.3f}; спайков в пачках (≥ 2 за 5 мс) "
           f"{float((tcells * (tcells >= 1.5)).sum() / tcells.sum().clamp_min(1)):.0%}, одиночные {float((tcells == 1).sum()) / bins / trn.size / 0.005:.2f} Гц")
-    print(f"ACh занятость {ach_occ:.2f}; MD: потенциал {float(v_md.mean()):.1f} мВ, ниже V_h T-тока {float(below.mean()):.0%} клеток; "
+    print(f"занятость: ACh {ach_occ:.2f}, NA {b.occupancy('noradrenaline'):.2f}, 5-HT {b.occupancy('serotonin'):.2f}; "
+          f"TRN: Δg/g_L {g_trn:+.2f}, R_вх ×{1 / (1 + g_trn):.2f}")
+    print(f"MD: потенциал {float(v_md.mean()):.1f} мВ, ниже V_h T-тока {float(below.mean()):.0%} клеток; "
           f"ПФК L4 E {float(pfc_pop.mean()):.2f} Гц, CV по окнам {float(pfc_pop.std() / pfc_pop.mean().clamp_min(1e-9)):.2f}")
     inhibition(b, tcells, md, trn)
     print(f"MD: {rate:.2f} Гц, CV популяции по окнам 5 мс {cv:.2f} (независимые — {cv_ind:.2f}), "

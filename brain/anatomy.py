@@ -750,8 +750,15 @@ def cortex_chain(cfg) -> list[PathwaySpec]:
 #   гиперполяризация реле — не введены.
 # Источник ACh в модели — ядро Мейнерта; у реле таламуса наяву главный —
 # ствол (PPT/LDT), его в модели нет (ISSUES).
+# - TRN: норадреналин (α1) и серотонин (5-HT2) закрывают K⁺ на 1–5 нС —
+#   медленная деполяризация, одиночные спайки вместо пачек (McCormick & Wang
+#   1991, https://doi.org/10.1113/jphysiol.1991.sp018791, морская свинка и
+#   кошка, срез) — середина 3 / 6 ≈ −0.5. [своё: перекрытие] оба закрывают
+#   один и тот же калиевый ток — вместе не больше одного полного ответа:
+#   по −0.25 (перекрытие ответов в статье не мерено).
 RECEPTOR_CONDUCTANCE = (
     *(("acetylcholine", trn, 0.4) for trn in ("trn", "trn_mgn", "trn_md", "trn_motor")),
+    *((m, trn, -0.25) for m in ("noradrenaline", "serotonin") for trn in ("trn", "trn_mgn", "trn_md", "trn_motor")),
     *(("acetylcholine", relay, -0.33) for relay in ("lgn", "mgn", "md", "thalamus", "vl_cb")),
 )
 

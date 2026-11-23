@@ -5,7 +5,7 @@ MD → ПФК (CHAT_PLAN шаг 3, цикл 15): перекрытие постр
 спайков) в опыте B (organs=words, адаптация 3 с, запись 3 с).
 
     PYTHONPATH=. python tools/md_overlap.py [seed=42] [extpop=prefrontal:1] [cut=src->dst] [t_off=1]
-        [smooth=src->dst] [ach=none|trn|md|both] [adapt=3]
+        [smooth=src->dst] [ach=none|trn|md|both] [mono=1] [adapt=3] [path=src->dst:k:psp] [inh_tau=зона:мс]
 """
 
 from __future__ import annotations
@@ -66,6 +66,30 @@ def main(opts: dict) -> None:
     cfg.organs = ("words",)
     cfg.thalamic_ach = opts.get("ach", "both") != "none" or opts.get("mono") == "1"
     develop.override_external(cfg, opts.get("extpop", ""))
+    # path=src->dst:k:psp[,…] — путь строится с другим числом входов и PSP
+    # (диагностика: переносим амплитуду из данных, k — чтобы среднее k·psp
+    # сохранилось или по данным).
+    spec = {}
+    for item in (x for x in opts.get("path", "").split(",") if x):
+        name, k, psp = item.split(":")
+        spec[name.replace("->", " -> ")] = (int(k), float(psp))
+    if spec:
+        import dataclasses
+        from brain import anatomy
+
+        built = anatomy.pathways
+
+        def pathways(c):
+            out = []
+            for p in built(c):
+                key = f"{p.src} -> {p.dst}"
+                if key in spec:
+                    p = dataclasses.replace(p, k=spec[key][0], psp_mv=spec[key][1])
+                    print(f"путь {key}: {p.k} входов по {p.psp_mv:+.2f} мВ", flush=True)
+                out.append(p)
+            return out
+
+        anatomy.pathways = pathways
     b = Mind(cfg).brain
     b.plasticity = False
     md = b.areas["md"].E
@@ -95,6 +119,15 @@ def main(opts: dict) -> None:
                 b.receptor_g[i, b.areas[zone].E.slice] = 0.0
     b.receptor_g_on = bool(b.receptor_g.abs().sum() > 0)
     print(f"проводимость ACh: {ach}, NA + 5-HT на TRN: {opts.get('mono') == '1'}", flush=True)
+    # inh_tau=зона:мс — постоянная тормозного тока клеток зоны (тот же
+    # интеграл PSP: скачок τm/τ, площадь J·τm — среднее торможение то же, пик ниже).
+    if opts.get("inh_tau"):
+        zone, ms = opts["inh_tau"].split(":")
+        sl = b.areas[zone].E.slice
+        b.tau_syn_inh[sl] = float(ms)
+        b.syn_scale_inh[sl] = b.tau_m[sl] / b.tau_syn_inh[sl]
+        b.decay_syn_inh[sl] = torch.exp(-b.cfg.dt_ms / b.tau_syn_inh[sl])
+        print(f"тормозной ток {zone}: τ {ms} мс", flush=True)
     if opts.get("t_off") == "1":
         b.t_mask[md.slice] = False
         print("T-ток MD выключен", flush=True)

@@ -2672,6 +2672,15 @@ class SpikingBrain:
                 if label.split(".")[-1] == kind or (kind == "PV" and label.split(".")[-1] == "I"):
                     self.receptor_mv[names.index(name), pop.slice] = mv
 
+        # Рецепторы-каналы: проводимость g / g_L при полной занятости с
+        # реверсией cfg.e_k_mv (cfg.receptor_conductance).
+        self.receptor_g = torch.zeros(len(names), self.n_slots, device=self.device)
+        for name, area_name, g in self.cfg.receptor_conductance:
+            area = self.areas.get(area_name)
+            if area is not None and name in names:
+                self.receptor_g[names.index(name), area.E.slice] = g
+        self.receptor_g_on = bool(self.receptor_g.abs().sum() > 0)
+
         # Ацетилхолин из ядра Мейнерта: уровень, который читают пути, —
         # занятость его рецепторов, а не число из кода.
         self.ach_chemistry = names.index("acetylcholine")
@@ -3466,6 +3475,8 @@ class SpikingBrain:
         # Вещества через рецепторы: занятость c / (c + K) × ток клетки.
         occupancy = (self.chemistry / (self.chemistry + self.chemistry_half)).to(torch.float32)
         modulated = occupancy @ self.receptor_mv
+        if self.receptor_g_on:
+            modulated = modulated + (occupancy @ self.receptor_g) * (cfg.e_k_mv - self.v)
 
         # T-ток (IFB): ток в мВ покоя = g_T / g_L · h · (E_T − V) при V ≥ V_h.
         t_open = self.t_mask & (self.v >= cfg.t_vh_mv)

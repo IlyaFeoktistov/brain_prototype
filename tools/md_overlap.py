@@ -5,6 +5,7 @@ MD → ПФК (CHAT_PLAN шаг 3, цикл 15): перекрытие постр
 спайков) в опыте B (organs=words, адаптация 3 с, запись 3 с).
 
     PYTHONPATH=. python tools/md_overlap.py [seed=42] [extpop=prefrontal:1] [cut=src->dst] [t_off=1]
+        [smooth=src->dst] [ach=none|trn|md|both] [adapt=3]
 """
 
 from __future__ import annotations
@@ -63,6 +64,7 @@ def main(opts: dict) -> None:
     cfg.homeostasis = True
     cfg.event_overflow = "warn"
     cfg.organs = ("words",)
+    cfg.thalamic_ach = opts.get("ach", "both") != "none"
     develop.override_external(cfg, opts.get("extpop", ""))
     b = Mind(cfg).brain
     b.plasticity = False
@@ -80,6 +82,15 @@ def main(opts: dict) -> None:
             for m in (b.mf_exc, b.mf_inh, b.mf_ach):
                 m[q[:, None], i[None, :]] = 0.0
         print(f"перерезан {src} → {dst}: путей {len(hit)}", flush=True)
+    # ach=none|trn|md|both — у каких клеток петли действует проводимость ACh
+    # (anatomy.RECEPTOR_CONDUCTANCE; по умолчанию — как в сборке, both).
+    ach = opts.get("ach", "both")
+    keep = {"none": (), "trn": ("trn_md",), "md": ("md",), "both": ("trn_md", "md")}[ach]
+    for zone in ("trn_md", "md"):
+        if zone not in keep:
+            b.receptor_g[:, b.areas[zone].E.slice] = 0.0
+    b.receptor_g_on = bool(b.receptor_g.abs().sum() > 0)
+    print(f"проводимость ACh: {ach}", flush=True)
     if opts.get("t_off") == "1":
         b.t_mask[md.slice] = False
         print("T-ток MD выключен", flush=True)
@@ -100,9 +111,15 @@ def main(opts: dict) -> None:
 
     s = develop.Silence(b)
     b.run(2500.0, s._blank(2500.0))
-    for _ in range(3):
+    # adapt=N — окон гомеостаза (с): частоты возвращаются к покою при новой
+    # проводимости (фон ядер подобран без неё).
+    for _ in range(int(opts.get("adapt", 3))):
         b.homeostasis_update(b.observe(1000.0, s._blank(1000.0)))
     b.cfg.homeostasis = False
+    lim = b.cfg.homeostasis_max_mv
+    for zone in ("md", "trn_md"):
+        sh = b.homeo_shift[b.areas[zone].E.slice]
+        print(f"гомеостаз {zone}: сдвиг {float(sh.mean()):+.1f} мВ, у предела ±{lim:.0f} {float((sh.abs() >= lim - 1e-3).float().mean()):.0%}", flush=True)
     # smooth=src->dst — после адаптации: тот же средний вход пути без колебаний
     # (develop.smooth_paths: у источника без поля — постоянный ток по фактической
     # частоте и ресурсу).
@@ -114,12 +131,21 @@ def main(opts: dict) -> None:
     tsum = torch.zeros(bins, device=b.device)
     trn = b.areas["trn_md"].E
     tcells = torch.zeros(bins, trn.size, device=b.device)
+    pfc = b.areas["prefrontal"].layers["L4"]["E"]
+    pfc_pop = torch.zeros(bins, device=b.device)
+    v_md = torch.zeros(bins, device=b.device)
+    below = torch.zeros(bins, device=b.device)
+    ach_occ = 0.0
     for t in range(bins):
         r = b.observe(5.0, s._blank(5.0))
         pop[t] = r[md.slice].sum() * 0.005
         cells[t] = r[pick] * 0.005
         tcells[t] = r[trn.slice] * 0.005
         tsum[t] = tcells[t].sum()
+        pfc_pop[t] = r[pfc.slice].mean()
+        v_md[t] = b.v[md.slice].mean()
+        below[t] = (b.v[md.slice] < b.cfg.t_vh_mv).float().mean()
+        ach_occ += float(b.occupancy("acetylcholine")) / bins
     rate = float(pop.mean()) / md.size / 0.005
     cv = float(pop.std() / pop.mean())
     cv_ind = 1.0 / (md.size * rate * 0.005) ** 0.5
@@ -140,7 +166,10 @@ def main(opts: dict) -> None:
     lag = max(range(-10, 11), key=lambda k: float((a[max(0, -k): bins - max(0, k)] * z[max(0, k): bins - max(0, -k)]).mean()))
     print(f"TRN MD: {trn.size} клеток, {t_rate:.2f} Гц, CV {t_cv:.2f} (независимые — {t_ind:.2f}); "
           f"MD после TRN на {lag * 5:+d} мс (наибольшая связь)")
-    print(f"TRN MD: корреляция пар спайков {pair_corr(tcells):.3f}")
+    print(f"TRN MD: корреляция пар спайков {pair_corr(tcells):.3f}; спайков в пачках (≥ 2 за 5 мс) "
+          f"{float((tcells * (tcells >= 1.5)).sum() / tcells.sum().clamp_min(1)):.0%}, одиночные {float((tcells == 1).sum()) / bins / trn.size / 0.005:.2f} Гц")
+    print(f"ACh занятость {ach_occ:.2f}; MD: потенциал {float(v_md.mean()):.1f} мВ, ниже V_h T-тока {float(below.mean()):.0%} клеток; "
+          f"ПФК L4 E {float(pfc_pop.mean()):.2f} Гц, CV по окнам {float(pfc_pop.std() / pfc_pop.mean().clamp_min(1e-9)):.2f}")
     inhibition(b, tcells, md, trn)
     print(f"MD: {rate:.2f} Гц, CV популяции по окнам 5 мс {cv:.2f} (независимые — {cv_ind:.2f}), "
           f"корреляция пар спайков {corr:.3f} (клеток {int(live.sum())})")

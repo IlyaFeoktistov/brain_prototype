@@ -736,6 +736,25 @@ def cortex_chain(cfg) -> list[PathwaySpec]:
 #   базального мозга (Arrigoni et al. 2006); A2A деполяризует часть клеток
 #   VLPO (Gallopin et al. 2005), A1 гиперполяризует LC (Regenold & Illes
 #   1990) — единицы мВ [сверить].
+# Ацетилхолин на таламус — проводимостью K⁺ (cfg.receptor_conductance,
+# g / g_L при полной занятости; g_L = 1 / R_вх):
+# - TRN: открывает K⁺ (M2) на 1–4 нС — гиперполяризация (McCormick & Prince
+#   1986, https://doi.org/10.1038/319402a0, морская свинка, срез); R_вх TRN
+#   166 ± 54 МОм → g_L ≈ 6 нС (крыса, срез, PMC31198) — середина 2.5 / 6 ≈ 0.4;
+# - реле (LGN, MGN — и все реле модели): медленная деполяризация закрытием
+#   K⁺ на 2–15 нС, клетка уходит из пачек в одиночные спайки (McCormick &
+#   Prince 1987, https://doi.org/10.1113/jphysiol.1987.sp016774, морская
+#   свинка и кошка, срез); R_вх 42 ± 18 МОм → g_L ≈ 24 нС (морская свинка,
+#   Jahnsen & Llinás 1984, https://doi.org/10.1113/jphysiol.1984.sp015320) —
+#   середина 8 / 24 ≈ −0.33. Быстрый никотиновый ответ и ранняя
+#   гиперполяризация реле — не введены.
+# Источник ACh в модели — ядро Мейнерта; у реле таламуса наяву главный —
+# ствол (PPT/LDT), его в модели нет (ISSUES).
+RECEPTOR_CONDUCTANCE = (
+    *(("acetylcholine", trn, 0.4) for trn in ("trn", "trn_mgn", "trn_md", "trn_motor")),
+    *(("acetylcholine", relay, -0.33) for relay in ("lgn", "mgn", "md", "thalamus", "vl_cb")),
+)
+
 RECEPTORS = (
     # Из прежней схемы [не подбиралось, сверить величину]: дофамин в
     # стриатуме — D1 возбуждают «иди», D2 тормозят «стой» (Gerfen & Surmeier
@@ -1130,6 +1149,7 @@ def apply(cfg) -> None:
             receptors.append((substance, target, mv))
 
     cfg.receptors = tuple(r for r in receptors if r[1].split(":")[0] not in gone)
+    cfg.receptor_conductance = tuple(r for r in RECEPTOR_CONDUCTANCE if r[1] not in gone) if cfg.thalamic_ach else ()
 
     if not cfg.nucleus_bias_mv:
         cfg.nucleus_bias_mv = NUCLEUS_BIAS_MV

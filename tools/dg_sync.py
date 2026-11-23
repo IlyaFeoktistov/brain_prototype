@@ -26,7 +26,7 @@ smooth=src->dst — тот же средний вход пути без коле
 (недостающим входам, mf_exc/mf_inh/mf_ach пары популяций). Гомеостаз и
 силы не меняются.
 
-    PYTHONPATH=. python tools/dg_sync.py [seed=42] [adapt=10] [record=4] [cut=ca1->entorhinal_vb] [save_ec=путь.pt]
+    PYTHONPATH=. python tools/dg_sync.py [seed=42] [adapt=10] [record=4] [cut=ca1->entorhinal_vb] [save_ec=путь.pt] [raster=файл.png] [raster_ms=1000] [drop=имя пути]
 """
 
 from __future__ import annotations
@@ -41,6 +41,15 @@ from tools import develop
 
 
 def main(opts: dict) -> None:
+    if opts.get("drop"):
+        # drop=имя пути[;имя] — путь не строится (контроль правки в той же
+        # серии), например drop="entorhinal -> dentate basket".
+        from brain import anatomy
+
+        names = set(opts["drop"].split(";"))
+        built = anatomy.pathways
+        anatomy.pathways = lambda c: [p for p in built(c) if (p.name or f"{p.src} -> {p.dst}") not in names]
+        print("без путей:", ", ".join(sorted(names)), flush=True)
     cfg = BrainConfig()
     cfg.size = "small"
     cfg.seed = int(opts.get("seed", 42))
@@ -211,6 +220,58 @@ def main(opts: dict) -> None:
     lost = float(b.dropped) - dropped0
     print(f"потеряно за запись: мозг {lost:.3g}, " + ", ".join(
         f"{k} {float(x.dropped) - cdrop0[k]:.3g}" for k, x in b.circuits.items()))
+    if opts.get("raster"):
+        raster(b, s, c, cells, opts["raster"], float(opts.get("raster_ms", 1000)), cfg.seed)
+
+
+def raster(b, s, c, cells, path: str, ms: float, seed: int) -> None:
+    """
+    Растр после записи: ms мс по 1 мс — по 80 клеток каждого типа DG, EC II/III
+    и CA3 PC; внизу — частота популяций (доля клеток типа за 1 мс). Видно, кто
+    стреляет первым в залпе (успевают ли корзинчатые раньше гранулярных).
+    """
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    gen = torch.Generator(device="cpu").manual_seed(seed + 7)
+    rows = []
+    for i, g in enumerate(c.names):
+        idx = torch.nonzero(c.type_of == i).squeeze(1).cpu()
+        pick = idx[torch.randperm(len(idx), generator=gen)[:80]]
+        rows.append((g.replace("DG_", "DG "), pick.to(b.device) + cells.start, idx.to(b.device) + cells.start))
+    for name, area in (("EC II/III", "entorhinal"), ("CA3 PC", "ca3")):
+        e = b.areas[area].E
+        pick = torch.randperm(e.size, generator=gen)[:80] + e.start
+        rows.append((name, pick.to(b.device), torch.arange(e.start, e.stop, device=b.device)))
+    steps = int(ms)
+    spk = [torch.zeros(steps, len(r[1]), dtype=torch.bool, device=b.device) for r in rows]
+    frac = torch.zeros(steps, len(rows), device=b.device)
+    for t in range(steps):
+        r = b.observe(1.0, s._blank(1.0))
+        for j, (_, pick, allc) in enumerate(rows):
+            spk[j][t] = r[pick] > 0
+            frac[t, j] = (r[allc] > 0).float().mean()
+    colors = ["#1f5fbf", "#3a9a3a", "#d0453a", "#a35bc4", "#e08a1e", "#444444"]
+    fig, (ax, ax2) = plt.subplots(2, 1, figsize=(13, 8), sharex=True, gridspec_kw={"height_ratios": [3, 1.3]})
+    base = 0
+    for j, (name, pick, _) in enumerate(rows):
+        t_idx, n_idx = torch.nonzero(spk[j], as_tuple=True)
+        ax.scatter(t_idx.cpu(), (n_idx + base).cpu(), s=2, color=colors[j % len(colors)], marker="|")
+        ax.text(-ms * 0.01, base + len(pick) / 2, name, ha="right", va="center", fontsize=9)
+        base += len(pick) + 10
+        ax2.plot(frac[:, j].cpu(), color=colors[j % len(colors)], lw=1, label=name)
+    ax.set_yticks([])
+    ax.set_title(f"зерно {seed}: растр по 80 клеток типа, шаг 1 мс")
+    ax2.set_ylabel("доля клеток за 1 мс")
+    ax2.set_yscale("symlog", linthresh=1e-3)
+    ax2.set_xlabel("мс")
+    ax2.legend(fontsize=8, ncol=6, loc="upper right")
+    fig.tight_layout()
+    fig.savefig(path, dpi=110)
+    print(f"растр: {path}")
 
 
 if __name__ == "__main__":

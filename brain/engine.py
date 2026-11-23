@@ -1169,6 +1169,10 @@ class SpikingBrain:
         )
         pre, post, inhibitory, top_down = src.E, dst.E, dst.I, False
 
+        if getattr(path, "post_type", ""):
+            # Путь в один тип сети зоны (PathwaySpec.post_type).
+            return pre, self._circuit_type(dst, path.post_type), None, False
+
         if direction == "ct" and src.layers is not None:
             # Кортикоталамический путь — из L6 (Sherman & Guillery).
             return src.layers["L6"]["E"], dst.E, dst.I, False
@@ -1194,6 +1198,33 @@ class SpikingBrain:
                 inhibitory, top_down = dst.VIP, True
 
         return pre, post, inhibitory, top_down
+
+    def _circuit_type(self, area: Area, name: str) -> Population:
+        """
+        Клетки типа name сети зоны (AreaSpec.circuit) — те же места, что
+        отдаёт им circuit.TypedCircuit: главный тип — area.E, остальные — area.I
+        подряд по долям авторов.
+        """
+
+        from brain import circuit
+
+        spec = next(s for s in self.cfg.areas if s.name == area.name)
+        net = circuit.load(spec.circuit)
+        main = circuit.principal(net)
+
+        if name == main:
+            return area.E
+
+        rest = [g for g in net["groups"] if g != main]
+        sizes = circuit.largest_remainder(area.I.size, [net["groups"][g]["cells"] for g in rest])
+        start = area.I.start
+
+        for g, size in zip(rest, sizes):
+            if g == name:
+                return Population(f"{area.name}.{name}", start, size)
+            start += size
+
+        raise ValueError(f"в сети зоны {area.name} нет типа {name}")
 
     def _place_maps(self) -> None:
         """

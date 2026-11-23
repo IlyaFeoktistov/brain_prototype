@@ -574,6 +574,26 @@ def pathways(cfg) -> list[PathwaySpec]:
         _path("association", "entorhinal", 100, 0.15, k_data=1000, topographic=1.5),
         _path("prefrontal", "entorhinal", 50, 0.15, k_data=500),
         _path("entorhinal", "dentate", 200, 0.1, k_data=4000),
+        # EC → корзинчатые зубчатой (прямое торможение гранулярных). У группы,
+        # чья матрица DG у нас (Santhakumar, Aradi & Soltesz 2005,
+        # https://doi.org/10.1152/jn.00777.2004, табл. 2 и «Perforant-path
+        # stimulation»; код Morgan & Soltesz 2008, ModelDB 124513, initNet),
+        # путь идёт на все гранулярные и все корзинчатые; проводимость на
+        # корзинчатую — 1/2 гранулярной «по более низкой конвергенции» (Patton &
+        # McNaughton 1995); на мшистые — у 2 случайных клеток, на HIPP — нет
+        # (у нас их нет). Одиночный вход EC (мышь P12–21, срезы; Ewell & Jones
+        # 2010, https://doi.org/10.1523/JNEUROSCI.2189-10.2010 [сверить DOI]):
+        # на FS-интернейрон 35.7 пА, на гранулярную 21.3 пА — на единицу
+        # ёмкости почти равны (1.6 и 1.4 пА/пФ); FS до порога доходят от
+        # меньшего тока EC (207 против 292 пА). Отсюда [подобрано по этим
+        # отношениям, человек — нет данных]: входов 4000 × (1/2) / (35.7/21.3)
+        # ≈ 1200; ВПСП — ток одного входа на пФ ×1.14 гранулярной: при
+        # ёмкостях Izhikevich 208 и 38 пФ и переводе мВ → пА движка 20.5 и 4.7
+        # (circuit.set_input_gain) — 0.1 × 1.14 × (208/38) × (4.72/20.53) ≈
+        # 0.143 мВ. Без пути торможение гранулярных шло только обратное: DG
+        # молчала целиком или стреляла разом (CHAT_PLAN шаг 3, цикл 33).
+        _path("entorhinal", "dentate", 200, 0.143, k_data=1200, post_type="DG_Basket",
+              name="entorhinal -> dentate basket"),
         _path("dentate", "ca3", 46, 1.0, k_data_inhibitory=4100, psp_inhibitory_mv=0.3),
         _path("entorhinal", "ca3", 200, 0.1, k_data=3600, plastic=True, modulator="acetylcholine",
               k_data_inhibitory=3300, psp_inhibitory_mv=0.1),

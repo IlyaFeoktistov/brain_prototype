@@ -179,6 +179,8 @@ def record(b, s, ms: float, by_src: dict, pc: slice, sample: torch.Tensor) -> di
                       for i, g in enumerate(c.names)}, "rates": rates, "src_hz": src_hz, "est": est,
         "cv": float(series.std() / series.mean()) if m > 0 else float("nan"), "corr": corr,
         "burst": float((series > 5 * m).float().mean()) if m > 0 else 0.0,
+        # Доля PC, выстреливших в окне-залпе (5 мс), в среднем по залпам.
+        "part": float((series[series > 5 * m] / n_pc).mean()) if m > 0 and bool((series > 5 * m).any()) else 0.0,
     }
 
 
@@ -191,6 +193,9 @@ def main(opts: dict) -> None:
     cfg.homeostasis = True
     cfg.event_overflow = "warn"
     cfg.organs = ("words",)
+    # scale= — масштаб входа мозга в CA3 (BrainConfig.circuit_input_scale):
+    # authors (по умолчанию) или psp (прежний, контроль).
+    cfg.circuit_input_scale = opts.get("scale", cfg.circuit_input_scale)
     develop.override_external(cfg, opts.get("extpop", ""))
     b = Mind(cfg).brain
     b.plasticity = False
@@ -202,7 +207,7 @@ def main(opts: dict) -> None:
     pc_n = int((c.type_of == 0).sum())
     pc = slice(0, pc_n)
     gain_pc = float(c.gain[pc].mean())
-    print(f"зерно {cfg.seed}{', внешний фон ' + opts['extpop'] if opts.get('extpop') else ''}; "
+    print(f"масштаб входа CA3: {cfg.circuit_input_scale}; зерно {cfg.seed}{', внешний фон ' + opts['extpop'] if opts.get('extpop') else ''}; "
           f"вход CA3 PC при частотах покоя по источникам, пА (мВ × gain {gain_pc:.1f}): "
           + ", ".join(f"{k} {float(v[:pc_n].mean()) * gain_pc:.0f}"
                       for k, v in sorted(by_src.items(), key=lambda kv: -float(kv[1][:pc_n].mean()))), flush=True)
@@ -237,7 +242,7 @@ def main(opts: dict) -> None:
         for k in cut:
             cuts[k].undo()
         print(f"{name:12s} PC {r['rates']['Pyramidal']:5.2f} Гц, CV {r['cv']:4.2f}, корр. {r['corr']:.3f}, "
-              f"залпов {r['burst']:5.1%} окон; у порога {r['near']:5.1%} | вход сверх покоя {r['dev']:+6.1f} пА "
+              f"залпов {r['burst']:5.1%} окон по {r['part']:.1%} PC; у порога {r['near']:5.1%} | вход сверх покоя {r['dev']:+6.1f} пА "
               f"(σ у клетки {r['dev_sd_cell']:.0f}, общая {r['dev_sd_common']:.1f}); фон {r['bg']:.0f} "
               f"(σ {r['bg_sd_cell']:.0f}) | EC {r['src_hz']['EC']:.2f} Гц ~{r['est']['EC']:+.0f} пА, "
               f"DG {r['src_hz']['DG']:.2f} Гц ~{r['est']['DG']:+.0f} пА | "

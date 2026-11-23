@@ -458,7 +458,7 @@ class TypedCircuit:
             raise ValueError("сеть зоны: нет отклика клетки на малый ток — множитель входа не посчитать")
         self.gain = (peak_lif / peak_iz).float()
 
-    def set_rest_input(self, rest_mv: torch.Tensor) -> None:
+    def set_rest_input(self, rest_mv: torch.Tensor, scale: str = "psp") -> None:
         """
         Вход мозга клеткам зоны при частотах покоя источников (мВ движка).
         Фон авторов (lognormal по типу) подобран под покой CA3 без EC и DG —
@@ -467,12 +467,27 @@ class TypedCircuit:
         +380 пА — сеть горела, все типы 30–390 Гц); поэтому в клетку идёт вход
         мозга минус rest_mv — так же внешний вход колонок Potjans в мозге —
         «всё внешнее минус явные пути» (Schmidt et al. 2018; engine.
-        _external_minus_modeled).
+        _external_minus_modeled). scale — масштаб отклонения: "psp" —
+        множитель по пику ВПСП (set_input_gain), "authors" — в долях фона
+        авторов (BrainConfig.circuit_input_scale).
         """
 
         if self.has_background:
             # Без фона авторов вход мозга идёт целиком (rest_mv остаётся 0).
             self.rest_mv.copy_(rest_mv[self.first: self.first + self.n])
+            if scale == "authors":
+                # Отклонение входа мозга от покоя — в долях фона авторов:
+                # фон × (вход / вход покоя − 1). Фон авторов — весь вход EC и
+                # DG в покое (Kopsick et al., препринт
+                # https://doi.org/10.1101/2024.03.27.586909, Methods), а явный
+                # путь, собранный из чисел крысы и другой мишени (EC → CA3: 3600
+                # × 0.1 мВ), в покое давал PC 358 пА при всём фоне 84 пА — часть
+                # больше целого (CHAT_PLAN шаг 3, циклы 31–32). Доли путей — по
+                # их вкладу в покой (сумма 1), у каждой клетки — свой фон
+                # (тормозные — свой тип); при частотах покоя прибавка 0,
+                # колебания и спайки пути сохраняются.
+                live = self.rest_mv > 1e-6
+                self.gain = torch.where(live, self.bg_mean / self.rest_mv.clamp(min=1e-6), self.gain)
 
     # ------------------------------------------------------------------
 

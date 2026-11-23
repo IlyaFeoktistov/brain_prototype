@@ -2924,7 +2924,7 @@ class SpikingBrain:
             c = circuit.TypedCircuit(circuit.load(spec.circuit), area, self.cfg.dt_ms, self.device, self.generator,
                                      compact, capacity=self.cfg.event_capacity)
             c.set_input_gain(self.tau_m, self.tau_syn)
-            c.set_rest_input(self._rest_input(area))
+            c.set_rest_input(self._rest_input(area), self.cfg.circuit_input_scale)
             cells = area.cells
             self.noise_gain[cells] = 0.0
             self.adapt_b[cells] = 0.0

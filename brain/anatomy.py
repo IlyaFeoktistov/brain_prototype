@@ -392,7 +392,17 @@ def pathways(cfg) -> list[PathwaySpec]:
     # ветвится местно, с ограниченным расхождением (крыса — Pinault &
     # Deschênes 1998, https://doi.org/10.1002/(SICI)1096-9861(19980209)391:2<180::AID-CNE3>3.0.CO;2-Z;
     # кошка — Uhlrich et al. 1991, https://doi.org/10.1152/jn.1991.65.6.1528).
-    # Слуховой и прочие секторы — пока случайно [сверить топографию].
+    # Прочие секторы (MGN, MD, моторный таламус) — по карте ядра в обе стороны
+    # (PathwaySpec.topographic): аксон клетки TRN ветвится компактно —
+    # плотное ядро 5–63 × 10⁶ мкм³, ~4000 бутонов, в одном ядре (крыса —
+    # Pinault & Deschênes 1998, выше) — при объёме ядра порядка 1 мм³
+    # [оценка, сверить] это 0.5–6% ядра. В модели сектор TRN мал (у MD 208
+    # клеток при 20 входах на клетку), самое местное без повторов — круг из
+    # 20 клеток (topographic 1, ~10% сектора). Случайная проводка давала общий
+    # тормозной удар всем клеткам MD и ритм петли ~20 Гц (корреляция пар MD
+    # 0.12 в окнах 5 мс); местная в обе стороны — 0.005–0.024 при тех же
+    # частотах, у MD бодрствующих мышей 0.004–0.010 (IBL, tools/md_sync_data.py;
+    # CHAT_PLAN шаг 3, цикл 24). Местная только в одну сторону ритм не снимает.
     relays = [("visual", "lgn"), ("auditory", "mgn"), ("prefrontal", "md"), ("goal", "md"), ("motor", "thalamus"), ("motor", "vl_cb")]
     sector = {"lgn": "trn", "mgn": "trn_mgn", "md": "trn_md", "thalamus": "trn_motor", "vl_cb": "trn_motor"}
 
@@ -404,9 +414,10 @@ def pathways(cfg) -> list[PathwaySpec]:
 
     for relay, trn in sector.items():
         mapped = relay if relay == "lgn" else ""
+        local = 0.0 if mapped else 1.0
         out += [
-            _path(relay, trn, 20, 1.5, mapped=mapped),
-            _path(trn, relay, 20, -1.5, mapped=mapped),
+            _path(relay, trn, 20, 1.5, mapped=mapped, topographic=local),
+            _path(trn, relay, 20, -1.5, mapped=mapped, topographic=local),
         ]
 
     # Реле ПФК: MD → ПФК и цель (в L4, как вход таламуса).

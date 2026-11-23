@@ -10,7 +10,7 @@
   25 мс (медленные общие колебания частоты остаются, точное совпадение
   уходит); разность сырое − джиттер — избыток точной синхронности.
 
-    PYTHONPATH=. python tools/md_sync.py [seed=42] [adapt=30] [record=3] [area=md]
+    PYTHONPATH=. python tools/md_sync.py [seed=42] [adapt=30] [record=3] [area=md,trn_md] [path=src->dst:k:psp[:topo]]
 """
 
 from __future__ import annotations
@@ -97,6 +97,7 @@ def main(opts: dict) -> None:
     cfg.homeostasis = True
     cfg.event_overflow = "warn"
     cfg.organs = ("words",)
+    develop.override_paths(opts.get("path", ""))
     b = Mind(cfg).brain
     b.plasticity = False
     s = develop.Silence(b)

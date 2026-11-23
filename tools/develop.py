@@ -55,6 +55,39 @@ def override_external(cfg, spec: str) -> None:
     cfg.column_gain_external_pop = tuple(table)
 
 
+def override_paths(spec: str) -> None:
+    """
+    path=src->dst:k:psp[:topo][,…] — путь строится с другим числом входов, PSP
+    и (необязательно) топографией (PathwaySpec.topographic: круг площадью
+    topo · k клеток карты источника). Диагностика: меняет anatomy.pathways до сборки.
+    """
+
+    items = {}
+    for item in (x for x in spec.split(",") if x):
+        name, k, psp, *topo = item.split(":")
+        items[name.replace("->", " -> ")] = (int(k), float(psp), float(topo[0]) if topo else None)
+    if not items:
+        return
+    import dataclasses
+
+    from brain import anatomy
+
+    built = anatomy.pathways
+
+    def pathways(c):
+        out = []
+        for p in built(c):
+            key = f"{p.src} -> {p.dst}"
+            if key in items:
+                k, psp, topo = items[key]
+                p = dataclasses.replace(p, k=k, psp_mv=psp, **({"topographic": topo} if topo is not None else {}))
+                print(f"путь {key}: {p.k} входов по {p.psp_mv:+.2f} мВ, топография {p.topographic}", flush=True)
+            out.append(p)
+        return out
+
+    anatomy.pathways = pathways
+
+
 def copy_external(cfg, spec: str) -> None:
     """
     extcopy=куда<откуда[,…] — подобранные множители внешнего фона колонки

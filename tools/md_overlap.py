@@ -5,7 +5,7 @@ MD → ПФК (CHAT_PLAN шаг 3, цикл 15): перекрытие постр
 спайков) в опыте B (organs=words, адаптация 3 с, запись 3 с).
 
     PYTHONPATH=. python tools/md_overlap.py [seed=42] [extpop=prefrontal:1] [cut=src->dst] [t_off=1]
-        [smooth=src->dst] [ach=none|trn|md|both] [mono=1] [adapt=3] [path=src->dst:k:psp] [inh_tau=зона:мс]
+        [smooth=src->dst] [ach=none|trn|md|both] [mono=1] [adapt=3] [path=src->dst:k:psp[:topo]] [inh_tau=зона:мс]
 """
 
 from __future__ import annotations
@@ -66,30 +66,7 @@ def main(opts: dict) -> None:
     cfg.organs = ("words",)
     cfg.thalamic_ach = opts.get("ach", "both") != "none" or opts.get("mono") == "1"
     develop.override_external(cfg, opts.get("extpop", ""))
-    # path=src->dst:k:psp[,…] — путь строится с другим числом входов и PSP
-    # (диагностика: переносим амплитуду из данных, k — чтобы среднее k·psp
-    # сохранилось или по данным).
-    spec = {}
-    for item in (x for x in opts.get("path", "").split(",") if x):
-        name, k, psp = item.split(":")
-        spec[name.replace("->", " -> ")] = (int(k), float(psp))
-    if spec:
-        import dataclasses
-        from brain import anatomy
-
-        built = anatomy.pathways
-
-        def pathways(c):
-            out = []
-            for p in built(c):
-                key = f"{p.src} -> {p.dst}"
-                if key in spec:
-                    p = dataclasses.replace(p, k=spec[key][0], psp_mv=spec[key][1])
-                    print(f"путь {key}: {p.k} входов по {p.psp_mv:+.2f} мВ", flush=True)
-                out.append(p)
-            return out
-
-        anatomy.pathways = pathways
+    develop.override_paths(opts.get("path", ""))
     b = Mind(cfg).brain
     b.plasticity = False
     md = b.areas["md"].E

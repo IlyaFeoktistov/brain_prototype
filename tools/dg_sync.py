@@ -26,7 +26,7 @@ smooth=src->dst — тот же средний вход пути без коле
 (недостающим входам, mf_exc/mf_inh/mf_ach пары популяций). Гомеостаз и
 силы не меняются.
 
-    PYTHONPATH=. python tools/dg_sync.py [seed=42] [adapt=10] [record=4] [cut=ca1->entorhinal_vb] [save_ec=путь.pt] [raster=файл.png] [raster_ms=1000] [drop=имя пути]
+    PYTHONPATH=. python tools/dg_sync.py [seed=42] [adapt=10] [record=4] [cut=ca1->entorhinal_vb] [save_ec=путь.pt] [raster=файл.png] [raster_ms=1000] [drop=имя пути] [diag=1] [diag_ms=2000]
 """
 
 from __future__ import annotations
@@ -222,6 +222,8 @@ def main(opts: dict) -> None:
         f"{k} {float(x.dropped) - cdrop0[k]:.3g}" for k, x in b.circuits.items()))
     if opts.get("raster"):
         raster(b, s, c, cells, opts["raster"], float(opts.get("raster_ms", 1000)), cfg.seed)
+    if opts.get("diag"):
+        diagnose(b, s, c, cells, float(opts.get("diag_ms", 2000)), cfg.seed)
 
 
 def raster(b, s, c, cells, path: str, ms: float, seed: int) -> None:
@@ -272,6 +274,106 @@ def raster(b, s, c, cells, path: str, ms: float, seed: int) -> None:
     fig.tight_layout()
     fig.savefig(path, dpi=110)
     print(f"растр: {path}")
+
+
+
+
+def diagnose(b, s, c, cells, ms: float, seed: int) -> None:
+    """
+    diag=1 — режим DG по клеткам (CHAT_PLAN шаг 3, цикл 35), ms мс по 1 мс:
+    частоты и доля активных клеток по типам; CV межспайковых интервалов
+    гранулярных; вход мозга гранулярным (мВ движка, то, что идёт в сеть):
+    разброс среднего по клеткам, σ во времени у клетки и σ общей части
+    (среднее по клеткам за 1 мс); потенциал v гранулярных: разброс между
+    клетками в тихие окна и за 20 мс до залпа; первый спайк типов в залпе
+    (залп — 1 мс, где выстрелило > 2% гранулярных); HIPP — наибольшая
+    частота клетки (наименьший ISI) и доля ISI ≤ 1 мс.
+    """
+
+    dev = b.device
+    n = c.n
+    T = int(ms)
+    gc = c.type_of == 0
+    n_gc = int(gc.sum())
+    pick = torch.randperm(n_gc, generator=torch.Generator().manual_seed(seed + 11))[:500].to(dev)
+    last_ext = torch.zeros(n, device=dev)
+    step = c.step
+
+    def wrapped(ext_mv, fired_prev):
+        last_ext.copy_(ext_mv)
+        return step(ext_mv, fired_prev)
+
+    c.step = wrapped
+    b._graphs = {}
+    spk = torch.zeros(T, n, dtype=torch.bool, device=dev)
+    inp = torch.zeros(T, 500, device=dev)
+    inp_mean = torch.zeros(T, device=dev)
+    vv = torch.zeros(T, 500, device=dev)
+    try:
+        for t in range(T):
+            r = b.observe(1.0, s._blank(1.0))
+            spk[t] = r[cells] > 0
+            x = last_ext[:n_gc]
+            inp[t] = x[pick]
+            inp_mean[t] = x.mean()
+            vv[t] = c.v[:n_gc][pick]
+    finally:
+        del c.step
+        b._graphs = {}
+    sec = T / 1000.0
+    print(f"--- режим DG по клеткам, {T} мс по 1 мс ---")
+    for i, g in enumerate(c.names):
+        m = c.type_of == i
+        x = spk[:, m]
+        cnt = x.sum(0).float()
+        print(f"{g}: {float(cnt.mean()) / sec:.2f} Гц, активных клеток {float((cnt > 0).float().mean()):.1%}, "
+              f"самая частая {float(cnt.max()) / sec:.0f} Гц")
+    # CV ISI гранулярных (клетки с ≥ 3 спайками).
+    g_spk = spk[:, gc]
+    cvs = []
+    for j in torch.nonzero(g_spk.sum(0) >= 3).squeeze(1)[:2000].tolist():
+        ts = torch.nonzero(g_spk[:, j]).squeeze(1).float()
+        isi = ts[1:] - ts[:-1]
+        cvs.append(float(isi.std() / isi.mean()))
+    if cvs:
+        cv = torch.tensor(cvs)
+        print(f"CV ISI гранулярных (клеток {len(cvs)}): медиана {float(cv.median()):.2f}, 90% {float(cv.quantile(0.9)):.2f}")
+    m_cell = inp.mean(0)
+    print(f"вход гранулярным, мВ: среднее {float(m_cell.mean()):.2f}, разброс среднего между клетками σ "
+          f"{float(m_cell.std()):.2f}, σ во времени у клетки {float(inp.std(0).mean()):.2f}, σ общей части "
+          f"{float(inp_mean.std()):.2f}")
+    frac = g_spk.float().mean(1)
+    burst = torch.nonzero(frac > 0.02).squeeze(1)
+    onsets = [int(t) for k, t in enumerate(burst.tolist()) if k == 0 or t - burst[k - 1] > 20]
+    quiet = (frac == 0)
+    print(f"залпов (> 2% гранулярных за 1 мс): {len(onsets)}")
+    vq = vv[quiet]
+    if len(vq):
+        print(f"v гранулярных в тихие мс: среднее {float(vq.mean()):.1f} мВ, разброс между клетками σ "
+              f"{float(vq.mean(0).std()):.2f}, σ во времени {float(vq.std(0).mean()):.2f}")
+    pre = [vv[t - 20:t] for t in onsets if t >= 20]
+    if pre:
+        vp = torch.stack(pre)
+        print(f"v за 20 мс до залпа: среднее {float(vp.mean()):.1f} мВ, разброс между клетками σ "
+              f"{float(vp.mean(1).std(1).mean()):.2f}; вход за 20 мс до залпа {float(torch.stack([inp[t - 20:t] for t in onsets if t >= 20]).mean()):.2f} "
+              f"против тихих {float(inp[quiet].mean()):.2f}")
+    for t0 in onsets[:6]:
+        first = []
+        for i, g in enumerate(c.names):
+            w = spk[max(0, t0 - 30): t0 + 40, c.type_of == i].any(1)
+            hit = torch.nonzero(w).squeeze(1)
+            first.append(f"{g.replace('DG_', '')} {int(hit[0]) - min(30, t0):+d}" if len(hit) else f"{g.replace('DG_', '')} —")
+        print(f"залп {t0} мс, первый спайк типа (мс от начала залпа): " + ", ".join(first))
+    h = spk[:, c.type_of == len(c.names) - 1]
+    isis = []
+    for j in range(min(h.shape[1], 300)):
+        ts = torch.nonzero(h[:, j]).squeeze(1)
+        if len(ts) > 1:
+            isis.append(ts[1:] - ts[:-1])
+    if isis:
+        a = torch.cat(isis).float()
+        print(f"HIPP: наименьший ISI {float(a.min()):.0f} мс, доля ISI ≤ 1 мс {float((a <= 1).float().mean()):.1%}, "
+              f"медиана ISI {float(a.median()):.0f} мс")
 
 
 if __name__ == "__main__":

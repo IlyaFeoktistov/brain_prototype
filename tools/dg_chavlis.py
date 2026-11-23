@@ -24,9 +24,11 @@ Python 2. Контроль авторов — модель с 12 дендрит�
     отсеков с долей 1/21, задержка U(0, 10) мс; BC — 20 своих по 3 Гц, MC —
     20 своих по 3.8 Гц, HIPP — 20 своих по 3 Гц;
   - протокол: 300 мс EC молчит, 500 мс 40 из 400 клеток EC — пуассон 40 Гц,
-    10 мс; шаг 0.1 мс, Эйлер (Brian 1 по умолчанию).
+    10 мс; шаг 0.1 мс; клетки — Эйлер (Brian 1 для нелинейных), синапсы —
+    экспоненциальный Эйлер (implicit=True у авторов).
 
-Отличия от оригинала: случайные числа свои (связи — авторов из файлов;
+Рефрактерность — как у Brian 1 при сбросе-строке и AdaptiveReset: только
+запрет спайка, без удержания потенциала. Отличия от оригинала: случайные числа свои (связи — авторов из файлов;
 активные клетки EC, их спайки, шум, кластеры — по тем же правилам).
 
     PYTHONPATH=. python tools/dg_chavlis.py net=/путь/ConnectivityMatrices_12dendrites [seed=1] [active=файл.npy] [stim_hz=40] [pre_ms=300] [stim_ms=500]
@@ -72,11 +74,16 @@ class Syn:
         self.tr, self.td, self.alpha, self.set_mode, self.w = tau_rise, tau_decay, alpha, set_mode, w
 
     def step(self, hist: torch.Tensor, t: int) -> None:
-        # Эйлер по старым значениям (как Brian 1: сначала состояние, потом события).
-        ds = -self.s / self.td + self.alpha * self.r * (1.0 - self.s)
-        dr = -self.r / self.tr
-        self.s = self.s + DT * ds
-        self.r = self.r + DT * dr
+        # Экспоненциальный Эйлер по старым значениям: у авторов Synapses(…,
+        # implicit=True) — Brian 1 (stateupdater.magic_state_updater) берёт для
+        # условно-линейных уравнений exponential Euler. ds/dt = −s/τd + α r (1 − s)
+        # линейно по s: s → s∞ + (s − s∞)·e^(−A·dt), A = 1/τd + α r, s∞ = α r / A;
+        # dr/dt = −r/τr — точно. (Обычный Эйлер при τr = dt гасил подъём AMPA
+        # за шаг: вклад спайка 0.10 вместо 0.135.)
+        a = 1.0 / self.td + self.alpha * self.r
+        s_inf = self.alpha * self.r / a
+        self.s = s_inf + (self.s - s_inf) * torch.exp(-a * DT)
+        self.r = self.r * math.exp(-DT / self.tr)
         slot = (t - self.delay) % hist.shape[0]
         arrived = hist[slot, self.pre]
         if self.set_mode:
@@ -305,14 +312,15 @@ def main(opts: dict) -> None:
         dv = (i_leak - i_syn + i_ax + i_soma_extra) / C_t
         v_gc = v_gc + DT * dv
         i_ahp = i_ahp + DT * (2.0 * (v_gc[:, 0] - (-87.0)) - i_ahp) / 45.0
-        # рефрактерность: сома в сбросе
+        # Рефрактерность Brian 1 при сбросе-строке (NeuronGroup: «No reset?» —
+        # без удержания): только запрет спайка до t + (20 − dt/2) мс, сома после
+        # сброса идёт свободно.
         hold = ref_gc > 0
-        v_gc[:, 0] = torch.where(hold, torch.full_like(v_gc[:, 0], -74.0), v_gc[:, 0])
         ref_gc = (ref_gc - 1).clamp(min=0)
         spk_gc = (v_gc[:, 0] > -56.0) & ~hold
         v_gc[:, 0] = torch.where(spk_gc, torch.full_like(v_gc[:, 0], -74.0), v_gc[:, 0])
         i_ahp = i_ahp + spk_gc.to(DT_T) * 45.0
-        ref_gc = torch.where(spk_gc, torch.full_like(ref_gc, steps(20.0)), ref_gc)
+        ref_gc = torch.where(spk_gc, torch.full_like(ref_gc, steps(20.0) - 1), ref_gc)
 
         spk = {"gc": spk_gc}
         for k, (Cm, gl, El, VT, dT, tw, a, Vr, b, rf, n) in adex.items():
@@ -326,13 +334,13 @@ def main(opts: dict) -> None:
             dw = (a * (v - El) - x["w"]) / tw
             v = v + DT * dvv
             x["w"] = x["w"] + DT * dw
+            # AdaptiveReset — тоже без удержания (только запрет спайка).
             hold = x["ref"] > 0
-            v = torch.where(hold, torch.full_like(v, Vr), v)
             x["ref"] = (x["ref"] - 1).clamp(min=0)
             s_k = (v > VT) & ~hold
             v = torch.where(s_k, torch.full_like(v, Vr), v)
             x["w"] = x["w"] + s_k.to(DT_T) * b
-            x["ref"] = torch.where(s_k, torch.full_like(x["ref"], steps(rf)), x["ref"])
+            x["ref"] = torch.where(s_k, torch.full_like(x["ref"], steps(rf) - 1), x["ref"])
             x["v"] = v
             spk[k] = s_k
 

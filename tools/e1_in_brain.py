@@ -148,6 +148,7 @@ def main(opts: dict) -> None:
     seed = int(opts.get("seed", 1))
     torch.manual_seed(seed)
     trials = int(opts.get("trials", 4))
+    trace = opts.get("trace")
     t0 = time.time()
     b, port, vocab, pops, thr = build(seed, int(opts.get("adapt", 30)), int(opts.get("screen", 4)))
     index = {w: i for i, w in enumerate(vocab)}
@@ -179,6 +180,10 @@ def main(opts: dict) -> None:
         held_before = torch.zeros(P, P)
         held_after = torch.zeros(P, P)
         n_chunks = int(net.total // CHUNK_MS)
+        # Трассы по кускам 5 мс (trace=файл.pt) — для картинок tools/e1_in_brain_plot.py.
+        tr = {k: [] for k in ("src", "ans", "pops", "held", "msn", "rel", "areas")}
+        area_names = [a for a in b.areas if b.areas[a].E is not None]
+        held_acc = torch.zeros(P, P)
         for c in range(n_chunks):
             t = c * CHUNK_MS
             kind_now = next((kd for p0, kd, _ in reversed(net.periods) if t >= p0), "w")
@@ -212,9 +217,20 @@ def main(opts: dict) -> None:
                     held_before += net.held()
                 if after_win:
                     held_after += net.held()
+                if trace:
+                    held_acc += net.held()
             ans_rate = spikes / NANS / (CHUNK_MS / 1000.0)
             msn_hz = msn_acc / 40 / steps_chunk * (1000.0 / DT)
             rel_hz = rel_acc / (P * NR) / steps_chunk * (1000.0 / DT)
+            if trace:
+                tr["src"].append(src_hz.clone())
+                tr["ans"].append(ans_rate.clone())
+                tr["pops"].append(torch.stack([r[cells[w]].mean() for w in vocab]).cpu())
+                tr["held"].append(held_acc.clone())
+                held_acc.zero_()
+                tr["msn"].append(msn_hz.clone())
+                tr["rel"].append(rel_hz.clone())
+                tr["areas"].append(torch.stack([r[b.areas[a].E.slice].mean() for a in area_names]).cpu())
             # Меры по окнам.
             for (p0, kind, idx) in net.periods:
                 ph = t - p0
@@ -232,6 +248,11 @@ def main(opts: dict) -> None:
                 if kind == "r" and 0 <= ph < 300:
                     read.setdefault(idx, torch.zeros(b.n, device=r.device))
                     read[idx] += r[: b.n] * CHUNK_MS / 300.0
+        if trace:
+            torch.save({"text": text, "vocab": vocab, "words": list(chat_exam.WORDS), "area_names": area_names,
+                        "thr": [thr_w[w] for w in vocab], "periods": net.periods, "rec_starts": net.rec_starts,
+                        "heard": heard, "chunk_ms": CHUNK_MS,
+                        **{k: torch.stack(v) for k, v in tr.items()}}, f"{trace}.{text}.pt")
         runs = []
         for rr in range(REPEATS):
             line = ""

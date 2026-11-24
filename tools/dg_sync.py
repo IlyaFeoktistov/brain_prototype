@@ -247,10 +247,7 @@ def raster(b, s, c, cells, path: str, ms: float, seed: int) -> None:
     стреляет первым в залпе (успевают ли корзинчатые раньше гранулярных).
     """
 
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+    from tools import plots
 
     gen = torch.Generator(device="cpu").manual_seed(seed + 7)
     rows = []
@@ -270,23 +267,9 @@ def raster(b, s, c, cells, path: str, ms: float, seed: int) -> None:
         for j, (_, pick, allc) in enumerate(rows):
             spk[j][t] = r[pick] > 0
             frac[t, j] = (r[allc] > 0).float().mean()
-    colors = ["#1f5fbf", "#3a9a3a", "#d0453a", "#a35bc4", "#e08a1e", "#444444"]
-    fig, (ax, ax2) = plt.subplots(2, 1, figsize=(13, 8), sharex=True, gridspec_kw={"height_ratios": [3, 1.3]})
-    base = 0
-    for j, (name, pick, _) in enumerate(rows):
-        t_idx, n_idx = torch.nonzero(spk[j], as_tuple=True)
-        ax.scatter(t_idx.cpu(), (n_idx + base).cpu(), s=2, color=colors[j % len(colors)], marker="|")
-        ax.text(-ms * 0.01, base + len(pick) / 2, name, ha="right", va="center", fontsize=9)
-        base += len(pick) + 10
-        ax2.plot(frac[:, j].cpu(), color=colors[j % len(colors)], lw=1, label=name)
-    ax.set_yticks([])
-    ax.set_title(f"зерно {seed}: растр по 80 клеток типа, шаг 1 мс")
-    ax2.set_ylabel("доля клеток за 1 мс")
-    ax2.set_yscale("symlog", linthresh=1e-3)
-    ax2.set_xlabel("мс")
-    ax2.legend(fontsize=8, ncol=6, loc="upper right")
-    fig.tight_layout()
-    fig.savefig(path, dpi=110)
+    plots.raster(path, [(name, spk[j]) for j, (name, _, _) in enumerate(rows)],
+                 [(name, frac[:, j]) for j, (name, _, _) in enumerate(rows)],
+                 title=f"зерно {seed}: растр по 80 клеток типа, шаг 1 мс")
     print(f"растр: {path}")
 
 

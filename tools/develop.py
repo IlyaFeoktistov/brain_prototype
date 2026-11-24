@@ -88,6 +88,34 @@ def override_paths(spec: str) -> None:
     anatomy.pathways = pathways
 
 
+def add_paths(spec: str) -> None:
+    """
+    addpath=src->dst:k:psp[:topo][,…] — добавить путь (которого в сборке нет)
+    с k входами по psp мВ и топографией topo. Диагностика: дополняет
+    anatomy.pathways до сборки.
+    """
+
+    items = []
+    for item in (x for x in spec.split(",") if x):
+        name, k, psp, *topo = item.split(":")
+        src, dst = name.split("->")
+        items.append((src, dst, int(k), float(psp), float(topo[0]) if topo else 0.0))
+    if not items:
+        return
+    from brain import anatomy
+
+    built = anatomy.pathways
+
+    def pathways(c):
+        out = list(built(c))
+        for src, dst, k, psp, topo in items:
+            out.append(anatomy._path(src, dst, k, psp, topographic=topo))
+            print(f"добавлен путь {src} -> {dst}: {k} входов по {psp:+.2f} мВ, топография {topo}", flush=True)
+        return out
+
+    anatomy.pathways = pathways
+
+
 def copy_external(cfg, spec: str) -> None:
     """
     extcopy=куда<откуда[,…] — подобранные множители внешнего фона колонки

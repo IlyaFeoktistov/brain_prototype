@@ -58,6 +58,7 @@ def main(opts: dict) -> None:
     cfg.event_overflow = "warn"
     cfg.organs = ("words",)
     develop.override_external(cfg, opts.get("extpop", ""))
+    develop.add_paths(opts.get("addpath", ""))
     b = Mind(cfg).brain
     b.plasticity = False
     s = develop.Silence(b)

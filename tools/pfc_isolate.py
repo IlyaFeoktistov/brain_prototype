@@ -19,7 +19,7 @@
 спектр популяционной активности E (окна 1 мс, отрезки 256 мс) — частота
 пика 5–200 Гц и пик / медиана мощности.
 
-    PYTHONPATH=. python tools/pfc_isolate.py [seed=42] [adapt=30] [record=3] [area=prefrontal] [live=md+trn_md;association]
+    PYTHONPATH=. python tools/pfc_isolate.py [seed=42] [adapt=30] [record=3] [area=prefrontal] [live=md+trn_md;association] [addpath=trn_md->trn_md:47:-0.12:1]
 """
 
 from __future__ import annotations
@@ -123,6 +123,7 @@ def main(opts: dict) -> None:
     cfg.event_overflow = "warn"
     cfg.organs = ("words",)
     develop.override_external(cfg, opts.get("extpop", ""))
+    develop.add_paths(opts.get("addpath", ""))
     b = Mind(cfg).brain
     b.plasticity = False
     s = develop.Silence(b)
@@ -146,6 +147,9 @@ def main(opts: dict) -> None:
     for k in ("L23.E", "L5.E", "L23.PV", "L5.PV"):
         sl = pops[k]
         pick[k] = (torch.randperm(sl.stop - sl.start, generator=gen)[:300] + sl.start).to(b.device)
+    for z in ("md", "trn_md"):
+        e = b.areas[z].E
+        pick[z.upper()] = (torch.randperm(e.size, generator=gen)[:200] + e.start).to(b.device)
     ms = int(float(opts.get("record", 3)) * 1000)
     saved = b._snapshot()
 

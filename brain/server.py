@@ -661,6 +661,11 @@ class BrainHost:
         self.jobs.put(None)
         self.thread.join(timeout=60)
 
+        if self.thread.is_alive():
+            # Поток мозга ещё работает (запись гигабайтов, развитие): своя запись сейчас
+            # снимет мозг посреди шага — прежний файл остаётся как был.
+            print("сервер: поток мозга не закончил за 60 с — автосохранение пропущено", flush=True)
+            return
         if self.mind is not None and self.mind.cfg.autosave:
             self.mind.save()
 

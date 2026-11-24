@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import threading
 import time
+import zipfile
 
 import json
 
@@ -13,6 +16,8 @@ from brain.engine import SpikingBrain
 
 
 FORMAT_VERSION = 2
+# Записи мозгов по очереди (поток мозга и автосохранение при остановке сервера).
+_SAVE_LOCK = threading.Lock()
 
 
 def meta(path: Path) -> Path:
@@ -60,20 +65,30 @@ class Mind:
         target = brain_path(path or self.cfg.save_path)
         target.parent.mkdir(parents=True, exist_ok=True)
 
-        tmp = target.with_suffix(target.suffix + ".tmp")
+        # Своё имя временного файла у каждой записи и замок: две записи в один
+        # .tmp сразу (поток мозга и автосохранение при остановке сервера, когда
+        # запись гигабайтов дольше ожидания потока) склеивались в битый архив.
+        tmp = target.with_suffix(f"{target.suffix}.{os.getpid()}.{threading.get_ident()}.tmp")
 
-        torch.save(
-            {
-                "version": FORMAT_VERSION,
-                "saved_at": time.time(),
-                "config": self.cfg.to_dict(),
-                "brain": self.brain.state_dict(),
-            },
-            tmp,
-        )
-        # Атомарно: старое сохранение не портится,
-        # если процесс упадёт посреди записи.
-        tmp.replace(target)
+        with _SAVE_LOCK:
+            torch.save(
+                {
+                    "version": FORMAT_VERSION,
+                    "saved_at": time.time(),
+                    "config": self.cfg.to_dict(),
+                    "brain": self.brain.state_dict(),
+                },
+                tmp,
+            )
+            # Проверка до подмены: оглавление архива читается (дёшево — только конец файла).
+            try:
+                zipfile.ZipFile(tmp).close()
+            except zipfile.BadZipFile as error:
+                tmp.unlink(missing_ok=True)
+                raise RuntimeError(f"сохранение {target.name} не прошло проверку ({error}); старый файл не тронут") from error
+            # Атомарно: старое сохранение не портится,
+            # если процесс упадёт посреди записи.
+            tmp.replace(target)
         # Описание рядом (формат, размер) — список мозгов не читает гигабайты.
         meta(target).write_text(json.dumps({
             "version": FORMAT_VERSION, "size": self.cfg.size, "neurons": self.brain.n,

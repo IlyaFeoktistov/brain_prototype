@@ -341,6 +341,11 @@ export function Menu({ status, actions }: { status: Status; actions: MenuActions
           <input type="checkbox" checked={status.live} onChange={(e) => api.setLive(e.target.checked).catch(fail)} />
           жить в тишине (мозг работает и без разговора)
         </label>
+        <label className="toggle" title="обычный режим гомеостаза: тот же регулятор, что при развитии, но с биологическим временем — в 2880 раз медленнее (развитие 30 с ≈ сутки подстройки). За сессию сдвиг — доли мВ; ускоренный режим — только развитие при создании">
+          <input type="checkbox" checked={!!status.homeostasis} onChange={(e) => api.setHomeostasis(e.target.checked).catch(fail)} />
+          медленный гомеостаз (как у живого мозга: часы–сутки){status.loaded && status.homeoShiftMv !== undefined
+            ? <span className="muted"> · средний сдвиг фона {status.homeoShiftMv.toFixed(2)} мВ</span> : null}
+        </label>
       </div>
       <div className="menu-group">
         <h4>Мозг</h4>
@@ -468,12 +473,18 @@ export function Chooser({ brains, onClose, info }: { brains: Brains; onClose?: (
           </fieldset>
           <fieldset className="flags">
             <legend>Развитие</legend>
-            <label className="flag" title="мозг живёт в тишине с гомеостазом: клетки сдвигают фон к частоте покоя своего типа, потом сдвиг замораживается">
+            <label className="flag" title="ускоренный гомеостаз (только при создании): мозг живёт в тишине, после каждой секунды клетки сдвигают фон к частоте покоя своего типа, потом сдвиг замораживается">
               <input type="checkbox" checked={develop} onChange={(e) => setDevelop(e.target.checked)} />
-              {" "}развитие при создании:{" "}
+              {" "}развитие при создании (ускоренный гомеостаз):{" "}
               <input type="number" min={1} max={600} step={10} value={developS} disabled={!develop}
-                     onChange={(e) => setDevelopS(Math.max(1, Number(e.target.value)))} style={{ width: "5em" }} /> с гомеостаза
+                     onChange={(e) => setDevelopS(Math.max(1, Number(e.target.value)))} style={{ width: "5em" }} /> с
             </label>
+            <p className="muted">
+              Секунды — модельные, не реальные: время жизни мозга, а не ожидания. Счёт идёт дольше
+              (словесный мозг ~180 тыс. нейронов: 30 с — около 4–5 мин на видеокарте). Подстройка ускорена:
+              30 с развития ≈ сутки настоящей (у живого мозга — часы–сутки). У готового мозга —
+              только медленный гомеостаз (меню, галка).
+            </p>
             {develop && preset && <p className="muted">Вместо сохранённых сдвигов пресета — свои, под текущую анатомию.</p>}
           </fieldset>
           <fieldset className="flags">

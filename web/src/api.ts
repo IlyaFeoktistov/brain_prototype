@@ -28,6 +28,7 @@ export const repeat = (phrase: string) =>
   post<{ phrases: string[]; said: string[][]; leak: number; leak_windows: number }>("/api/repeat", { phrase });
 export const stop = () => post("/api/stop");
 export const setLive = (enabled: boolean) => post("/api/live", { enabled });
+export const setHomeostasis = (enabled: boolean) => post("/api/homeostasis", { enabled });
 export const lesson = (kind: string, n: number, extra: { text?: string; first?: number; last?: number } = {}) =>
   post<{ text: string }>("/api/lesson", { kind, n, ...extra });
 

@@ -49,6 +49,9 @@ export interface Status {
   loaded: boolean;
   busy: string | null;
   live: boolean;
+  // Медленный гомеостаз готового мозга (галка); средний сдвиг фона клеток, мВ.
+  homeostasis?: boolean;
+  homeoShiftMv?: number;
   brain?: string;
   timeMs?: number;
   hour?: number;

@@ -52,6 +52,14 @@ STATUS_SECONDS = 0.5
 VIEW_SECONDS = 0.2
 # Жизнь в тишине (флаг в интерфейсе): мозг живёт окнами по столько мс.
 LIVE_WINDOW_MS = 100.0
+# Медленный гомеостаз живого мозга (галка в вебе, «обычный» режим): тот же регулятор,
+# что при развитии (engine.homeostasis_update), но в SLOW_HOMEO раз медленнее.
+# Развитие — ускоренный режим: 30 с модельного времени ~ сутки настоящей подстройки
+# (масштабирование синапсов и собственная возбудимость — 24–48 ч, Turrigiano et al.
+# 1998, https://doi.org/10.1038/36103) → 24 ч / 30 с = 2880 [своё: сопоставление
+# «развитие ≈ сутки»]. За сессию в вебе сдвиг — доли мВ: правильность, а не «доделка».
+SLOW_HOMEO = 2880.0
+HOMEO_WINDOW_MS = 1000.0
 
 # Системы мозга для показа (порядок срезов в микроскопе); зона без системы —
 # «прочее».
@@ -108,6 +116,10 @@ class BrainHost:
         # (например, чтобы не занимать видеокарту).
         self.live = os.environ.get("BRAIN_LIVE", "1") != "0"
         self.mind: Mind | None = None
+        # Медленный (биологический) гомеостаз у готового мозга — по галке, по умолчанию выкл.
+        self.slow_homeo = False
+        self._homeo_counts: torch.Tensor | None = None
+        self._homeo_ms = 0.0
         self.session: Session | None = None
         self.teacher: Teacher | None = None
         self.sight: Sight | None = None
@@ -255,7 +267,8 @@ class BrainHost:
         self._last_status = time.perf_counter()
 
         if self.mind is None:
-            return {"type": "status", "loaded": False, "busy": self.busy, "live": self.live}
+            return {"type": "status", "loaded": False, "busy": self.busy, "live": self.live,
+                    "homeostasis": self.slow_homeo}
 
         brain = self.mind.brain
 
@@ -264,6 +277,8 @@ class BrainHost:
             "loaded": True,
             "busy": self.busy,
             "live": self.live,
+            "homeostasis": self.slow_homeo,
+            "homeoShiftMv": float(brain.homeo_shift.abs().mean()) if getattr(brain, "homeo_shift", None) is not None else 0.0,
             "brain": Path(self.mind.cfg.save_path).name,
             "timeMs": brain.time_ms,
             "hour": brain.hour(),
@@ -356,7 +371,10 @@ class BrainHost:
                     # мозг стоит — время мозга идёт, только пока считаются
                     # нейроны (ответ, урок, жизнь в тишине).
                     try:
+                        t0 = self.mind.brain.time_ms
                         self.session.live(LIVE_WINDOW_MS)
+                        if self.slow_homeo:
+                            self._slow_homeostasis(self.mind.brain.time_ms - t0)
                     except Exception as error:  # noqa: BLE001 — поток мозга не должен умирать молча
                         # Мозг на паузу, причина — в разговор; реплики и уроки
                         # по-прежнему принимаются.
@@ -372,6 +390,29 @@ class BrainHost:
                 break
 
             self._execute(*job)
+
+    def _slow_homeostasis(self, ms: float) -> None:
+        """
+        Медленный гомеостаз: спайки окон жизни копятся до HOMEO_WINDOW_MS, затем
+        engine.homeostasis_update с шагом homeostasis_step_mv / SLOW_HOMEO.
+        """
+
+        b = self.mind.brain
+        if ms <= 0:
+            return
+        counts = b.counts[: b.n].float()
+        self._homeo_counts = counts.clone() if self._homeo_counts is None else self._homeo_counts + counts
+        self._homeo_ms += ms
+        if self._homeo_ms < HOMEO_WINDOW_MS:
+            return
+        rates = self._homeo_counts * (1000.0 / self._homeo_ms)
+        self._homeo_counts, self._homeo_ms = None, 0.0
+        step = b.cfg.homeostasis_step_mv
+        b.cfg.homeostasis_step_mv = step / SLOW_HOMEO
+        try:
+            b.homeostasis_update(rates)
+        finally:
+            b.cfg.homeostasis_step_mv = step
 
     def submit(self, fn, label: str) -> Future:
         """Выполнить fn() в потоке мозга."""
@@ -788,6 +829,16 @@ async def live(body: Flag) -> dict:
     host.live = body.enabled
     host.emit(host.status())
     return {"live": host.live}
+
+
+@app.post("/api/homeostasis")
+async def homeostasis(body: Flag) -> dict:
+    """Медленный (биологический) гомеостаз готового мозга; ускоренный — только развитие при создании."""
+
+    host.slow_homeo = body.enabled
+    host._homeo_counts, host._homeo_ms = None, 0.0
+    host.emit(host.status())
+    return {"homeostasis": host.slow_homeo}
 
 
 @app.get("/api/health")

@@ -47,13 +47,20 @@ LMAX = 3
 READS = 4
 REPEATS = 2
 CHUNK_MS = 5.0
+S_WIN = 300.0        # окно S в периоде записи, мс: вспышка коры ~100 мс от начала слова + запас
+SEL_SD = 1.0         # клетки слова для реле MD — избирательность > 1 разброса (tools/word_drive.py: 162 клетки, 909/364 в с)
 
 
 class E1Net:
     """Сеть e1_recall.main для одного испытания (B = 1), шаг — как в её цикле."""
 
-    def __init__(self, length: int, g_ans: float = 8.0):
+    def __init__(self, length: int, g_ans: float = 8.0, s_mode: str = "task"):
         B, dev = 1, "cpu"
+        # Вход стриатума записи (docs/PBWM_TRANSFER.md): "sum" — позиция + сумма всех
+        # слов (E1 как был); "task" — позиция + состояние задачи S «запоминаю» от
+        # учителя (как CtrlInput S в sir2), окно ворот — фаза 0–300 мс каждого периода
+        # записи (такт); "off" — контроль: S не включается никогда.
+        self.s_mode = s_mode
         self.B, self.length, self.g_ans = B, length, g_ans
         self.cur, self.nxt = Slot(B, dev), Slot(B, dev)
         self.g1, self.g2 = Relay(B, dev, 16.0, 1.0, 4.0), Relay(B, dev, 16.0, 1.0, 4.0)
@@ -110,7 +117,12 @@ class E1Net:
         self.g1.step_counts(relay_input(cur.spk_e, self.src_cur, 1), self.opened if in_period and 400 <= ph < 600 else self.closed)
         self.g2.step_counts(relay_input(nxt.spk_e, self.src_nxt, 0), self.opened if in_period and 800 <= ph < 1000 else self.closed)
         pos = cur.spk_e[:, self.src_cur].sum(2)
-        self.bg_w.step(pos, wc.sum(1))
+        if self.s_mode == "sum":
+            self.bg_w.step(pos, wc.sum(1))
+        else:
+            s_on = self.s_mode == "task" and kind == "w" and 0 <= ph < S_WIN
+            self.s_on = s_on
+            self.bg_w.step(pos, torch.poisson(torch.full((B,), (40.0 if s_on else 2.0) * NWORD * 1e-3 * DT)))
         self.bg_r.step(pos, tc)
         ctx_w = wc.repeat_interleave(NR, 1)[:, None, :].expand(B, P, P * NR).reshape(B * P, P * NR)
         self.md_w.step_counts(ctx_w, None, self.bg_w.snr.per_channel().reshape(B * P))
@@ -141,7 +153,9 @@ def build(seed: int, adapt: int, screen: int):
     b.plasticity = False
     pops, thr = word_port.screen(b, port, screen, seed)
     b.plasticity = plastic
-    return b, port, vocab, pops, thr
+    L23 = b.areas["association"].layers["L23"]["E"]
+    conv = [torch.nonzero(word_port.LAST_SEL[i] > SEL_SD).squeeze(1) + L23.start for i in range(len(vocab))]
+    return b, port, vocab, pops, thr, conv
 
 
 def main(opts: dict) -> None:
@@ -150,11 +164,10 @@ def main(opts: dict) -> None:
     trials = int(opts.get("trials", 4))
     trace = opts.get("trace")
     t0 = time.time()
-    b, port, vocab, pops, thr = build(seed, int(opts.get("adapt", 30)), int(opts.get("screen", 4)))
+    b, port, vocab, pops, thr, conv = build(seed, int(opts.get("adapt", 30)), int(opts.get("screen", 4)))
     index = {w: i for i, w in enumerate(vocab)}
     cells = {w: pops[i] for i, w in enumerate(vocab)}
     thr_w = {w: float(thr[i]) for i, w in enumerate(vocab)}
-    src = torch.stack([cells[w][:NWORD] for w in chat_exam.WORDS]).to(b.device)   # [P, 20] источники E1
     print(f"зерно {seed}: мозг готов за {time.time() - t0:.0f} с; пороги «сказано» слов фразы: "
           + " ".join(f"{w} {thr_w[w]:.1f}" for w in chat_exam.WORDS), flush=True)
 
@@ -163,129 +176,148 @@ def main(opts: dict) -> None:
         return over[0] if len(over) == 1 else ("" if not over else "?")
 
     texts = chat_exam.phrases(seed, trials)
-    results, leaks_e1, leaks_ctx, rewrites = [], 0, 0, 0
-    steps_chunk = int(round(CHUNK_MS / DT))
-    for text in texts:
-        net = E1Net(len(text))
-        # Что звучит через порт: (начало, конец, слово).
-        heard = [(400.0 + i * T, 400.0 + i * T + 200.0, w) for i, w in enumerate(text)]
-        heard += [(rs, rs + 200.0, "повтори") for rs in net.rec_starts]
-        ans_rate = torch.zeros(P)
-        read = {}
-        write_e1 = torch.zeros(LMAX, P)
-        diag_src = torch.zeros(LMAX, P)          # Гц источников E1 по словам, 0–200 мс слова
-        diag_msn = torch.zeros(LMAX, P)          # стриатум записи E1 по каналам, 0–300 мс слова, Гц
-        diag_read = torch.zeros(REPEATS, READS, 3, P)   # стриатум чтения, реле чтения (по словам), ответ E1
-        write_ctx = [torch.zeros(b.n, device=b.device) for _ in range(LMAX)]
-        held_before = torch.zeros(P, P)
-        held_after = torch.zeros(P, P)
-        n_chunks = int(net.total // CHUNK_MS)
-        # Трассы по кускам 5 мс (trace=файл.pt) — для картинок tools/e1_in_brain_plot.py.
-        tr = {k: [] for k in ("src", "ans", "pops", "held", "msn", "rel", "areas")}
-        area_names = [a for a in b.areas if b.areas[a].E is not None]
-        held_acc = torch.zeros(P, P)
-        for c in range(n_chunks):
-            t = c * CHUNK_MS
-            kind_now = next((kd for p0, kd, _ in reversed(net.periods) if t >= p0), "w")
-            w_now = next((w for a, z, w in heard if a <= t < z), None)
-            raster = port.hear(index[w_now] if w_now else None, CHUNK_MS)
-            # Ответ E1 прошлого куска → рецепторы слова-ответа.
-            p = (b.cfg.words_hz * (ans_rate / 40.0).clamp(max=1.0)) * b.cfg.dt_ms / 1000.0
-            for j in range(P):
-                if float(p[j]) > 0:
-                    a = port.offset + index[chat_exam.WORDS[j]] * port.per
-                    raster[:, a: a + port.per] = torch.maximum(raster[:, a: a + port.per],
-                                                               (torch.rand(raster.shape[0], port.per, device=raster.device) < p[j]).float())
-            r = b.observe(CHUNK_MS, raster)
-            # Вход E1: спайки 20 клеток популяции слова за кусок, по шагам E1 случайно.
-            counts = (r[src] * CHUNK_MS / 1000.0).round().sum(1).long().cpu()         # [P]
-            wc_seq = torch.zeros(steps_chunk, P)
-            for j in range(P):
-                if int(counts[j]):
-                    wc_seq[torch.randint(0, steps_chunk, (int(counts[j]),)), j] += 1
-            src_hz = (r[src].mean(1)).cpu()                                           # [P] Гц
-            msn_acc = torch.zeros(P)
-            rel_acc = torch.zeros(P)
-            spikes = torch.zeros(P)
-            before_win = net.rec_starts[0] - 300.0 <= t < net.rec_starts[0]
-            after_win = net.total - 500.0 <= t < net.total - 200.0
-            for k in range(steps_chunk):
-                spikes += net.step(t + k * DT, wc_seq[k][None, :])
-                msn_acc += net.bg_w.msn.per_channel()[0] if kind_now == "w" else net.bg_r.msn.per_channel()[0]
-                rel_acc += net.md_r.spk.view(P, P, NR).sum((0, 2))
-                if before_win:
-                    held_before += net.held()
-                if after_win:
-                    held_after += net.held()
+    for s_mode in opts.get("s", "task").split(","):
+        # режим входа стриатума записи: s_mode
+        # Вход E1: "task"/"off" — схождение (все клетки слова > SEL_SD), "sum" — 20 клеток, как было.
+        src_sets = ([conv[index[w]].to(b.device) for w in chat_exam.WORDS] if s_mode != "sum"
+                    else [pops[index[w]][:NWORD].to(b.device) for w in chat_exam.WORDS])
+        print(f"режим входа стриатума записи: {s_mode}; источники E1 по словам: " + " ".join(f"{w} {len(x)}" for w, x in zip(chat_exam.WORDS, src_sets)), flush=True)
+        results, leaks_e1, leaks_ctx, rewrites = [], 0, 0, 0
+        steps_chunk = int(round(CHUNK_MS / DT))
+        for text in texts:
+            net = E1Net(len(text), s_mode=s_mode)
+            # Что звучит через порт: (начало, конец, слово).
+            heard = [(400.0 + i * T, 400.0 + i * T + 200.0, w) for i, w in enumerate(text)]
+            heard += [(rs, rs + 200.0, "повтори") for rs in net.rec_starts]
+            ans_rate = torch.zeros(P)
+            read = {}
+            write_e1 = torch.zeros(LMAX, P)
+            diag_src = torch.zeros(LMAX, P)          # Гц источников E1 по словам, 0–200 мс слова
+            diag_msn = torch.zeros(LMAX, P)          # стриатум записи E1 по каналам, 0–300 мс слова, Гц
+            diag_read = torch.zeros(REPEATS, READS, 3, P)   # стриатум чтения, реле чтения (по словам), ответ E1
+            write_ctx = [torch.zeros(b.n, device=b.device) for _ in range(LMAX)]
+            held_before = torch.zeros(P, P)
+            msn_w_chunks = []                         # стриатум записи по каналам за кусок, Гц (попытки записи)
+            held_after = torch.zeros(P, P)
+            n_chunks = int(net.total // CHUNK_MS)
+            # Трассы по кускам 5 мс (trace=файл.pt) — для картинок tools/e1_in_brain_plot.py.
+            tr = {k: [] for k in ("src", "ans", "pops", "held", "msn", "rel", "areas")}
+            area_names = [a for a in b.areas if b.areas[a].E is not None]
+            held_acc = torch.zeros(P, P)
+            for c in range(n_chunks):
+                t = c * CHUNK_MS
+                kind_now = next((kd for p0, kd, _ in reversed(net.periods) if t >= p0), "w")
+                w_now = next((w for a, z, w in heard if a <= t < z), None)
+                raster = port.hear(index[w_now] if w_now else None, CHUNK_MS)
+                # Ответ E1 прошлого куска → рецепторы слова-ответа.
+                p = (b.cfg.words_hz * (ans_rate / 40.0).clamp(max=1.0)) * b.cfg.dt_ms / 1000.0
+                for j in range(P):
+                    if float(p[j]) > 0:
+                        a = port.offset + index[chat_exam.WORDS[j]] * port.per
+                        raster[:, a: a + port.per] = torch.maximum(raster[:, a: a + port.per],
+                                                                   (torch.rand(raster.shape[0], port.per, device=raster.device) < p[j]).float())
+                r = b.observe(CHUNK_MS, raster)
+                # Вход E1: спайки 20 клеток популяции слова за кусок, по шагам E1 случайно.
+                counts = torch.stack([(r[x] * CHUNK_MS / 1000.0).round().sum() for x in src_sets]).long().cpu()   # [P]
+                wc_seq = torch.zeros(steps_chunk, P)
+                for j in range(P):
+                    if int(counts[j]):
+                        wc_seq[torch.randint(0, steps_chunk, (int(counts[j]),)), j] += 1
+                src_hz = torch.stack([r[x].mean() for x in src_sets]).cpu()               # [P] Гц на клетку
+                msn_acc = torch.zeros(P)
+                rel_acc = torch.zeros(P)
+                spikes = torch.zeros(P)
+                before_win = net.rec_starts[0] - 300.0 <= t < net.rec_starts[0]
+                after_win = net.total - 500.0 <= t < net.total - 200.0
+                for k in range(steps_chunk):
+                    spikes += net.step(t + k * DT, wc_seq[k][None, :])
+                    msn_acc += net.bg_w.msn.per_channel()[0] if kind_now == "w" else net.bg_r.msn.per_channel()[0]
+                    rel_acc += net.md_r.spk.view(P, P, NR).sum((0, 2))
+                    if before_win:
+                        held_before += net.held()
+                    if after_win:
+                        held_after += net.held()
+                    if trace:
+                        held_acc += net.held()
+                ans_rate = spikes / NANS / (CHUNK_MS / 1000.0)
+                msn_hz = msn_acc / 40 / steps_chunk * (1000.0 / DT)
+                msn_w_chunks.append((t, kind_now, msn_hz.clone()))
+                rel_hz = rel_acc / (P * NR) / steps_chunk * (1000.0 / DT)
                 if trace:
-                    held_acc += net.held()
-            ans_rate = spikes / NANS / (CHUNK_MS / 1000.0)
-            msn_hz = msn_acc / 40 / steps_chunk * (1000.0 / DT)
-            rel_hz = rel_acc / (P * NR) / steps_chunk * (1000.0 / DT)
+                    tr["src"].append(src_hz.clone())
+                    tr["ans"].append(ans_rate.clone())
+                    tr["pops"].append(torch.stack([r[cells[w]].mean() for w in vocab]).cpu())
+                    tr["held"].append(held_acc.clone())
+                    held_acc.zero_()
+                    tr["msn"].append(msn_hz.clone())
+                    tr["rel"].append(rel_hz.clone())
+                    tr["areas"].append(torch.stack([r[b.areas[a].E.slice].mean() for a in area_names]).cpu())
+                # Меры по окнам.
+                for (p0, kind, idx) in net.periods:
+                    ph = t - p0
+                    if kind == "w" and 0 <= ph < 200 and idx < len(text):
+                        diag_src[idx] += src_hz * CHUNK_MS / 200.0
+                    if kind == "w" and 0 <= ph < 300 and idx < len(text):
+                        diag_msn[idx] += msn_hz * CHUNK_MS / 300.0
+                    if kind == "r" and 0 <= ph < 300:
+                        diag_read[idx[0], idx[1], 0] += msn_hz * CHUNK_MS / 300.0
+                        diag_read[idx[0], idx[1], 1] += rel_hz * CHUNK_MS / 300.0
+                        diag_read[idx[0], idx[1], 2] += ans_rate * CHUNK_MS / 300.0
+                    if kind == "w" and 0 <= ph < 600 and idx < len(text):
+                        write_e1[idx] += ans_rate * CHUNK_MS / 600.0
+                        write_ctx[idx] += r[: b.n] * CHUNK_MS / 600.0
+                    if kind == "r" and 0 <= ph < 300:
+                        read.setdefault(idx, torch.zeros(b.n, device=r.device))
+                        read[idx] += r[: b.n] * CHUNK_MS / 300.0
             if trace:
-                tr["src"].append(src_hz.clone())
-                tr["ans"].append(ans_rate.clone())
-                tr["pops"].append(torch.stack([r[cells[w]].mean() for w in vocab]).cpu())
-                tr["held"].append(held_acc.clone())
-                held_acc.zero_()
-                tr["msn"].append(msn_hz.clone())
-                tr["rel"].append(rel_hz.clone())
-                tr["areas"].append(torch.stack([r[b.areas[a].E.slice].mean() for a in area_names]).cpu())
-            # Меры по окнам.
-            for (p0, kind, idx) in net.periods:
-                ph = t - p0
-                if kind == "w" and 0 <= ph < 200 and idx < len(text):
-                    diag_src[idx] += src_hz * CHUNK_MS / 200.0
-                if kind == "w" and 0 <= ph < 300 and idx < len(text):
-                    diag_msn[idx] += msn_hz * CHUNK_MS / 300.0
-                if kind == "r" and 0 <= ph < 300:
-                    diag_read[idx[0], idx[1], 0] += msn_hz * CHUNK_MS / 300.0
-                    diag_read[idx[0], idx[1], 1] += rel_hz * CHUNK_MS / 300.0
-                    diag_read[idx[0], idx[1], 2] += ans_rate * CHUNK_MS / 300.0
-                if kind == "w" and 0 <= ph < 600 and idx < len(text):
-                    write_e1[idx] += ans_rate * CHUNK_MS / 600.0
-                    write_ctx[idx] += r[: b.n] * CHUNK_MS / 600.0
-                if kind == "r" and 0 <= ph < 300:
-                    read.setdefault(idx, torch.zeros(b.n, device=r.device))
-                    read[idx] += r[: b.n] * CHUNK_MS / 300.0
-        if trace:
-            torch.save({"text": text, "vocab": vocab, "words": list(chat_exam.WORDS), "area_names": area_names,
-                        "thr": [thr_w[w] for w in vocab], "periods": net.periods, "rec_starts": net.rec_starts,
-                        "heard": heard, "chunk_ms": CHUNK_MS,
-                        **{k: torch.stack(v) for k, v in tr.items()}}, f"{trace}.{text}.pt")
-        runs = []
-        for rr in range(REPEATS):
-            line = ""
-            for k in range(READS):
-                s = said(read[(rr, k)])
-                line += s if s and s in chat_exam.WORDS else ("·" if s == "" else "?")
-            runs.append(line)
-        results.append(runs)
-        leak_e1 = int((write_e1.max(1).values[: len(text)] > 10.0).sum())
-        # Кора при записи: выше порога слово, которого на этой позиции не было.
-        leak_ctx = sum(1 for i in range(len(text)) if any(
-            float(write_ctx[i][cells[w]].mean()) > thr_w[w] for w in chat_exam.WORDS if w != text[i]))
-        before = held_before[: len(text)].argmax(1)
-        after = held_after[: len(text)].argmax(1)
-        rewrite = int((before != after).sum())
-        leaks_e1 += leak_e1
-        leaks_ctx += leak_ctx
-        rewrites += rewrite
-        stored = "".join(chat_exam.WORDS[int(x)] for x in before)
-        f = lambda v: " ".join(f"{float(x):5.1f}" for x in v)
-        for i in range(len(text)):
-            print(f"    запись слова {i + 1} «{text[i]}»: источники E1 из коры, Гц (А Б В Г Д) {f(diag_src[i])}; "
-                  f"стриатум записи по каналам {f(diag_msn[i])}")
-        for k in range(min(READS, len(text) + 1)):
-            print(f"    чтение позиции {k + 1} (вывод 1): стриатум чтения {f(diag_read[0, k, 0])}; "
-                  f"реле чтения по словам {f(diag_read[0, k, 1])}; ответ E1 {f(diag_read[0, k, 2])}")
-        print(f"  {text:3s} → {' | '.join(runs)}   (в ячейках до вывода: {stored}; после: "
-              f"{''.join(chat_exam.WORDS[int(x)] for x in after)}; утечка E1 {leak_e1}, кора {leak_ctx}) "
-              f"{time.time() - t0:.0f} с", flush=True)
-    n_words = sum(len(t) for t in texts)
-    chat_exam.report_repeat(f"E1 в мозге, зерно {seed}", [(texts, results)], None)
-    print(f"  утечка при записи: ответ E1 > 10 Гц в {leaks_e1}/{n_words} окнах, чужое слово в коре — {leaks_ctx}/{n_words}; "
-          f"повторная запись (ячейка поменяла слово за вывод) — {rewrites}/{n_words}; {time.time() - t0:.0f} с")
+                torch.save({"text": text, "vocab": vocab, "words": list(chat_exam.WORDS), "area_names": area_names,
+                            "thr": [thr_w[w] for w in vocab], "periods": net.periods, "rec_starts": net.rec_starts,
+                            "heard": heard, "chunk_ms": CHUNK_MS,
+                            **{k: torch.stack(v) for k, v in tr.items()}}, f"{trace}.{s_mode}.{text}.pt")
+            runs = []
+            for rr in range(REPEATS):
+                line = ""
+                for k in range(READS):
+                    s = said(read[(rr, k)])
+                    line += s if s and s in chat_exam.WORDS else ("·" if s == "" else "?")
+                runs.append(line)
+            results.append(runs)
+            leak_e1 = int((write_e1.max(1).values[: len(text)] > 10.0).sum())
+            # Кора при записи: выше порога слово, которого на этой позиции не было.
+            leak_ctx = sum(1 for i in range(len(text)) if any(
+                float(write_ctx[i][cells[w]].mean()) > thr_w[w] for w in chat_exam.WORDS if w != text[i]))
+            before = held_before[: len(text)].argmax(1)
+            after = held_after[: len(text)].argmax(1)
+            rewrite = int((before != after).sum())
+            leaks_e1 += leak_e1
+            leaks_ctx += leak_ctx
+            rewrites += rewrite
+            stored = "".join(chat_exam.WORDS[int(x)] for x in before)
+            # Попытки записи: эпизоды стриатума записи канала i (> 20 Гц подряд) в периоде записи i;
+            # ячейка i до вывода: доля сильнейшего слова (0.2 — шум, 1 — одно слово).
+            for i in range(LMAX):
+                p0 = net.periods[i][0]
+                on = [float(m[i]) > 20.0 for (tt, kd, m) in msn_w_chunks if p0 <= tt < p0 + T and kd == "w"]
+                episodes = sum(1 for j in range(len(on)) if on[j] and (j == 0 or not on[j - 1]))
+                h = held_before[i]
+                share = float(h.max() / h.sum().clamp(min=1e-9))
+                word = text[i] if i < len(text) else "—"
+                print(f"    период записи {i + 1} (слово {word}): попыток записи {episodes}; ячейка {i + 1} до вывода — "
+                      f"«{chat_exam.WORDS[int(h.argmax())]}», доля {share:.2f}")
+            f = lambda v: " ".join(f"{float(x):5.1f}" for x in v)
+            for i in range(len(text)):
+                print(f"    запись слова {i + 1} «{text[i]}»: источники E1 из коры, Гц (А Б В Г Д) {f(diag_src[i])}; "
+                      f"стриатум записи по каналам {f(diag_msn[i])}")
+            for k in range(min(READS, len(text) + 1)):
+                print(f"    чтение позиции {k + 1} (вывод 1): стриатум чтения {f(diag_read[0, k, 0])}; "
+                      f"реле чтения по словам {f(diag_read[0, k, 1])}; ответ E1 {f(diag_read[0, k, 2])}")
+            print(f"  {text:3s} → {' | '.join(runs)}   (в ячейках до вывода: {stored}; после: "
+                  f"{''.join(chat_exam.WORDS[int(x)] for x in after)}; утечка E1 {leak_e1}, кора {leak_ctx}) "
+                  f"{time.time() - t0:.0f} с", flush=True)
+        n_words = sum(len(t) for t in texts)
+        chat_exam.report_repeat(f"E1 в мозге, зерно {seed}, вход стриатума {s_mode}", [(texts, results)], None)
+        print(f"  утечка при записи: ответ E1 > 10 Гц в {leaks_e1}/{n_words} окнах, чужое слово в коре — {leaks_ctx}/{n_words}; "
+              f"повторная запись (ячейка поменяла слово за вывод) — {rewrites}/{n_words}; {time.time() - t0:.0f} с")
 
 
 if __name__ == "__main__":

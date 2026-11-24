@@ -48,6 +48,7 @@ def build(opts: dict):
     return mind, mind.brain
 
 
+LAST_SEL: torch.Tensor | None = None   # избирательность последнего скрининга [слово, клетка L2/3], в разбросах
 SILENT: list[torch.Tensor] = []      # частоты в окнах тишины READ_MS (последние в паузе)
 
 
@@ -94,6 +95,8 @@ def screen(b, port: Words, n: int, seed: int, gen: torch.Generator | None = None
     S = torch.stack(SILENT)[:, L23.slice]
     S = torch.stack([S[:, pops[w]].mean(1) for w in range(W)], 1)              # [окно, слово]
     thr = S.mean(0) + SD_THR * S.std(0)
+    global LAST_SEL
+    LAST_SEL = torch.stack([(mean[w] - (mean.sum(0) - mean[w]) / (W - 1)) / sd for w in range(W)])   # [слово, клетка L2/3]
     overlap = len(pops.flatten()) - len(pops.flatten().unique())
     print(f"скрининг: {n} показа на слово; клеток в двух популяциях и больше {overlap}; тишина популяций "
           f"{float(S.mean()):.1f} Гц, разброс окна {float(S.std(0).mean()):.2f} Гц → порог {float(thr.mean()):.1f} Гц "

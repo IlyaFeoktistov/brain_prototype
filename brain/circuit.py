@@ -491,10 +491,11 @@ class TypedCircuit:
 
     # ------------------------------------------------------------------
 
-    def step(self, ext_mv: torch.Tensor, fired_prev: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def step(self, ext_mv: torch.Tensor, fired_prev: torch.Tensor,
+             brain_spikes: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Шаг dt. ext_mv — вход мозга клеткам зоны (мВ движка), fired_prev —
-        спайки клеток зоны прошлого шага. Возвращает (v, спайки шага).
+        спайки клеток зоны прошлого шага (brain_spikes — всех клеток мозга, здесь не нужны). Возвращает (v, спайки шага).
         """
 
         dev = self.device

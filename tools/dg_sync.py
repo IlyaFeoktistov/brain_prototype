@@ -96,13 +96,15 @@ def main(opts: dict) -> None:
     cells = b.areas["dentate"].cells
     n_gc = int(gc.sum())
 
-    # Проводка: вероятность связи у нас (TypedCircuit._p, до 1) = доля
-    # популяции-источника у клетки = доля общих источников у пары (случайная).
     from brain import circuit as circuit_mod
 
     net = circuit_mod.load(b.cfg.areas[[a.name for a in b.cfg.areas].index("dentate")].circuit)
-    print(f"зерно {cfg.seed}: гранулярных {n_gc}, мшистых {c.size['DG_Mossy']}", flush=True)
-    if not c.topo:
+    print(f"зерно {cfg.seed}: гранулярных {n_gc}, типы " + ", ".join(f"{g} {c.size[g]}" for g in c.names), flush=True)
+    if net.get("model") == "chavlis":
+        print(f"   сеть Chavlis 2017: синапсов {c.synapses}, входных клеток EC {len(c.ec_cells)}", flush=True)
+    elif not c.topo:
+        # Вероятность связи у нас (TypedCircuit._p, до 1) = доля популяции-
+        # источника у клетки = доля общих источников у пары (случайная).
         for link in net["links"]:
             p = c._p(link, net["groups"], c.size)
             if p > 0.2:
@@ -126,6 +128,8 @@ def main(opts: dict) -> None:
     counts = torch.zeros(bins, 500, device=c.device)
     pop = torch.zeros(bins, len(c.names), device=c.device)
     ca3 = torch.zeros(bins, device=c.device)
+    ca3_frac = torch.zeros(bins, device=c.device)
+    gc_frac = torch.zeros(bins, device=c.device)
     ec = torch.zeros(bins, device=c.device)
     ec_e = b.areas["entorhinal"].E.slice
     zones = {"CA3": b.areas["ca3"].E.slice, "CA1": b.areas["ca1"].E.slice,
@@ -148,6 +152,8 @@ def main(opts: dict) -> None:
         for i in range(len(c.names)):
             pop[t, i] = x[c.type_of == i].sum()
         ca3[t] = r[ca3_e].mean()
+        ca3_frac[t] = (r[ca3_e] > 0).float().mean()
+        gc_frac[t] = (x[gc] > 0).float().mean()
         ec[t] = r[ec_e].mean()
         for k, sl in zones.items():
             series[k][t] = r[sl].mean()
@@ -217,6 +223,13 @@ def main(opts: dict) -> None:
     events = float(g_pop.sum()) * out_per_gc / sec
     print(f"поток DG → CA3: {out_per_gc:.0f} синапсов на гранулярную, {events:.3g} событий/с; "
           f"CA3 PC {float(ca3.mean()):.2f} Гц, CV по окнам {float(ca3.std() / ca3.mean()):.2f}")
+    # CA3: доля PC, выстреливших в окне 5 мс. У SWR в событии ~10–20% PC,
+    # срыв — 85–99% (CHAT_PLAN шаг 3, цикл 10); массовое — ≥ 50%.
+    print(f"CA3 PC по окнам 5 мс: доля в окне средняя {float(ca3_frac.mean()):.2%}, наибольшая {float(ca3_frac.max()):.1%}; "
+          f"окон ≥ 20% — {int((ca3_frac >= 0.2).sum())}, массовых (≥ 50%) — {int((ca3_frac >= 0.5).sum())} "
+          f"за {sec:.0f} с")
+    print(f"гранулярные по окнам 5 мс: доля в окне средняя {float(gc_frac.mean()):.3%}, наибольшая {float(gc_frac.max()):.2%}; "
+          f"активных за запись {float((counts.sum(0) > 0).float().mean()):.1%} (выборка 500)")
     lost = float(b.dropped) - dropped0
     print(f"потеряно за запись: мозг {lost:.3g}, " + ", ".join(
         f"{k} {float(x.dropped) - cdrop0[k]:.3g}" for k, x in b.circuits.items()))
@@ -299,9 +312,9 @@ def diagnose(b, s, c, cells, ms: float, seed: int) -> None:
     last_ext = torch.zeros(n, device=dev)
     step = c.step
 
-    def wrapped(ext_mv, fired_prev):
+    def wrapped(ext_mv, fired_prev, *rest):
         last_ext.copy_(ext_mv)
-        return step(ext_mv, fired_prev)
+        return step(ext_mv, fired_prev, *rest)
 
     c.step = wrapped
     b._graphs = {}

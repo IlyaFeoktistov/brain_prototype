@@ -2952,10 +2952,23 @@ class SpikingBrain:
 
             area = self.areas[spec.name]
             self._reseed(f"circuit:{spec.name}")
-            c = circuit.TypedCircuit(circuit.load(spec.circuit), area, self.cfg.dt_ms, self.device, self.generator,
-                                     compact, capacity=self.cfg.event_capacity)
-            c.set_input_gain(self.tau_m, self.tau_syn)
-            c.set_rest_input(self._rest_input(area), self.cfg.circuit_input_scale)
+            net = circuit.load(spec.circuit)
+
+            if net.get("model") == "chavlis":
+                # Зубчатая Chavlis 2017 (brain/dg_chavlis.py): свои отсеки и
+                # синапсы; вход EC — спайки случайных клеток EC мозга на
+                # синапсы авторов (их входных клеток — net["ec_cells"]).
+                from brain.dg_chavlis import ChavlisDG
+
+                ec = self.areas[net["ec_area"]].E
+                pick = torch.randperm(ec.size, generator=self.generator, device=self.generator.device)[: int(net["ec_cells"])]
+                c = ChavlisDG(net, area, self.cfg.dt_ms, self.device, self.generator,
+                              torch.sort(pick).values.to(self.device) + ec.start)
+            else:
+                c = circuit.TypedCircuit(net, area, self.cfg.dt_ms, self.device, self.generator,
+                                         compact, capacity=self.cfg.event_capacity)
+                c.set_input_gain(self.tau_m, self.tau_syn)
+                c.set_rest_input(self._rest_input(area), self.cfg.circuit_input_scale)
             cells = area.cells
             self.noise_gain[cells] = 0.0
             self.adapt_b[cells] = 0.0
@@ -3541,7 +3554,7 @@ class SpikingBrain:
         for name, c in self.circuits.items():
             # Клетки зоны с сетью по готовой модели (_init_circuits).
             cells = self.areas[name].cells
-            c_v, c_fired = c.step(inputs[cells], self.spikes[cells] > 0)
+            c_v, c_fired = c.step(inputs[cells], self.spikes[cells] > 0, self.spikes)
             v[cells] = c_v
             fired[cells] = c_fired
 

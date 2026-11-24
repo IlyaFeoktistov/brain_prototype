@@ -1,0 +1,16 @@
+{
+  "model": "chavlis",
+  "paper": "Chavlis, Petrantonakis & Poirazi 2017, Hippocampus 27:89, https://doi.org/10.1002/hipo.22675 (крыса; модель с 12 дендритами)",
+  "source": "ModelDB 206372, https://github.com/ModelDBRepository/206372 — DG_12dendrites.py (Brian 1.4); матрицы связей — ConnectivityMatrices_12dendrites (save_connectivity Brian 1: zip с presynaptic.npy / postsynaptic.npy)",
+  "note": "Клетки, синапсы, шум — brain/dg_chavlis.py (числа — из DG_12dendrites.py). Входных клеток EC у авторов 400 — столько клеток EC мозга идёт в сеть, по матрицам авторов.",
+  "matrices": "hippocampus/dg_chavlis",
+  "ec_area": "entorhinal",
+  "ec_cells": 400,
+  "principal": "GC",
+  "groups": {
+    "GC": {"cells": 2000, "excitatory": true},
+    "BC": {"cells": 100, "excitatory": false},
+    "MC": {"cells": 80, "excitatory": true},
+    "HIPP": {"cells": 40, "excitatory": false}
+  }
+}

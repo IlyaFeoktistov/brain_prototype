@@ -2,7 +2,7 @@
 Клетка стриатума (шипиковая, MSN) по Humphries, Lepora, Wood & Gurney 2009,
 Front Comput Neurosci 3:26, https://doi.org/10.3389/neuro.10.026.2009 —
 Izhikevich, подогнанная авторами к подробной модели MSN Moyer et al. 2007;
-код авторов — ModelDB 128818 (MATLAB), числа — их файл
+код авторов — ModelDB 128818 (MATLAB; копия ~/.brain/ext/msn128818), числа — их файл
 fit_model_results_NEWtuning.mat, схема шага — test_Moyer_model_fit.m
 (Эйлер, dt 0.1 мс, без дофамина — «unmodified»).
 

@@ -1,6 +1,6 @@
 # PBWM → E1: карта соответствия (шаг 4а)
 
-Источник — код `emer/leabra` (ветка main, клон 2026-11-24, только чтение):
+Источник — код `emer/leabra` (ветка main, клон 2026-11-24 в ~/.brain/ext/leabra, только чтение):
 `PBWM.md`, `examples/sir2/sir2.go` (ConfigNet, параметры), `leabra/pbwm_paths.go`
 (правило следа), `leabra/pbwm_layers.go` (GPiThal). Статья — O'Reilly & Frank
 2006, Neural Computation 18:283–328, https://doi.org/10.1162/089976606775093909.

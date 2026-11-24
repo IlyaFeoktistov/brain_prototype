@@ -1580,7 +1580,7 @@ Go/NoGo по дофамину; дофамин сначала вычисляем�
 пачка 512 — ×53 на пробу; проверка эквивалентности пачки с отдельными
 прогонами — НЕ досчитана, остановлена) → б1 спайковые BG Lindahl & Hellgren
 Kotaleski 2016 (код github.com/mickelindahl/bgmodel склонирован в
-/tmp/ext, Python 2 + NEST 2.2.2, параметры в
+~/.brain/ext/bgmodel, Python 2 + NEST 2.2.2, параметры в
 python/core/network/default_params.py 5750 строк; объём как CA3 Kopsick) →
 б2 D1/D2 Humphries с дофамином → б3 правило следа + RW на sir2 → б4 E1
 отдельно → б5 мозг.

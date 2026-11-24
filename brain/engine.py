@@ -3081,6 +3081,11 @@ class SpikingBrain:
         self.clamp_on = False
         self.clamp_mask = torch.zeros(self.n_slots, dtype=torch.bool, device=self.device)
         self.clamp_now = torch.zeros(self.n_slots, dtype=torch.bool, device=self.device)
+        # clamp_p — вероятность спайка за шаг по клеткам: зажатые клетки
+        # стреляют независимым пуассоном (изоляция зоны: остальной мозг —
+        # источники с его средними частотами, tools/pfc_isolate.py); None —
+        # по записи clamp_now.
+        self.clamp_p = None
         # STDP-следы: пре (LTP) и пост (LTD).
         self.trace_pre = z()
         self.trace_pre_rise = z()
@@ -3577,7 +3582,8 @@ class SpikingBrain:
             fired[cells] = c_fired
 
         if self.clamp_on:
-            fired = torch.where(self.clamp_mask, self.clamp_now, fired)
+            now = self.clamp_now if self.clamp_p is None else torch.rand(self.n_slots, device=self.device) < self.clamp_p
+            fired = torch.where(self.clamp_mask, now, fired)
 
         reset = fired
         if self.teach_on:

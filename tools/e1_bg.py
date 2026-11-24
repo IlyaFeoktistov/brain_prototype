@@ -120,18 +120,27 @@ class MSNChannels:
     входа в E1 нет (у авторов фон — 84 корковых + 84 тормозных).
     """
 
-    def __init__(self, B: int, dev: str):
-        from msn_humphries import MSN
+    # Фон авторов (msn="humphries_bg"): нижняя точка их проверки f-f по данным Moyer — 84 корковых
+    # + 84 тормозных пуассоновских входа по 850/168 = 5.06 Гц (850 событий/с → у Moyer 0 Гц, у переноса
+    # 0.2 Гц); у каждой клетки свой, сигналы E1 — поверх.
+    BG_N, BG_HZ = 84, 850.08 / 168.0
+
+    def __init__(self, B: int, dev: str, background: bool = False):
+        from msn_humphries import DT as MDT, MSN
 
         self.B = B
         self.cells = MSN((B, P * NMSN), dev)
+        self.lam = torch.full((B, P * NMSN), self.BG_N * self.BG_HZ * 1e-3 * MDT, device=dev) if background else None
 
     @property
     def spk(self) -> torch.Tensor:
         return self.cells.spk
 
     def step_events(self, ctx_events: torch.Tensor) -> None:
-        self.cells.step(ctx_events)
+        if self.lam is None:
+            self.cells.step(ctx_events)
+        else:
+            self.cells.step(ctx_events + torch.poisson(self.lam), torch.poisson(self.lam))
 
     def per_channel(self) -> torch.Tensor:
         return self.cells.spk.view(self.B, P, NMSN).sum(2)
@@ -145,7 +154,8 @@ class BG:
                  fsi_k: int = 0, fsi_g: float = 7.5, fsi_gin: float | None = None, msn: str = "lif"):
         self.B, self.dev, self.gmsn, self.g_d1 = B, dev, gmsn, g_d1
         self.msn_model = msn
-        self.msn = MSNChannels(B, dev) if msn == "humphries" else LIF(B, NMSN, dev, -80.0)
+        self.msn = (MSNChannels(B, dev, background=(msn == "humphries_bg")) if msn.startswith("humphries")
+                    else LIF(B, NMSN, dev, -80.0))
         self.snr = LIF(B, NSNR, dev, -70.0, i_snr)
         self.fsi = FSI(B, dev, fsi_k, fsi_g, gmsn if fsi_gin is None else fsi_gin) if fsi_k > 0 else None
 
@@ -153,7 +163,7 @@ class BG:
         """pos_counts [B, P] — спайки NSRC клеток каждой группы позиции; word_counts [B] — спайки всех клеток слов."""
 
         events = (pos_counts + word_counts[:, None]).repeat_interleave(NMSN, 1)
-        if self.msn_model == "humphries":
+        if self.msn_model.startswith("humphries"):
             self.msn.step_events(events)
         else:
             exc = self.gmsn * events

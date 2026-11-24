@@ -29,6 +29,8 @@ export const repeat = (phrase: string) =>
 export const stop = () => post("/api/stop");
 export const setLive = (enabled: boolean) => post("/api/live", { enabled });
 export const setHomeostasis = (enabled: boolean) => post("/api/homeostasis", { enabled });
+export const developMore = (seconds: number) =>
+  post<{ developed: number; done: number; budget: number }>("/api/develop", { seconds });
 export const lesson = (kind: string, n: number, extra: { text?: string; first?: number; last?: number } = {}) =>
   post<{ text: string }>("/api/lesson", { kind, n, ...extra });
 

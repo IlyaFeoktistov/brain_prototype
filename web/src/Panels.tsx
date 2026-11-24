@@ -315,6 +315,28 @@ function BrainFlags({ info }: { info: (text: string) => void }) {
   );
 }
 
+const DEVELOP_BUDGET_S = 30;
+
+function DevelopMore({ status, actions }: { status: Status; actions: MenuActions }) {
+  const done = status.developDoneS ?? 0;
+  const left = Math.max(0, DEVELOP_BUDGET_S - done);
+  const [seconds, setSeconds] = useState(Math.min(10, Math.floor(left)) || 1);
+  const fail = (e: unknown) => actions.info(`Ошибка: ${(e as Error).message}`);
+  if (!status.loaded) return null;
+  return (
+    <p className="buttons" title="ускоренный гомеостаз — фаза развития: всего не больше 30 с модельного времени на мозг (≈ сутки подстройки). Доразвивать — до обучения: подстройка частот стирает выученные различия клеток">
+      развитие: {done.toFixed(0)} из {DEVELOP_BUDGET_S} с{" "}
+      {left >= 1 ? <>
+        <input type="number" min={1} max={Math.floor(left)} step={1} value={seconds}
+               onChange={(e) => setSeconds(Math.max(1, Math.min(Math.floor(left), Number(e.target.value))))} style={{ width: "4em" }} />{" "}
+        <button type="button" disabled={!!status.busy}
+                onClick={() => { actions.info(`доразвитие ${seconds} с (модельных)…`); api.developMore(seconds).then((r) => actions.info(`доразвито ${r.developed} с: всего ${r.done} из ${r.budget} с`)).catch(fail); }}>
+          доразвить</button>
+      </> : <span className="muted"> — бюджет исчерпан, дальше медленный гомеостаз</span>}
+    </p>
+  );
+}
+
 export function Menu({ status, actions }: { status: Status; actions: MenuActions }) {
   const fail = (e: unknown) => actions.info(`Ошибка: ${(e as Error).message}`);
   return (
@@ -353,6 +375,7 @@ export function Menu({ status, actions }: { status: Status; actions: MenuActions
           <button type="button" onClick={() => api.save().then((r) => actions.info(`сохранено: ${r.brain}`)).catch(fail)} title="записать мозг на диск (~/.brain/brains) со всем выученным">Сохранить</button>
           <button type="button" onClick={actions.choose} title="открыть сохранённый мозг или создать новый (текущий сначала сохраняется)">Другой мозг…</button>
         </div>
+        <DevelopMore status={status} actions={actions} />
       </div>
       <BrainFlags info={actions.info} />
     </div>
@@ -476,14 +499,14 @@ export function Chooser({ brains, onClose, info }: { brains: Brains; onClose?: (
             <label className="flag" title="ускоренный гомеостаз (только при создании): мозг живёт в тишине, после каждой секунды клетки сдвигают фон к частоте покоя своего типа, потом сдвиг замораживается">
               <input type="checkbox" checked={develop} onChange={(e) => setDevelop(e.target.checked)} />
               {" "}развитие при создании (ускоренный гомеостаз):{" "}
-              <input type="number" min={1} max={600} step={10} value={developS} disabled={!develop}
-                     onChange={(e) => setDevelopS(Math.max(1, Number(e.target.value)))} style={{ width: "5em" }} /> с
+              <input type="number" min={1} max={30} step={5} value={developS} disabled={!develop}
+                     onChange={(e) => setDevelopS(Math.max(1, Math.min(30, Number(e.target.value))))} style={{ width: "5em" }} /> с
             </label>
             <p className="muted">
               Секунды — модельные, не реальные: время жизни мозга, а не ожидания. Счёт идёт дольше
               (словесный мозг ~180 тыс. нейронов: 30 с — около 4–5 мин на видеокарте). Подстройка ускорена:
-              30 с развития ≈ сутки настоящей (у живого мозга — часы–сутки). У готового мозга —
-              только медленный гомеостаз (меню, галка).
+              30 с развития ≈ сутки настоящей (у живого мозга — часы–сутки). Всего не больше 30 с на мозг:
+              остаток можно доразвить у готового мозга (меню «Мозг») — до обучения; дальше — медленный гомеостаз.
             </p>
             {develop && preset && <p className="muted">Вместо сохранённых сдвигов пресета — свои, под текущую анатомию.</p>}
           </fieldset>

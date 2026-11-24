@@ -52,6 +52,8 @@ export interface Status {
   // Медленный гомеостаз готового мозга (галка); средний сдвиг фона клеток, мВ.
   homeostasis?: boolean;
   homeoShiftMv?: number;
+  // Сколько ускоренного гомеостаза (развития) мозг уже прожил, с (бюджет 30).
+  developDoneS?: number;
   brain?: string;
   timeMs?: number;
   hour?: number;

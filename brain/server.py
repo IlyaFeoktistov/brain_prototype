@@ -278,6 +278,7 @@ class BrainHost:
             "busy": self.busy,
             "live": self.live,
             "homeostasis": self.slow_homeo,
+            "developDoneS": float(getattr(self.mind.cfg, "develop_done_s", 0.0)),
             "homeoShiftMv": float(brain.homeo_shift.abs().mean()) if getattr(brain, "homeo_shift", None) is not None else 0.0,
             "brain": Path(self.mind.cfg.save_path).name,
             "timeMs": brain.time_ms,
@@ -638,6 +639,10 @@ class BrainHost:
             cfg.event_overflow = overflow
         # Новый мозг становится текущим только целиком: при ошибке сборки или
         # развития остаётся прежний (иначе поток жизни видит мозг без сессии).
+        from brain.develop import BUDGET_S
+
+        if develop_s > BUDGET_S:
+            raise ValueError(f"развитие не больше {BUDGET_S:.0f} с (ускоренный гомеостаз ≈ сутки подстройки)")
         if chosen:
             mind = chosen.build(seed, cfg=cfg, develop_s=develop_s, on_window=progress)
         else:
@@ -646,10 +651,34 @@ class BrainHost:
                 from brain.develop import develop
 
                 develop(mind, develop_s, on_window=progress)
+        mind.cfg.develop_done_s = float(develop_s)
         flags.after_build(mind)
         mind.save()
         self.mind = mind
         return cfg.save_path
+
+    def develop_more(self, seconds: float) -> dict:
+        """
+        Доразвить готовый мозг: ускоренный гомеостаз ещё seconds с, но всего не больше
+        develop.BUDGET_S на мозг (при создании + доразвитие). Без прогрева — мозг уже живёт.
+        """
+
+        from brain.develop import BUDGET_S, develop
+
+        mind = self.need()
+        left = BUDGET_S - mind.cfg.develop_done_s
+        s = min(float(seconds), left)
+        if s < 1.0:
+            raise ValueError(f"бюджет развития исчерпан: прожито {mind.cfg.develop_done_s:.0f} из {BUDGET_S:.0f} с — "
+                             "дальше только медленный гомеостаз")
+
+        def progress(w: int, n: int, rates) -> None:
+            self.busy = f"доразвитие: {w + 1} из {n} с"
+            self.emit(self.status())
+
+        develop(mind, s, warm_ms=0.0, on_window=progress)
+        mind.cfg.develop_done_s += s
+        return {"developed": s, "done": mind.cfg.develop_done_s, "budget": BUDGET_S}
 
     def save(self) -> str:
         return str(self.need().save())
@@ -844,6 +873,17 @@ async def homeostasis(body: Flag) -> dict:
     host._homeo_counts, host._homeo_ms = None, 0.0
     host.emit(host.status())
     return {"homeostasis": host.slow_homeo}
+
+
+class Develop(BaseModel):
+    seconds: float
+
+
+@app.post("/api/develop")
+async def develop_more(body: Develop) -> dict:
+    """Доразвить готовый мозг (ускоренный гомеостаз) в пределах бюджета 30 с на мозг."""
+
+    return await _run(lambda: host.develop_more(body.seconds), "доразвитие")
 
 
 @app.get("/api/health")

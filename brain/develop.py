@@ -28,6 +28,9 @@ from brain.mind import Mind
 WARM_MS = 2500.0
 # Окно гомеостаза: частота окна усредняется по homeostasis_avg_windows окнам.
 WINDOW_MS = 1000.0
+# Бюджет ускоренного гомеостаза на мозг, с модельного времени (cfg.develop_done_s): 30 с ≈
+# сутки настоящей подстройки (server.SLOW_HOMEO); после — только медленный гомеостаз.
+BUDGET_S = 30.0
 
 
 def blank(mind: Mind) -> Callable[[float], torch.Tensor]:
@@ -61,7 +64,8 @@ def develop(mind: Mind, seconds: float, win_ms: float = WINDOW_MS, warm_ms: floa
     b.plasticity = False
     mind.cfg.homeostasis = True
     try:
-        b.run(warm_ms, quiet(warm_ms))
+        if warm_ms > 0:
+            b.run(warm_ms, quiet(warm_ms))
         n = int(seconds * 1000.0 / win_ms)
         for w in range(n):
             rates = window(win_ms) if window else b.observe(win_ms, quiet(win_ms))

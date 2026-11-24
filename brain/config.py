@@ -955,6 +955,10 @@ class BrainConfig:
     # Пресет, по которому собран мозг (brain/presets.py; пусто — голый) — для
     # веба и повторения опыта; зерно — seed.
     preset: str = ""
+    # Сколько ускоренного гомеостаза (развития, brain/develop.py) мозг уже прожил, с
+    # модельного времени: при создании и доразвитии в вебе; бюджет —
+    # develop.BUDGET_S (развитие 30 с ≈ сутки подстройки), дальше — только медленный.
+    develop_done_s: float = 0.0
     dendrite_window_ms: float = 5.0
     dendrite_count_threshold: float = 15.0
     dendrite_count_slope: float = 2.0

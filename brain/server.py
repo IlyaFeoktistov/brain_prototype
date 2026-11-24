@@ -590,16 +590,24 @@ class BrainHost:
             self.busy = f"развитие: {w + 1} из {n} с"
             self.emit(self.status())
 
+        # Переменная веба BRAIN_EVENT_OVERFLOW — уже при сборке и развитии (иначе первый
+        # залп развития роняет создание; _attach применяет её только после).
+        overflow = os.environ.get("BRAIN_EVENT_OVERFLOW")
+        if overflow:
+            cfg.event_overflow = overflow
+        # Новый мозг становится текущим только целиком: при ошибке сборки или
+        # развития остаётся прежний (иначе поток жизни видит мозг без сессии).
         if chosen:
-            self.mind = chosen.build(seed, cfg=cfg, develop_s=develop_s, on_window=progress)
+            mind = chosen.build(seed, cfg=cfg, develop_s=develop_s, on_window=progress)
         else:
-            self.mind = Mind(cfg)
+            mind = Mind(cfg)
             if develop_s > 0:
                 from brain.develop import develop
 
-                develop(self.mind, develop_s, on_window=progress)
-        flags.after_build(self.mind)
-        self.mind.save()
+                develop(mind, develop_s, on_window=progress)
+        flags.after_build(mind)
+        mind.save()
+        self.mind = mind
         return cfg.save_path
 
     def save(self) -> str:

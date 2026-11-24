@@ -62,19 +62,72 @@ class LIF:
         return self.spk.view(self.B, P, self.n).sum(2)   # [B, P]
 
 
-class BG:
-    """Стриатум D1 + SNr, канал на позицию."""
+class FSI:
+    """
+    Быстрые тормозные интернейроны стриатума (PV, FS) — прямое торможение
+    клеток стриатума корковым входом (Mallet et al. 2005,
+    https://doi.org/10.1523/JNEUROSCI.5027-04.2005: FSI отвечают на кору
+    раньше и при меньшей силе, чем клетки стриатума).
+    Клетка — тормозная Brunel–Wang (как I в e1_slot: 0.2 нФ, 20 нС, порог
+    −50, сброс −55, рефр. 1 мс). Вход — тот же корковый, что у стриатума
+    (Humphries et al. 2010, https://doi.org/10.1371/journal.pcbi.1001011:
+    «из тех же источников»), широкий: все позиции и все слова, та же сила на
+    спайк, что у клеток стриатума [своё: числа коркового входа на FSI нет].
+    Выход: на клетку стриатума k FSI (4–27 — Koós & Tepper 1999,
+    https://doi.org/10.1038/8138 [DOI сверить]), вероятность связи 0.75
+    (Planert et al. 2010, https://doi.org/10.1523/JNEUROSCI.5139-09.2010,
+    74% пар) → пул ceil(k / 0.75); пиковая проводимость g_out нС на спайк
+    (Gittis et al. 2010, https://doi.org/10.1523/JNEUROSCI.4870-09.2010:
+    две группы 0.9 и 16.9 нС, средний ток ~500–580 пА ≈ 7.5 нС), спад ГАМК
+    τ 10 мс как у LIF (у них 8 мс). Одна FSI тормозит клетки всех каналов
+    (сотни–тысячи клеток на FSI).
+    """
 
-    def __init__(self, B: int, dev: str, gmsn: float = 4.5, g_d1: float = 8.0, i_snr: float = 620.0):
+    def __init__(self, B: int, dev: str, k: int, g_out: float, gin: float, gen: torch.Generator | None = None):
+        import math
+
+        self.B, self.dev, self.g_out, self.gin = B, dev, g_out, gin
+        self.n = max(k, math.ceil(k / 0.75))
+        self.v = torch.full((B, self.n), -70.0, device=dev)
+        self.ref = torch.zeros(B, self.n, device=dev)
+        self.ge = torch.zeros(B, self.n, device=dev)
+        self.spk = torch.zeros(B, self.n, device=dev)
+        # Каждой клетке стриатума (P·NMSN) — k разных FSI из пула.
+        gen = gen or torch.Generator().manual_seed(0)
+        idx = torch.stack([torch.randperm(self.n, generator=gen)[:k] for _ in range(P * NMSN)])
+        self.w = torch.zeros(self.n, P * NMSN, device=dev)
+        self.w[idx, torch.arange(P * NMSN)[:, None].expand(-1, k)] = 1.0
+
+    def step(self, cortex_counts: torch.Tensor) -> torch.Tensor:
+        """cortex_counts [B] — спайки всего коркового входа за шаг (каждой FSI). Возвращает нС на клетки стриатума [B, P·NMSN]."""
+
+        self.ge.mul_(1.0 - DT / 2.0).add_(self.gin * cortex_counts[:, None])
+        v = self.v
+        i = self.ge * v
+        v = torch.where(self.ref <= 0, v + DT * (-20.0 * (v + 70.0) - i) / 0.2 * 1e-3, v)
+        s = v > -50.0
+        self.v = torch.where(s, -55.0, v)
+        self.ref = torch.where(s, round(1.0 / DT) - 1, self.ref - 1)
+        self.spk = s.float()
+        return self.g_out * (self.spk @ self.w)
+
+
+class BG:
+    """Стриатум D1 + SNr, канал на позицию; по желанию — FSI (fsi_k > 0)."""
+
+    def __init__(self, B: int, dev: str, gmsn: float = 4.5, g_d1: float = 8.0, i_snr: float = 620.0,
+                 fsi_k: int = 0, fsi_g: float = 7.5, fsi_gin: float | None = None):
         self.B, self.dev, self.gmsn, self.g_d1 = B, dev, gmsn, g_d1
         self.msn = LIF(B, NMSN, dev, -80.0)
         self.snr = LIF(B, NSNR, dev, -70.0, i_snr)
+        self.fsi = FSI(B, dev, fsi_k, fsi_g, gmsn if fsi_gin is None else fsi_gin) if fsi_k > 0 else None
 
     def step(self, pos_counts: torch.Tensor, word_counts: torch.Tensor) -> None:
         """pos_counts [B, P] — спайки NSRC клеток каждой группы позиции; word_counts [B] — спайки всех клеток слов."""
 
         exc = self.gmsn * (pos_counts + word_counts[:, None]).repeat_interleave(NMSN, 1)
-        self.msn.step(exc, torch.zeros_like(exc))
+        inh = self.fsi.step(pos_counts.sum(1) + word_counts) if self.fsi is not None else torch.zeros_like(exc)
+        self.msn.step(exc, inh)
         inh = self.g_d1 * self.msn.per_channel().repeat_interleave(NSNR, 1)
         self.snr.step(torch.zeros_like(inh), inh)
 

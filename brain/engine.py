@@ -1744,6 +1744,9 @@ class SpikingBrain:
         self.modeled_inputs: dict[str, float] = {}
         # Недостающие таламические входы своими событиями (cfg.tc_missing_independent): (популяция, реле [n, k], недостающих, вес).
         self.tc_missing: list = []
+        # Недостающие входы путей независимыми событиями (cfg.mf_independent):
+        # [получатель, источник, коэфф. поля мВ/кГц, эквивалентных входов, вес].
+        self.mf_events: list = []
 
         # ---- проводящие пути между зонами ----
         # Сколько врождённых путей между колонками входит в каждую популяцию:
@@ -1788,6 +1791,9 @@ class SpikingBrain:
                     tau = float(self.tau_m[post.start])
                     self._missing(post, pre, path.k_data * rate * w * tau * (1.0 - 1.0 / root), rate,
                                   ach=path.ach_suppressed)
+                    if f"{path.src}->{path.dst}" in cfg.mf_independent:
+                        self.mf_events.append([post, pre, path.k_data * w * tau * (1.0 - 1.0 / root),
+                                               path.k_data * (1.0 - 1.0 / root), w])
                     w = w * root
                     weight = (w, w)
 
@@ -2059,6 +2065,11 @@ class SpikingBrain:
         self._lgn_to_l6()
         self._external_minus_modeled()
         self._build_mean_field()
+        self.mf_events_on = False
+        # Номер популяции-источника в среднем поле (без синхронизаций в шаге).
+        self.mf_events_pre = [int(self.mf_pre_id[pre.start]) for _, pre, *_ in self.mf_events]
+        if self.mf_events:
+            self.set_mf_independent(True)
         self._pack()
         self._init_nmda()
 
@@ -3428,6 +3439,13 @@ class SpikingBrain:
                 resource = self.stp_x.index_select(0, pre.flatten()).view(pre.shape).mean(1)
                 count = torch.poisson(n_missing * rate * cfg.dt_ms)
                 drive[pop.slice] += count * w * resource
+        if self.mf_events_on:
+            # Недостающие входы путей (cfg.mf_independent): пуассон каждой
+            # клетки по сглаженной частоте популяции-источника (та же, что у
+            # среднего поля), вес — по данным.
+            for (post, _, _, n_equiv, w), i in zip(self.mf_events, self.mf_events_pre):
+                lam = self.mf_rate[i] * (n_equiv * cfg.dt_ms)
+                drive[post.slice] += torch.poisson(lam.expand(post.size).contiguous()) * w
         self.i_syn.mul_(self.decay_syn).add_(drive * self.syn_scale)
         self.i_inh.mul_(self.decay_syn_inh).add_(inhibition * self.syn_scale_inh)
         self.i_ngf.mul_(self.decay_ngf).add_(ngf * self.ngf_scale)
@@ -3843,6 +3861,24 @@ class SpikingBrain:
             self._compiled = torch.compile(self._step, dynamic=False)
 
         return self._compiled
+
+    def set_mf_independent(self, on: bool) -> None:
+        """
+        Недостающие входы путей cfg.mf_independent: on — независимые события
+        каждой клетки (коэффициент поля пары снят), off — общее среднее поле,
+        как по умолчанию. Диагностика: переключается на ходу из одного
+        состояния (tools/mf_events.py).
+        """
+
+        if on == self.mf_events_on:
+            return
+        sign = -1.0 if on else 1.0
+
+        for post, pre, coeff, _, _ in self.mf_events:
+            q, i = int(self.mf_post_id[post.start]), int(self.mf_pre_id[pre.start])
+            self.mf_exc[q, i] += sign * coeff
+        self.mf_events_on = on
+        self.recompile()
 
     def recompile(self) -> None:
         """Сбросить собранный шаг и CUDA Graph (поменялась настройка шага)."""

@@ -54,7 +54,7 @@ SEL_SD = 1.0         # клетки слова для реле MD — избир
 class E1Net:
     """Сеть e1_recall.main для одного испытания (B = 1), шаг — как в её цикле."""
 
-    def __init__(self, length: int, g_ans: float = 8.0, s_mode: str = "task"):
+    def __init__(self, length: int, g_ans: float = 8.0, s_mode: str = "task", msn: str = "lif"):
         B, dev = 1, "cpu"
         # Вход стриатума записи (docs/PBWM_TRANSFER.md): "sum" — позиция + сумма всех
         # слов (E1 как был); "task" — позиция + состояние задачи S «запоминаю» от
@@ -69,7 +69,7 @@ class E1Net:
         self.cur, self.nxt = Slot(B, dev), Slot(B, dev)
         self.g1, self.g2 = Relay(B, dev, 16.0, 1.0, 4.0), Relay(B, dev, 16.0, 1.0, 4.0)
         self.src_cur, self.src_nxt = sources(self.cur, NSRC), sources(self.nxt, NSRC)
-        self.bg_w, self.bg_r = BG(B, dev), BG(B, dev)
+        self.bg_w, self.bg_r = BG(B, dev, msn=msn), BG(B, dev, msn=msn)
         self.md_w, self.md_r = Relay(B * P, dev, 16.0, 1.0, 4.0), Relay(B * P, dev, 16.0, 1.0, 4.0)
         self.ws = Slot(B * P, dev)
         self.src_ws = sources(self.ws, NSRC)

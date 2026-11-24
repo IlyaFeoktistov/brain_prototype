@@ -112,22 +112,53 @@ class FSI:
         return self.g_out * (self.spk @ self.w)
 
 
+class MSNChannels:
+    """
+    Стриатум E1 клетками Humphries et al. 2009 (tools/msn_humphries.MSN, без
+    дофамина): P каналов × NMSN. Вход — пришедшие корковые события (позиция +
+    задача/слова) с авторской силой синапса AMPA+NMDA на событие; тормозного
+    входа в E1 нет (у авторов фон — 84 корковых + 84 тормозных).
+    """
+
+    def __init__(self, B: int, dev: str):
+        from msn_humphries import MSN
+
+        self.B = B
+        self.cells = MSN((B, P * NMSN), dev)
+
+    @property
+    def spk(self) -> torch.Tensor:
+        return self.cells.spk
+
+    def step_events(self, ctx_events: torch.Tensor) -> None:
+        self.cells.step(ctx_events)
+
+    def per_channel(self) -> torch.Tensor:
+        return self.cells.spk.view(self.B, P, NMSN).sum(2)
+
+
 class BG:
-    """Стриатум D1 + SNr, канал на позицию; по желанию — FSI (fsi_k > 0)."""
+    """Стриатум D1 + SNr, канал на позицию; по желанию — FSI (fsi_k > 0), клетки
+    стриатума Humphries 2009 (msn="humphries") вместо LIF."""
 
     def __init__(self, B: int, dev: str, gmsn: float = 4.5, g_d1: float = 8.0, i_snr: float = 620.0,
-                 fsi_k: int = 0, fsi_g: float = 7.5, fsi_gin: float | None = None):
+                 fsi_k: int = 0, fsi_g: float = 7.5, fsi_gin: float | None = None, msn: str = "lif"):
         self.B, self.dev, self.gmsn, self.g_d1 = B, dev, gmsn, g_d1
-        self.msn = LIF(B, NMSN, dev, -80.0)
+        self.msn_model = msn
+        self.msn = MSNChannels(B, dev) if msn == "humphries" else LIF(B, NMSN, dev, -80.0)
         self.snr = LIF(B, NSNR, dev, -70.0, i_snr)
         self.fsi = FSI(B, dev, fsi_k, fsi_g, gmsn if fsi_gin is None else fsi_gin) if fsi_k > 0 else None
 
     def step(self, pos_counts: torch.Tensor, word_counts: torch.Tensor) -> None:
         """pos_counts [B, P] — спайки NSRC клеток каждой группы позиции; word_counts [B] — спайки всех клеток слов."""
 
-        exc = self.gmsn * (pos_counts + word_counts[:, None]).repeat_interleave(NMSN, 1)
-        inh = self.fsi.step(pos_counts.sum(1) + word_counts) if self.fsi is not None else torch.zeros_like(exc)
-        self.msn.step(exc, inh)
+        events = (pos_counts + word_counts[:, None]).repeat_interleave(NMSN, 1)
+        if self.msn_model == "humphries":
+            self.msn.step_events(events)
+        else:
+            exc = self.gmsn * events
+            inh = self.fsi.step(pos_counts.sum(1) + word_counts) if self.fsi is not None else torch.zeros_like(exc)
+            self.msn.step(exc, inh)
         inh = self.g_d1 * self.msn.per_channel().repeat_interleave(NSNR, 1)
         self.snr.step(torch.zeros_like(inh), inh)
 

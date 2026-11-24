@@ -46,8 +46,11 @@ CONDS = {"1 фон": (0.0, "off", "off"), "2 позиция": (1.0, "off", "off"
 ADV = "burst"   # форма сброса при сдвигах счётчика: burst (по умолчанию E1) | inhib (вариант E1, opt reset_adv)
 
 
+MSN_MODEL = "lif"   # клетка стриатума: lif (E1) | humphries (Humphries et al. 2009)
+
+
 def run(pos_to_bg: float, s_mode: str, r_mode: str) -> dict:
-    net = E1Net(len(TEXT), s_mode=s_mode)
+    net = E1Net(len(TEXT), s_mode=s_mode, msn=MSN_MODEL)
     if ADV == "inhib":
         net.reset_e_adv = None      # сдвиг — торможение ячеек (как nengo InputGatedMemory), без залпа всех позиций
     net.pos_to_bg, net.r_mode = pos_to_bg, r_mode
@@ -79,9 +82,10 @@ def run(pos_to_bg: float, s_mode: str, r_mode: str) -> dict:
 def main(opts: dict) -> None:
     torch.set_num_threads(2)
     seed = int(opts.get("seed", 1))
-    global ADV
+    global ADV, MSN_MODEL
     ADV = opts.get("adv", "burst")
-    tag = "" if ADV == "burst" else f"_{ADV}"
+    MSN_MODEL = opts.get("msn", "lif")
+    tag = ("" if ADV == "burst" else f"_{ADV}") + ("" if MSN_MODEL == "lif" else f"_{MSN_MODEL}")
     names = list(CONDS)
     if "cond" in opts:
         name = names[int(opts["cond"]) - 1]

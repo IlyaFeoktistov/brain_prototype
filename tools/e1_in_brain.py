@@ -61,6 +61,10 @@ class E1Net:
         # учителя (как CtrlInput S в sir2), окно ворот — фаза 0–300 мс каждого периода
         # записи (такт); "off" — контроль: S не включается никогда.
         self.s_mode = s_mode
+        # Замер ворот (tools/e1_gate_check.py): pos_to_bg 0 — позиция не идёт в стриатум;
+        # r_mode "off" — сигнал задачи чтения R не включается.
+        self.pos_to_bg, self.r_mode = 1.0, "task"
+        self.s_on = False
         self.B, self.length, self.g_ans = B, length, g_ans
         self.cur, self.nxt = Slot(B, dev), Slot(B, dev)
         self.g1, self.g2 = Relay(B, dev, 16.0, 1.0, 4.0), Relay(B, dev, 16.0, 1.0, 4.0)
@@ -102,7 +106,8 @@ class E1Net:
         p0, kind, idx = self.periods[self.pi]
         ph = t - p0 if t >= p0 else -1.0
         in_period = 0 <= ph < T
-        task_on = any(rs + 150.0 <= t < rs + 400.0 + READS * T for rs in self.rec_starts)
+        task_on = self.r_mode == "task" and any(rs + 150.0 <= t < rs + 400.0 + READS * T for rs in self.rec_starts)
+        self.task_on = task_on
         tc = torch.poisson(torch.full((B,), (40.0 if task_on else 2.0) * NWORD * 1e-3 * DT))
         de_c = di_c = de_n = di_n = None
         if 100 <= t < 150 or any(rs + 100 <= t < rs + 150 for rs in self.rec_starts):
@@ -116,7 +121,7 @@ class E1Net:
         cur, nxt = self.cur, self.nxt
         self.g1.step_counts(relay_input(cur.spk_e, self.src_cur, 1), self.opened if in_period and 400 <= ph < 600 else self.closed)
         self.g2.step_counts(relay_input(nxt.spk_e, self.src_nxt, 0), self.opened if in_period and 800 <= ph < 1000 else self.closed)
-        pos = cur.spk_e[:, self.src_cur].sum(2)
+        pos = cur.spk_e[:, self.src_cur].sum(2) * self.pos_to_bg
         if self.s_mode == "sum":
             self.bg_w.step(pos, wc.sum(1))
         else:

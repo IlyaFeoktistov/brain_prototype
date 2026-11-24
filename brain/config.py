@@ -1033,6 +1033,12 @@ class BrainConfig:
     # тот же, общая часть — только от построенных синапсов (van Albada,
     # Helias & Diesmann 2015, https://doi.org/10.1371/journal.pcbi.1004490).
     mf_independent: tuple[str, ...] = ()
+    # Секторы TRN с торможением внутри ядра (anatomy.pathways: 47 партнёров
+    # по −0.74 мВ — сеть Iavarone et al. 2023, CHAT_PLAN шаг 3, циклы 41–42).
+    # Проверено только в секторе MD (словесный мозг, 3 зерна); зрительный,
+    # слуховой, моторный ("trn", "trn_mgn", "trn_motor") — после чата, с
+    # проверкой передачи (tools/chain_bench.py, tools/ear_trace.py), ISSUES 37.
+    trn_intra_sectors: tuple[str, ...] = ("trn_md",)
     tc_missing_tau_ms: float = 50.0
     # Прямой вход LGN → V1 L6 E (флаг; доля 0 — выкл): у макаки часть
     # кортикогеникулярных клеток L6 получает от LGN прямой вход, способный

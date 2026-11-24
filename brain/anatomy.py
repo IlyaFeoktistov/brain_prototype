@@ -459,7 +459,13 @@ def pathways(cfg) -> list[PathwaySpec]:
     # 0.41, восстановление 0.38 с) [долг]; электрических синапсов TRN (~28
     # партнёров) нет — по данным они синхронизируют [долг]; другие секторы TRN
     # — без связей внутри [долг].
-    out.append(_path("trn_md", "trn_md", 47, -0.74, topographic=1.0))
+    # Тот же блок — во всех секторах TRN из cfg.trn_intra_sectors (общий
+    # механизм ретикулярного ядра; цикл 42): у зрительного — по карте поля
+    # LGN (mapped), у прочих — местно по кругу.
+    for trn in dict.fromkeys(sector.values()):
+        if trn in getattr(cfg, "trn_intra_sectors", ("trn_md",)):
+            mapped = "lgn" if trn == "trn" else ""
+            out.append(_path(trn, trn, 47, -0.74, mapped=mapped, topographic=0.0 if mapped else 1.0))
 
     # Реле ПФК: MD → ПФК — в L3 и L4 одной дозой (_mid_thalamic); MD → цель —
     # в L4, как вход таламуса (слой не сверен).

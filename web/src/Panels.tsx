@@ -418,7 +418,7 @@ export function Chooser({ brains, onClose, info }: { brains: Brains; onClose?: (
       </section>
       <section>
         <h3>Создать новый</h3>
-        <form onSubmit={(e) => {
+        <form noValidate onSubmit={(e) => {
           e.preventDefault();
           const fl = Object.fromEntries(Object.entries(chosen).filter(([k, v]) => v && !(preset && k === "small_columns")));
           act(api.newBrain(name.trim(), neurons, preset || null, seed, fl, chosenOrgans, develop ? developS : 0),

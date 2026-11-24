@@ -79,6 +79,52 @@ def run(pos_to_bg: float, s_mode: str, r_mode: str) -> dict:
     return out
 
 
+def run_batch(trials: int, dev: str) -> dict:
+    """
+    Все 4 условия в одной пачке (по trials строк на условие): проверка, что пробы пачки не
+    обмениваются состоянием — каждое условие должно совпасть со своим отдельным прогоном.
+    Возвращает средние по строкам условия в формате run().
+    """
+
+    names = list(CONDS)
+    B = len(names) * trials
+    net = E1Net(len(TEXT), s_mode="task", msn=MSN_MODEL, B=B, dev=dev)
+    if ADV == "inhib":
+        net.reset_e_adv = None
+    cond = torch.arange(len(names), device=dev).repeat_interleave(trials)
+    pg = torch.tensor([CONDS[n][0] for n in names], device=dev)[cond]
+    net.pos_to_bg = pg[:, None]
+    net.s_enable = torch.tensor([CONDS[n][1] == "task" for n in names], device=dev)[cond]
+    net.r_enable = torch.tensor([CONDS[n][2] == "task" for n in names], device=dev)[cond]
+    steps_bin = int(round(BIN_MS / DT))
+    n_bins = int(net.total // BIN_MS)
+    rec = {k: torch.zeros(n_bins, B, device=dev) for k in ("msn_w", "msn_r", "ans", "pos", "s", "r")}
+    words = [(400.0 + i * T, 400.0 + i * T + 200.0, w) for i, w in enumerate(TEXT)]
+    for b in range(n_bins):
+        for k in range(steps_bin):
+            t = b * BIN_MS + k * DT
+            rate = torch.full((B, P), OFF, device=dev)
+            for a, z, w in words:
+                if a <= t < z:
+                    rate[:, w] = ON
+            ans = net.step(t, torch.poisson(rate * 1e-3 * DT))
+            rec["msn_w"][b] += net.bg_w.msn.spk.sum(1)
+            rec["msn_r"][b] += net.bg_r.msn.spk.sum(1)
+            rec["ans"][b] += ans.sum(1)
+            rec["pos"][b] += net.cur.spk_e[:, net.src_cur].sum((1, 2))
+            rec["s"][b] += net.s_on.float()
+            rec["r"][b] += net.task_on.float()
+    hz = 1000.0 / BIN_MS
+    out = {}
+    for i, n in enumerate(names):
+        sel = cond == i
+        m = lambda x: x[:, sel].mean(1).cpu()
+        out[n] = {"msn_w": m(rec["msn_w"]) / (P * NMSN) * hz, "msn_r": m(rec["msn_r"]) / (P * NMSN) * hz,
+                  "ans": m(rec["ans"]) / (P * NANS) * hz, "pos": m(rec["pos"]) / net.src_cur.numel() * hz,
+                  "s": m(rec["s"]) / steps_bin, "r": m(rec["r"]) / steps_bin, "rec_starts": net.rec_starts}
+    return out
+
+
 def main(opts: dict) -> None:
     torch.set_num_threads(2)
     seed = int(opts.get("seed", 1))
@@ -87,6 +133,16 @@ def main(opts: dict) -> None:
     MSN_MODEL = opts.get("msn", "lif")
     tag = ("" if ADV == "burst" else f"_{ADV}") + ("" if MSN_MODEL == "lif" else f"_{MSN_MODEL}")
     names = list(CONDS)
+    if "batch" in opts:
+        import time
+
+        t0 = time.time()
+        torch.manual_seed(seed)
+        out = run_batch(int(opts["batch"]), opts.get("device", "cuda"))
+        for i, n in enumerate(names):
+            torch.save(out[n], f"/tmp/e1b/gate{tag}_batch_{i + 1}.pt")
+        print(f"пачка {int(opts['batch'])} × 4 условия: {time.time() - t0:.0f} с", flush=True)
+        return
     if "cond" in opts:
         name = names[int(opts["cond"]) - 1]
         torch.manual_seed(seed)
@@ -97,7 +153,8 @@ def main(opts: dict) -> None:
         return
     res = {}
     for i, name in enumerate(names):
-        r = torch.load(f"/tmp/e1b/gate{tag}_{i + 1}.pt", weights_only=False)
+        src = "_batch" if opts.get("from") == "batch" else ""
+        r = torch.load(f"/tmp/e1b/gate{tag}{src}_{i + 1}.pt", weights_only=False)
         res[name] = r
         t = torch.arange(len(r["msn_w"])) * BIN_MS
         write_period = torch.zeros(len(t), dtype=torch.bool)

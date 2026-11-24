@@ -54,8 +54,10 @@ SEL_SD = 1.0         # клетки слова для реле MD — избир
 class E1Net:
     """Сеть e1_recall.main для одного испытания (B = 1), шаг — как в её цикле."""
 
-    def __init__(self, length: int, g_ans: float = 8.0, s_mode: str = "task", msn: str = "lif"):
-        B, dev = 1, "cpu"
+    def __init__(self, length: int, g_ans: float = 8.0, s_mode: str = "task", msn: str = "lif", B: int = 1, dev: str = "cpu"):
+        self.dev = dev
+        # Пачка B проб: у каждой своё состояние (все части E1 — по строке пачки), расписание
+        # общее; условия по строкам — pos_to_bg [B, 1], s_enable [B], r_enable [B] (замер ворот).
         # Вход стриатума записи (docs/PBWM_TRANSFER.md): "sum" — позиция + сумма всех
         # слов (E1 как был); "task" — позиция + состояние задачи S «запоминаю» от
         # учителя (как CtrlInput S в sir2), окно ворот — фаза 0–300 мс каждого периода
@@ -64,7 +66,9 @@ class E1Net:
         # Замер ворот (tools/e1_gate_check.py): pos_to_bg 0 — позиция не идёт в стриатум;
         # r_mode "off" — сигнал задачи чтения R не включается.
         self.pos_to_bg, self.r_mode = 1.0, "task"
-        self.s_on = False
+        self.s_enable = torch.ones(B, dtype=torch.bool, device=dev)
+        self.r_enable = torch.ones(B, dtype=torch.bool, device=dev)
+        self.s_on = torch.zeros(B, dtype=torch.bool, device=dev)
         self.B, self.length, self.g_ans = B, length, g_ans
         self.cur, self.nxt = Slot(B, dev), Slot(B, dev)
         self.g1, self.g2 = Relay(B, dev, 16.0, 1.0, 4.0), Relay(B, dev, 16.0, 1.0, 4.0)
@@ -77,10 +81,10 @@ class E1Net:
         cur = self.cur
         # По умолчанию e1_recall (шаг 5в): «повтори» — тормозной сброс, сдвиги — залп.
         self.reset_e = None
-        self.reset_e_adv = torch.full((B, cur.ne), C_EXT * R_RESET * 1e-3)
-        self.reset_i = torch.full((B, cur.ni), C_EXT * R_RESET * 1e-3)
+        self.reset_e_adv = torch.full((B, cur.ne), C_EXT * R_RESET * 1e-3, device=dev)
+        self.reset_i = torch.full((B, cur.ni), C_EXT * R_RESET * 1e-3, device=dev)
         self.start = (cur.lab[None, :] == 0).float().expand(B, cur.ne) * (C_SEL * R_SEL * 1e-3)
-        self.closed, self.opened = torch.ones(B, dtype=torch.bool), torch.zeros(B, dtype=torch.bool)
+        self.closed, self.opened = torch.ones(B, dtype=torch.bool, device=dev), torch.zeros(B, dtype=torch.bool, device=dev)
         self.periods = [(400.0 + i * T, "w", i) for i in range(LMAX)]
         self.rec_starts = []
         t_end = 400.0 + LMAX * T
@@ -95,20 +99,21 @@ class E1Net:
     def held(self) -> torch.Tensor:
         """Ячейки слов: какая группа слов сильнее в каждой позиции (спайки шага, [позиция, слово])."""
 
-        return (self.ws.spk_e @ self.ws.onehot)[:, :P].view(P, P)
+        return (self.ws.spk_e @ self.ws.onehot)[:, :P].view(self.B, P, P)
 
     def step(self, t: float, wc: torch.Tensor) -> torch.Tensor:
-        """Шаг DT: wc [1, P] — спайки источников слов. Возвращает спайки ответа по словам [P]."""
+        """Шаг DT: wc [B, P] — спайки источников слов. Возвращает спайки ответа по словам [B, P]."""
 
-        B = 1
+        B = self.B
         while self.pi + 1 < len(self.periods) and t >= self.periods[self.pi + 1][0]:
             self.pi += 1
         p0, kind, idx = self.periods[self.pi]
         ph = t - p0 if t >= p0 else -1.0
         in_period = 0 <= ph < T
-        task_on = self.r_mode == "task" and any(rs + 150.0 <= t < rs + 400.0 + READS * T for rs in self.rec_starts)
+        win_r = any(rs + 150.0 <= t < rs + 400.0 + READS * T for rs in self.rec_starts)
+        task_on = self.r_enable & (self.r_mode == "task") & win_r
         self.task_on = task_on
-        tc = torch.poisson(torch.full((B,), (40.0 if task_on else 2.0) * NWORD * 1e-3 * DT))
+        tc = torch.poisson(torch.where(task_on, 40.0, 2.0) * NWORD * 1e-3 * DT)
         de_c = di_c = de_n = di_n = None
         if 100 <= t < 150 or any(rs + 100 <= t < rs + 150 for rs in self.rec_starts):
             de_c = self.start
@@ -125,20 +130,20 @@ class E1Net:
         if self.s_mode == "sum":
             self.bg_w.step(pos, wc.sum(1))
         else:
-            s_on = self.s_mode == "task" and kind == "w" and 0 <= ph < S_WIN
+            s_on = self.s_enable & (self.s_mode == "task") & (kind == "w" and 0 <= ph < S_WIN)
             self.s_on = s_on
-            self.bg_w.step(pos, torch.poisson(torch.full((B,), (40.0 if s_on else 2.0) * NWORD * 1e-3 * DT)))
+            self.bg_w.step(pos, torch.poisson(torch.where(s_on, 40.0, 2.0) * NWORD * 1e-3 * DT))
         self.bg_r.step(pos, tc)
         ctx_w = wc.repeat_interleave(NR, 1)[:, None, :].expand(B, P, P * NR).reshape(B * P, P * NR)
         self.md_w.step_counts(ctx_w, None, self.bg_w.snr.per_channel().reshape(B * P))
         ctx_r = self.ws.spk_e[:, self.src_ws].sum(2).repeat_interleave(NR, 1)
         self.md_r.step_counts(ctx_r, None, self.bg_r.snr.per_channel().reshape(B * P))
         to_ans = self.md_r.spk.view(B, P, P, NR).sum((1, 3))
-        self.ans.step(self.g_ans * to_ans.repeat_interleave(NANS, 1), torch.zeros(B, P * NANS))
+        self.ans.step(self.g_ans * to_ans.repeat_interleave(NANS, 1), torch.zeros(B, P * NANS, device=self.dev))
         nxt.step(de_n, di_n, add_e=self.g1.to_slot(nxt.lab))
         cur.step(de_c, di_c, add_e=self.g2.to_slot(cur.lab))
         self.ws.step(add_e=self.md_w.to_slot(self.ws.lab))
-        return self.ans.spk.view(P, NANS).sum(1)
+        return self.ans.spk.view(B, P, NANS).sum(2)
 
 
 def build(seed: int, adapt: int, screen: int):
@@ -235,15 +240,15 @@ def main(opts: dict) -> None:
                 before_win = net.rec_starts[0] - 300.0 <= t < net.rec_starts[0]
                 after_win = net.total - 500.0 <= t < net.total - 200.0
                 for k in range(steps_chunk):
-                    spikes += net.step(t + k * DT, wc_seq[k][None, :])
+                    spikes += net.step(t + k * DT, wc_seq[k][None, :])[0]
                     msn_acc += net.bg_w.msn.per_channel()[0] if kind_now == "w" else net.bg_r.msn.per_channel()[0]
                     rel_acc += net.md_r.spk.view(P, P, NR).sum((0, 2))
                     if before_win:
-                        held_before += net.held()
+                        held_before += net.held()[0]
                     if after_win:
-                        held_after += net.held()
+                        held_after += net.held()[0]
                     if trace:
-                        held_acc += net.held()
+                        held_acc += net.held()[0]
                 ans_rate = spikes / NANS / (CHUNK_MS / 1000.0)
                 msn_hz = msn_acc / 40 / steps_chunk * (1000.0 / DT)
                 msn_w_chunks.append((t, kind_now, msn_hz.clone()))

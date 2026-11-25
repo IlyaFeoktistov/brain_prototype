@@ -46,7 +46,8 @@ ops = op.get()
 per = pl({'netw': {'size': size, 'sub_sampling': {'M1': 1, 'M2': 1},
                    'rand_nodes': {'C_m': True, 'V_th': True, 'V_m': True}}}, '=')
 per += pl({'node': {'M1': {'model': 'M1_low'}, 'M2': {'model': 'M2_low'}, 'FS': {'model': 'FS_low'}}}, '=')
-per += pl({'netw': {'tata_dop': 0.8}}, '=')
+dop = float(sys.argv[4]) if len(sys.argv) > 4 else 0.8
+per += pl({'netw': {'tata_dop': dop}}, '=')
 per += ops[i]
 par = getattr(dp, cls)(**{'other': dp.Inhibition(), 'perturbations': per})
 d = par.dic
@@ -61,6 +62,6 @@ def clean(x):
         return float(x)
     except Exception:
         return repr(x)
-out = 'fig1_%s_%d_%d.json' % (cls, i, int(size))
+out = 'fig1_%s_%d_%d%s.json' % (cls, i, int(size), '' if dop == 0.8 else '_dop%g' % dop)
 json.dump(clean(d), open(out, 'w'), indent=1, sort_keys=True)
 print('ok', out)

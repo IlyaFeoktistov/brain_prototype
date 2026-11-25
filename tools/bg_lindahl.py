@@ -38,8 +38,9 @@ structure.py (у GF 1 набор при 2 у M2 — весь GF получает
 Шаг: 0.1 мс (по умолчанию NEST); внутри — nsub подшагов: проводимости — точная экспонента,
 V и u — Эйлер (у авторов RKF45 с точностью 1e-6 — подшаги приближают его; сходимость
 проверяется nsub=10 против nsub=20). Входящие спайки прибавляются к проводимостям в конце
-шага, как в update() авторов. Дофамин: в норме tata_dop узла = 0 (сеть 0.8 − 0.8), множители
-дофамина = 1; другие уровни пока не поддержаны (ошибка).
+шага, как в update() авторов. Дофамин: tata_dop узла (сеть − норма 0.8: 0 в норме, −0.8 без дофамина) —
+множители на токи рецепторов, E_L, V_b/V_a (в формуле; ветка — по исходному), k, d; дофамин в
+связях (меньше коллатералей MSN и т. п.) уже посчитан в fan_in выгрузки.
 
 Опора для сверки (частоты модели в статье — только на графиках, рис. 2–3):
   - расчётные частоты авторов (node.rate, default_params): MSN 0.1, FSN 15, TA 5,
@@ -133,10 +134,11 @@ class Net:
         V_th_sigma = float(par["netw"].get("V_th_sigma", 1.0))
         rand = par["netw"].get("rand_nodes", {})
         P = {k: torch.zeros(N, **f64) for k in (
-            "C_m", "k", "E_L", "V_th", "V_b", "a", "b_1", "b_2", "p_1", "p_2", "c", "d", "V_peak", "u_const",
+            "C_m", "k", "E_L", "V_th", "V_b", "V_bf", "V_af", "a", "b_1", "b_2", "p_1", "p_2", "c", "d", "V_peak", "u_const",
             "u_kc", "kc_1", "kc_2", "c_max", "u_max", "I_e",
             "g_L", "Delta_T", "V_reset", "V_a", "a_1", "a_2", "tau_w", "b", "rs1", "rs2", "rm1", "rm2")}
         tau = torch.ones(6, N, **f64)
+        dopf = torch.ones(6, N, **f64)   # 1 + beta_I_<рецептор>·tata_dop
         erev = torch.zeros(6, N, **f64)
         has_rec = torch.zeros(6, N, dtype=torch.bool)
         nact = torch.ones(N, **f64) * -20.0
@@ -146,8 +148,9 @@ class Net:
         for p in self.pops:
             a, z = self.off[p]
             m = nest[node[p]["model"]]
-            if float(m.get("tata_dop", 0.0)) != 0.0:
-                raise NotImplementedError(f"{p}: tata_dop {m['tata_dop']} — дофамин вне нормы не перенесён")
+            # дофамин узла: tata_dop = сеть − норма (0 в норме, −0.8 без дофамина); множители — как в
+            # izhik_cond_exp.cpp 116–132, 654 и my_aeif_cond_exp.cpp 109–124 (module-130701)
+            td = float(m.get("tata_dop", 0.0))
             n = z - a
             is_izh = m["type_id"] == "izhik_cond_exp"
             izh[a:z] = is_izh
@@ -157,11 +160,17 @@ class Net:
                                 ("V_peak", 30.0), ("u_const", 0.0), ("u_kc", 0.0), ("kc_1", 0.0), ("kc_2", 0.0),
                                 ("c_max", 0.0), ("u_max", 100000.0), ("I_e", 0.0)):
                     P[k][a:z] = _get(m, k, dflt)
+                P["k"][a:z] *= 1 - _get(m, "beta_k", 0.0) * td
+                P["E_L"][a:z] *= 1 - _get(m, "beta_E_L", 0.0) * td
+                P["V_bf"][a:z] = P["V_b"][a:z] * (1 - _get(m, "beta_V_b", 0.0) * td)   # в формуле u; ветка — по V_b
+                P["d"][a:z] *= 1 - _get(m, "beta_d", 0.0) * td
             else:
                 for k, dflt in (("g_L", 30.0), ("E_L", -70.6), ("Delta_T", 2.0), ("V_reset", -60.0),
                                 ("V_a", -70.6), ("a_1", 4.0), ("a_2", 4.0), ("tau_w", 144.0), ("b", 80.5),
                                 ("V_peak", 0.0), ("I_e", 0.0)):
                     P[k][a:z] = _get(m, k, dflt)
+                P["E_L"][a:z] *= 1 - _get(m, "beta_E_L", 0.0) * td
+                P["V_af"][a:z] = P["V_a"][a:z] * (1 - _get(m, "beta_V_a", 0.0) * td)   # в формуле w; ветка — по V_a
                 P["rs1"][a:z] = _get(m, "V_reset_slope1", 0.0)
                 P["rs2"][a:z] = _get(m, "V_reset_slope2", 0.0)
                 P["rm1"][a:z] = _get(m, "V_reset_max_slope1", 0.0)
@@ -176,6 +185,7 @@ class Net:
                     tau[r, a:z] = float(m[f"{name}_Tau_decay"])
                     erev[r, a:z] = float(m[f"{name}_E_rev"])
                     has_rec[r, a:z] = True
+                    dopf[r, a:z] = 1 + _get(m, f"beta_I_{name}", 0.0) * td
             nact[a:z] = _get(m, "NMDA_1_Vact", -20.0)
             sact[a:z] = _get(m, "NMDA_1_Sact", 16.0)
         if (P["C_m"] <= 0).any():
@@ -183,6 +193,7 @@ class Net:
         self.P = {k: v.to(dev) for k, v in P.items()}
         self.izh = izh.to(dev)
         self.tau, self.erev = tau.to(dev)[:, None, :], erev.to(dev)[:, None, :]
+        self.dopf = dopf.to(dev)[:, None, :]
         self.nact, self.sact = nact.to(dev), sact.to(dev)
         self.V = V0.to(dev)[None, :].repeat(B, 1)
         self.u = torch.zeros(B, N, dtype=torch.float64, device=dev)
@@ -381,14 +392,15 @@ class Net:
         spk = torch.zeros(self.B, self.N, dtype=torch.bool, device=self.dev)
         iz = self.izh
         E = self.erev
+        F = self.dopf
         for _ in range(self.nsub):
             mg = 1.0 / (1.0 + torch.exp((self.nact - V) / self.sact))
-            I_syn = -(gs[0] * (V - E[0]) + gs[1] * (V - E[1]) * mg + gs[2] * (V - E[2])
-                      + gs[3] * (V - E[3]) + gs[4] * (V - E[4]) + gs[5] * (V - E[5]))
+            I_syn = -(F[0] * gs[0] * (V - E[0]) + F[1] * gs[1] * (V - E[1]) * mg + F[2] * gs[2] * (V - E[2])
+                      + F[3] * gs[3] * (V - E[3]) + F[4] * gs[4] * (V - E[4]) + F[5] * gs[5] * (V - E[5]))
             # izhik_cond_exp
             dv_i = (P["k"] * (V - P["E_L"]) * (V - P["V_th"]) - u + I_syn + P["I_e"]) / P["C_m"]
             lo = V < P["V_b"]
-            dvb = V - P["V_b"]
+            dvb = V - P["V_bf"]
             du_i = P["a"] * (torch.where(lo, P["b_1"] * torch.pow(dvb, P["p_1"]), P["b_2"] * torch.pow(dvb.clamp(min=0), P["p_2"]))
                              - u + P["u_const"])
             # my_aeif_cond_exp (экспонента — от V не выше V_peak, как при остановке шага на пике)
@@ -396,13 +408,13 @@ class Net:
             dt_ = torch.where(iz, torch.ones_like(P["Delta_T"]), P["Delta_T"])
             i_sp = P["Delta_T"] * torch.exp((Ve - P["V_th"]) / dt_)
             dv_a = (-P["g_L"] * ((V - P["E_L"]) - i_sp) - u + P["I_e"] + I_syn) / P["C_m"]
-            du_a = (torch.where(V < P["V_a"], P["a_1"], P["a_2"]) * (V - P["V_a"]) - u) / torch.where(iz, torch.ones_like(P["tau_w"]), P["tau_w"])
+            du_a = (torch.where(V < P["V_a"], P["a_1"], P["a_2"]) * (V - P["V_af"]) - u) / torch.where(iz, torch.ones_like(P["tau_w"]), P["tau_w"])
             V = V + h * torch.where(iz, dv_i, dv_a)
             u = u + h * torch.where(iz, du_i, du_a)
             gs = gs * dec
             fire = V >= P["V_peak"]
             if fire.any():
-                # izhik: V = c + u·kc (kc по u_kc), не выше c_max; u += d (дофамин 0), не выше u_max
+                # izhik: V = c + u·kc (kc по u_kc), не выше c_max; u += d·(1 − beta_d·tata_dop), не выше u_max
                 v_i = P["c"] + u * torch.where(u < P["u_kc"], P["kc_1"], P["kc_2"])
                 v_i = torch.where(v_i > P["c_max"], P["c_max"], v_i)
                 # aeif: V = min(V_reset + u·slope, max_slope) по знаку u

@@ -48,11 +48,11 @@ THRESHOLD = 14.0    # Гц, threshold скрипта рис. 6
 BURST = 100.0       # мс
 
 
-def go_nogo_par(par: dict) -> dict:
-    """Каналы по get_input_Go_NoGo (other_scenario=True)."""
+def go_nogo_par(par: dict, n: int = 2) -> dict:
+    """Каналы по get_input_Go_NoGo (other_scenario=True); n — число каналов (у авторов 2)."""
 
     for p in ("M1", "M2", "GI", "SN", "C1", "C2"):
-        par["node"][p]["n_sets"] = 2
+        par["node"][p]["n_sets"] = n
     for p in ("FS", "GA", "ST"):
         par["node"][p]["n_sets"] = 1
     for c in ("M1_SN_gaba", "M2_GI_gaba", "GI_SN_gaba"):

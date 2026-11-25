@@ -37,7 +37,8 @@ structure.py (у GF 1 набор при 2 у M2 — весь GF получает
 
 Скорость (флаги, точный режим — по умолчанию): fp32=1 — состояние клеток во float32 (на игровой карте
 float64 в 32–64 раза медленнее), compile=1 — подшаги слиты torch.compile. Сеть 10000, B=32, GPU:
-float64 — 23 мс на шаг (233 с на 1 с модели), fp32+compile — 2.7 мс (27 с); частоты за 1–2 с
+float64 — 23 мс на шаг (233 с на 1 с модели), fp32+compile — 2.7 мс (27 с), с доставкой без ожиданий
+(входы плотно, сеть — одна слитая функция) — 1.47 мс (15 с; на CPU бит в бит); частоты за 1–2 с
 совпали с float64 в пределах разброса проб (SNr 29.1 против 30.1, прочие ≤ 2%).
 
 Шаг: 0.1 мс (по умолчанию NEST); внутри — nsub подшагов: проводимости — точная экспонента,
@@ -149,6 +150,39 @@ def _substeps(P: dict, V, u, gs, iz, E, F, nact, sact, dec, nsub: int, h: float)
         u = torch.where(fire, torch.where(iz, torch.minimum(u + P["d"], P["u_max"]), u + P["b"]), u)
         spk = spk | fire
     return V, u, gs, spk
+
+
+def _net_deliver(S: dict, stp_id, w, dl, rc, tgt, ring, j, bj, t_spk, k: int, n_stp: int, B: int, N: int, D: int):
+    """Спайки сети → кольцо: синапсы j (строки bj); у Цодыкса — вес·Δ (tsodyks_connection.h 181–211),
+    состояние обновляется; у статических — фиктивная ячейка n_stp."""
+
+    sidx = stp_id[j]
+    real = sidx < n_stp
+    fac, rec, psc, U = S["fac"][sidx], S["rec"][sidx], S["psc"][sidx], S["U"][sidx]
+    h = t_spk - S["last"][sidx, bj]
+    Puu = torch.where(fac == 0, torch.zeros_like(h), torch.exp(-h / fac.clamp(min=1e-30)))
+    Pyy = torch.exp(-h / psc)
+    Pzz = torch.exp(-h / rec)
+    Pxy = ((Pzz - 1.0) * rec - (Pyy - 1.0) * psc) / (psc - rec)
+    Pxz = 1.0 - Pzz
+    x, y, u = S["x"][sidx, bj], S["y"][sidx, bj], S["u"][sidx, bj]
+    z = 1.0 - x - y
+    u = u * Puu
+    x = x + Pxy * y + Pxz * z
+    y = y * Pyy
+    u = u + U * (1.0 - u)
+    dy = u * x
+    S["x"][sidx, bj] = x - dy
+    S["y"][sidx, bj] = y + dy
+    S["u"][sidx, bj] = u
+    S["last"][sidx, bj] = t_spk.expand_as(h)
+    val = torch.where(real, w[j] * dy, w[j])
+    slot = (k + dl[j]) % D
+    flat = ((slot * 6 + rc[j]) * B + bj) * N + tgt[j]
+    ring.index_add_(0, flat, val.to(ring.dtype))
+
+
+_net_deliver_compiled = None
 
 
 _substeps_compiled = None
@@ -324,8 +358,9 @@ class Net:
         stp_all = torch.cat(stp_rows)
         order = torch.argsort(src, stable=True)          # CSR по источнику
         src, tgt, w, dl, rc, is_stp = src[order], tgt[order], w[order], dl[order], rc[order], stp_all[order]
-        stp_id = torch.full((src.numel(),), -1, dtype=torch.long)
         n_stp = self.n_stp = int(is_stp.sum())
+        # статическим синапсам — фиктивная ячейка состояния Цодыкса n_stp (без ветвления по маске)
+        stp_id = torch.full((src.numel(),), n_stp, dtype=torch.long)
         stp_id[is_stp] = torch.arange(n_stp)
         if n_stp:
             all_par = torch.zeros(order.numel(), 4, **f64)
@@ -333,6 +368,13 @@ class Net:
             all_par = all_par[order][is_stp]
         else:
             all_par = torch.zeros(0, 4, **f64)
+        all_par = torch.cat([all_par, torch.tensor([[0.5, 0.0, 800.0, 3.0]], **f64)])   # фиктивная ячейка
+        # входы (parrot) — только статические связи 1-1 с постоянной задержкой: доставка плотно, без поиска
+        inp = src >= N
+        if is_stp[inp].any():
+            raise NotImplementedError("синапс Цодыкса от входа")
+        self.in_src, self.in_tgt = (src[inp] - N).to(dev), tgt[inp].to(dev)
+        self.in_w, self.in_dl, self.in_rc = w[inp].to(dev), dl[inp].to(dev), rc[inp].to(dev)
         deg = torch.bincount(src, minlength=self.M)
         ptr = torch.zeros(self.M + 1, dtype=torch.long)
         ptr[1:] = torch.cumsum(deg, 0)
@@ -340,7 +382,7 @@ class Net:
         to = lambda x: x.to(dev)
         self.tgt, self.w, self.dl, self.rc = to(tgt), to(w), to(dl), to(rc)
         self.stp_id, self.ptr, self.deg = to(stp_id), to(ptr), to(deg)
-        z64 = lambda: torch.zeros(n_stp, B, dtype=torch.float64, device=dev)
+        z64 = lambda: torch.zeros(n_stp + 1, B, dtype=torch.float64, device=dev)
         self.stp = {"U": to(all_par[:, 0]), "fac": to(all_par[:, 1]), "rec": to(all_par[:, 2]), "psc": to(all_par[:, 3]),
                     "x": z64() + 1.0, "y": z64(), "u": z64(), "last": z64()}
         # кольцо задержек [D, 6, B, N]: float32 по умолчанию (память при B > 1); проводимости — float64
@@ -357,11 +399,16 @@ class Net:
             self.tau, self.erev, self.dopf = self.tau.float(), self.erev.float(), self.dopf.float()
             self.nact, self.sact, self.dec = self.nact.float(), self.sact.float(), self.dec.float()
         self._sub = _substeps
+        self._net_del = _net_deliver
         if compile_:
             global _substeps_compiled
             if _substeps_compiled is None:
                 _substeps_compiled = torch.compile(_substeps, dynamic=False)
             self._sub = _substeps_compiled
+            global _net_deliver_compiled
+            if _net_deliver_compiled is None:
+                _net_deliver_compiled = torch.compile(_net_deliver, dynamic=True)
+            self._net_del = _net_deliver_compiled
 
     # ---------- входы ----------
     def add_gen(self, pop: str, idx, t0: float, t1: float, rate: float, rows=None) -> None:
@@ -400,50 +447,34 @@ class Net:
         return self._rate
 
     # ---------- доставка спайков ----------
-    def _deliver(self, counts: torch.Tensor, t_spk: float) -> None:
-        """counts [B, M] — спайки источников этого шага."""
+    def _deliver(self, spk: torch.Tensor, cin: torch.Tensor, t_spk: float) -> None:
+        """spk [B, N] — спайки сети этого шага, cin [B, M−N] — спайки входов. Синапс получает вес
+        (у Цодыкса — вес·Δ) в кольцо на слот k + задержка. Ожиданий карты — два (поиск спайков сети)."""
 
-        B = self.B
-        nz = torch.nonzero(counts)
-        if nz.numel() == 0:
+        B, N, D = self.B, self.N, self.D
+        rd = self.ring.dtype
+        ring = self.ring.view(-1)
+        # входы: все синапсы входов разом
+        slot = (self.k + self.in_dl) % D
+        base = (slot * 6 + self.in_rc) * B * N + self.in_tgt                     # [S_in]
+        rows = torch.arange(B, device=self.dev)[:, None] * N
+        val = cin[:, self.in_src].to(torch.float64) * self.in_w                    # [B, S_in]
+        ring.index_add_(0, (base[None, :] + rows).reshape(-1), val.reshape(-1).to(rd))
+        # сеть: по источникам (CSR)
+        nz = torch.nonzero(spk)
+        if nz.shape[0] == 0:
             return
         b_act, s_act = nz[:, 0], nz[:, 1]
         n = self.deg[s_act]
-        tot = int(n.sum())
+        csum = torch.cumsum(n, 0)
+        tot = int(csum[-1])
         if tot == 0:
             return
         start = self.ptr[s_act]
-        first = torch.cumsum(n, 0) - n
-        j = torch.repeat_interleave(start - first, n) + torch.arange(tot, device=self.dev)
-        bj = torch.repeat_interleave(b_act, n)
-        c = torch.repeat_interleave(counts[b_act, s_act].to(torch.float64), n)
-        val = self.w[j] * c
-        sid = self.stp_id[j]
-        m = sid >= 0
-        if m.any():
-            s, bs = sid[m], bj[m]
-            S = self.stp
-            fac, rec, psc, U = S["fac"][s], S["rec"][s], S["psc"][s], S["U"][s]
-            h = t_spk - S["last"][s, bs]
-            Puu = torch.where(fac == 0, torch.zeros_like(h), torch.exp(-h / fac.clamp(min=1e-30)))
-            Pyy = torch.exp(-h / psc)
-            Pzz = torch.exp(-h / rec)
-            Pxy = ((Pzz - 1.0) * rec - (Pyy - 1.0) * psc) / (psc - rec)
-            Pxz = 1.0 - Pzz
-            x, y, u = S["x"][s, bs], S["y"][s, bs], S["u"][s, bs]
-            z = 1.0 - x - y
-            u = u * Puu
-            x = x + Pxy * y + Pxz * z
-            y = y * Pyy
-            u = u + U * (1.0 - u)
-            dy = u * x
-            S["x"][s, bs], S["y"][s, bs], S["u"][s, bs] = x - dy, y + dy, u
-            S["last"][s, bs] = t_spk
-            val[m] = self.w[j[m]] * dy
-        slot = (self.k + self.dl[j]) % self.D
-        flat = ((slot * 6 + self.rc[j]) * B + bj) * self.N + self.tgt[j]
-        self.ring.view(-1).index_add_(0, flat, val.to(self.ring.dtype))
-
+        j = torch.repeat_interleave(start - (csum - n), n, output_size=tot) + torch.arange(tot, device=self.dev)
+        bj = torch.repeat_interleave(b_act, n, output_size=tot)
+        self._net_del(self.stp, self.stp_id, self.w, self.dl, self.rc, self.tgt, ring, j, bj,
+                      torch.tensor(t_spk, dtype=torch.float64, device=self.dev), self.k, self.n_stp, B, N, D)
     def step(self) -> torch.Tensor:
         """Шаг 0.1 мс; возвращает спайки сети [B, N] (bool)."""
 
@@ -457,8 +488,7 @@ class Net:
         t_now = (self.k + 1) * DT
         lam = self._in_rates(self.k * DT) * (DT * 1e-3)
         cin = torch.poisson(lam, generator=self.g) if self.dev == "cpu" else torch.poisson(lam)
-        counts = torch.cat([spk.to(torch.float64), cin], 1)
-        self._deliver(counts, t_now)
+        self._deliver(spk, cin, t_now)
         self.k += 1
         return spk
 

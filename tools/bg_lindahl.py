@@ -35,6 +35,11 @@ add_gen — свой генератор по строкам); кольцо за�
 Наборы (каналы действий): n_sets у узла, правила set-set / all-all, пары наборов — zip, как в
 structure.py (у GF 1 набор при 2 у M2 — весь GF получает только набор 0 M2, как у авторов).
 
+Скорость (флаги, точный режим — по умолчанию): fp32=1 — состояние клеток во float32 (на игровой карте
+float64 в 32–64 раза медленнее), compile=1 — подшаги слиты torch.compile. Сеть 10000, B=32, GPU:
+float64 — 23 мс на шаг (233 с на 1 с модели), fp32+compile — 2.7 мс (27 с); частоты за 1–2 с
+совпали с float64 в пределах разброса проб (SNr 29.1 против 30.1, прочие ≤ 2%).
+
 Шаг: 0.1 мс (по умолчанию NEST); внутри — nsub подшагов: проводимости — точная экспонента,
 V и u — Эйлер (у авторов RKF45 с точностью 1e-6 — подшаги приближают его; сходимость
 проверяется nsub=10 против nsub=20). Входящие спайки прибавляются к проводимостям в конце
@@ -109,13 +114,54 @@ def _get(d: dict, k: str, default: float) -> float:
     return float(v)
 
 
+def _substeps(P: dict, V, u, gs, iz, E, F, nact, sact, dec, nsub: int, h: float):
+    """nsub подшагов Эйлера (V, u) и точной экспоненты (проводимости) с проверкой пика после каждого.
+    Возвращает V, u, gs, спайки [B, N]. Сброс — через where без ветвления (без ожидания карты)."""
+
+    spk = torch.zeros_like(V, dtype=torch.bool)
+    for _ in range(nsub):
+        mg = 1.0 / (1.0 + torch.exp((nact - V) / sact))
+        I_syn = -(F[0] * gs[0] * (V - E[0]) + F[1] * gs[1] * (V - E[1]) * mg + F[2] * gs[2] * (V - E[2])
+                  + F[3] * gs[3] * (V - E[3]) + F[4] * gs[4] * (V - E[4]) + F[5] * gs[5] * (V - E[5]))
+        # izhik_cond_exp
+        dv_i = (P["k"] * (V - P["E_L"]) * (V - P["V_th"]) - u + I_syn + P["I_e"]) / P["C_m"]
+        lo = V < P["V_b"]
+        dvb = V - P["V_bf"]
+        du_i = P["a"] * (torch.where(lo, P["b_1"] * torch.pow(dvb, P["p_1"]), P["b_2"] * torch.pow(dvb.clamp(min=0), P["p_2"]))
+                         - u + P["u_const"])
+        # my_aeif_cond_exp (экспонента — от V не выше V_peak, как при остановке шага на пике)
+        Ve = torch.minimum(V, P["V_peak"])
+        dt_ = torch.where(iz, torch.ones_like(P["Delta_T"]), P["Delta_T"])
+        i_sp = P["Delta_T"] * torch.exp((Ve - P["V_th"]) / dt_)
+        dv_a = (-P["g_L"] * ((V - P["E_L"]) - i_sp) - u + P["I_e"] + I_syn) / P["C_m"]
+        du_a = (torch.where(V < P["V_a"], P["a_1"], P["a_2"]) * (V - P["V_af"]) - u) / torch.where(iz, torch.ones_like(P["tau_w"]), P["tau_w"])
+        V = V + h * torch.where(iz, dv_i, dv_a)
+        u = u + h * torch.where(iz, du_i, du_a)
+        gs = gs * dec
+        fire = V >= P["V_peak"]
+        # izhik: V = c + u·kc (kc по u_kc), не выше c_max; u += d·(1 − beta_d·tata_dop), не выше u_max
+        v_i = P["c"] + u * torch.where(u < P["u_kc"], P["kc_1"], P["kc_2"])
+        v_i = torch.where(v_i > P["c_max"], P["c_max"], v_i)
+        # aeif: V = min(V_reset + u·slope, max_slope) по знаку u
+        v_a = torch.where(u < 0, torch.minimum(P["V_reset"] + u * P["rs1"], P["rm1"]),
+                          torch.minimum(P["V_reset"] + u * P["rs2"], P["rm2"]))
+        V = torch.where(fire, torch.where(iz, v_i, v_a), V)
+        u = torch.where(fire, torch.where(iz, torch.minimum(u + P["d"], P["u_max"]), u + P["b"]), u)
+        spk = spk | fire
+    return V, u, gs, spk
+
+
+_substeps_compiled = None
+
+
 class Net:
     """
     Сеть авторов пачкой: B строк — независимые пробы на одних связях (свои состояния клеток,
     синапсов Цодыкса и входов). Строка = отдельный прогон NEST той же сети.
     """
 
-    def __init__(self, par: dict, seed: int, dev: str, nsub: int, B: int = 1, ring_dtype=torch.float32):
+    def __init__(self, par: dict, seed: int, dev: str, nsub: int, B: int = 1, ring_dtype=torch.float32,
+                 compile_: bool = False, fp32: bool = False):
         self.dev, self.nsub, self.B = dev, nsub, B
         g = torch.Generator().manual_seed(seed)
         self.g = g
@@ -301,6 +347,21 @@ class Net:
         self.ring = torch.zeros(self.D, 6, B, N, dtype=ring_dtype, device=dev)
         self.k = 0
         self._rate_t = None
+        self.dec = torch.exp(-(DT / nsub) / self.tau)
+        # fp32 (флаг): состояние клеток во float32 — на игровых картах float64 в 32–64 раза медленнее;
+        # синапсы Цодыкса и счёт частот остаются float64
+        self.sdt = torch.float32 if fp32 else torch.float64
+        if fp32:
+            self.P = {k: v.float() for k, v in self.P.items()}
+            self.V, self.u, self.gs = self.V.float(), self.u.float(), self.gs.float()
+            self.tau, self.erev, self.dopf = self.tau.float(), self.erev.float(), self.dopf.float()
+            self.nact, self.sact, self.dec = self.nact.float(), self.sact.float(), self.dec.float()
+        self._sub = _substeps
+        if compile_:
+            global _substeps_compiled
+            if _substeps_compiled is None:
+                _substeps_compiled = torch.compile(_substeps, dynamic=False)
+            self._sub = _substeps_compiled
 
     # ---------- входы ----------
     def add_gen(self, pop: str, idx, t0: float, t1: float, rate: float, rows=None) -> None:
@@ -386,45 +447,10 @@ class Net:
     def step(self) -> torch.Tensor:
         """Шаг 0.1 мс; возвращает спайки сети [B, N] (bool)."""
 
-        P, V, u, gs = self.P, self.V, self.u, self.gs
-        h = DT / self.nsub
-        dec = torch.exp(-h / self.tau)
-        spk = torch.zeros(self.B, self.N, dtype=torch.bool, device=self.dev)
-        iz = self.izh
-        E = self.erev
-        F = self.dopf
-        for _ in range(self.nsub):
-            mg = 1.0 / (1.0 + torch.exp((self.nact - V) / self.sact))
-            I_syn = -(F[0] * gs[0] * (V - E[0]) + F[1] * gs[1] * (V - E[1]) * mg + F[2] * gs[2] * (V - E[2])
-                      + F[3] * gs[3] * (V - E[3]) + F[4] * gs[4] * (V - E[4]) + F[5] * gs[5] * (V - E[5]))
-            # izhik_cond_exp
-            dv_i = (P["k"] * (V - P["E_L"]) * (V - P["V_th"]) - u + I_syn + P["I_e"]) / P["C_m"]
-            lo = V < P["V_b"]
-            dvb = V - P["V_bf"]
-            du_i = P["a"] * (torch.where(lo, P["b_1"] * torch.pow(dvb, P["p_1"]), P["b_2"] * torch.pow(dvb.clamp(min=0), P["p_2"]))
-                             - u + P["u_const"])
-            # my_aeif_cond_exp (экспонента — от V не выше V_peak, как при остановке шага на пике)
-            Ve = torch.minimum(V, P["V_peak"])
-            dt_ = torch.where(iz, torch.ones_like(P["Delta_T"]), P["Delta_T"])
-            i_sp = P["Delta_T"] * torch.exp((Ve - P["V_th"]) / dt_)
-            dv_a = (-P["g_L"] * ((V - P["E_L"]) - i_sp) - u + P["I_e"] + I_syn) / P["C_m"]
-            du_a = (torch.where(V < P["V_a"], P["a_1"], P["a_2"]) * (V - P["V_af"]) - u) / torch.where(iz, torch.ones_like(P["tau_w"]), P["tau_w"])
-            V = V + h * torch.where(iz, dv_i, dv_a)
-            u = u + h * torch.where(iz, du_i, du_a)
-            gs = gs * dec
-            fire = V >= P["V_peak"]
-            if fire.any():
-                # izhik: V = c + u·kc (kc по u_kc), не выше c_max; u += d·(1 − beta_d·tata_dop), не выше u_max
-                v_i = P["c"] + u * torch.where(u < P["u_kc"], P["kc_1"], P["kc_2"])
-                v_i = torch.where(v_i > P["c_max"], P["c_max"], v_i)
-                # aeif: V = min(V_reset + u·slope, max_slope) по знаку u
-                v_a = torch.where(u < 0, torch.minimum(P["V_reset"] + u * P["rs1"], P["rm1"]),
-                                  torch.minimum(P["V_reset"] + u * P["rs2"], P["rm2"]))
-                V = torch.where(fire, torch.where(iz, v_i, v_a), V)
-                u = torch.where(fire, torch.where(iz, torch.minimum(u + P["d"], P["u_max"]), u + P["b"]), u)
-                spk |= fire
+        V, u, gs, spk = self._sub(self.P, self.V, self.u, self.gs, self.izh, self.erev, self.dopf, self.nact,
+                                  self.sact, self.dec, self.nsub, DT / self.nsub)
         slot = self.k % self.D
-        gs = gs + self.ring[slot].to(torch.float64)
+        gs = gs + self.ring[slot].to(self.sdt)
         self.ring[slot].zero_()
         self.V, self.u, self.gs = V, u, gs
         # спайки этого шага (сеть + входы) уходят с задержкой
@@ -445,7 +471,8 @@ def main(opts: dict) -> None:
     torch.manual_seed(seed)
     t0 = time.time()
     B = int(opts.get("B", 1))
-    net = Net(par, seed, dev, int(opts.get("nsub", 10)), B=B)
+    net = Net(par, seed, dev, int(opts.get("nsub", 10)), B=B, compile_=bool(int(opts.get("compile", 0))),
+              fp32=bool(int(opts.get("fp32", 0))))
     T = float(opts.get("t", net.t_stop))
     rec0 = float(opts.get("rec", 1000.0))
     print(f"сборка {time.time() - t0:.0f} с: клеток {net.N}, входов {net.M - net.N}, синапсов {int(net.deg.sum())}, "

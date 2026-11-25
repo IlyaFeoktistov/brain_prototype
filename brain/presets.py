@@ -85,7 +85,7 @@ class Preset:
     def homeo_file(self, seed: int) -> Path:
         return preset_file(f"fits/{self.homeo}-s{seed}-homeo.pt")
 
-    def finish(self, mind: Mind, seed: int = 1, develop_s: float = 0.0, on_window=None) -> None:
+    def finish(self, mind: Mind, seed: int = 1, develop_s: float = 0.0, on_window=None, stop=None) -> None:
         """
         Правки после сборки: TRN, гомеостаз, выученные веса. develop_s > 0 —
         вместо сохранённых сдвигов гомеостаза мозг развивается develop_s с
@@ -107,16 +107,16 @@ class Preset:
         if develop_s:
             from brain.develop import develop
 
-            develop(mind, develop_s, on_window=on_window)
+            develop(mind, develop_s, on_window=on_window, stop=stop)
 
-    def build(self, seed: int = 1, cfg: BrainConfig | None = None, develop_s: float = 0.0, on_window=None) -> Mind:
+    def build(self, seed: int = 1, cfg: BrainConfig | None = None, develop_s: float = 0.0, on_window=None, stop=None) -> Mind:
         """Собрать мозг пресета (cfg — уже настроенный self.config(seed) с правками вызывающего)."""
 
         lost = self.missing(seed, develop=bool(develop_s))
         if lost:
             raise FileNotFoundError("нет файлов пресета «%s»: %s" % (self.name, ", ".join(map(str, lost))))
         mind = Mind(cfg or self.config(seed))
-        self.finish(mind, seed, develop_s, on_window)
+        self.finish(mind, seed, develop_s, on_window, stop)
         return mind
 
 

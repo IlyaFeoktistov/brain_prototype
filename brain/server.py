@@ -111,6 +111,9 @@ class BrainHost:
         self.clients: set[asyncio.Queue] = set()
         self.jobs: queue.Queue = queue.Queue()
         self.busy: str | None = None
+        # «Стоп» для долгих работ потока мозга (развитие): проверяется после каждого окна.
+        self.stopping = threading.Event()
+        self.closing = False
         # Живой режим по умолчанию включён: мозг живёт сам (смотрит на экран,
         # время идёт), а не стоит до реплики; BRAIN_LIVE=0 — выключить
         # (например, чтобы не занимать видеокарту).
@@ -423,6 +426,9 @@ class BrainHost:
         return future
 
     def _execute(self, fn, future: Future, label: str) -> None:
+        # «Стоп», нажатый до начала работы (или по прошлой), к ней не относится.
+        if not self.closing:
+            self.stopping.clear()
         self.busy = label
         self.emit(self.status())
 
@@ -433,7 +439,9 @@ class BrainHost:
             if self.mind is not mind:
                 self._attach()
         except Exception as error:  # noqa: BLE001 — вернуть вызывающему, мозг жив
-            self.info(f"Ошибка: {error}")
+            from brain.develop import Stopped
+
+            self.info(f"{error}" if isinstance(error, Stopped) else f"Ошибка: {error}")
             future.set_exception(error)
         finally:
             self.busy = None
@@ -644,13 +652,13 @@ class BrainHost:
         if develop_s > BUDGET_S:
             raise ValueError(f"развитие не больше {BUDGET_S:.0f} с (ускоренный гомеостаз ≈ сутки подстройки)")
         if chosen:
-            mind = chosen.build(seed, cfg=cfg, develop_s=develop_s, on_window=progress)
+            mind = chosen.build(seed, cfg=cfg, develop_s=develop_s, on_window=progress, stop=self.stopping.is_set)
         else:
             mind = Mind(cfg)
             if develop_s > 0:
                 from brain.develop import develop
 
-                develop(mind, develop_s, on_window=progress)
+                develop(mind, develop_s, on_window=progress, stop=self.stopping.is_set)
         mind.cfg.develop_done_s = float(develop_s)
         flags.after_build(mind)
         mind.save()
@@ -663,7 +671,7 @@ class BrainHost:
         develop.BUDGET_S на мозг (при создании + доразвитие). Без прогрева — мозг уже живёт.
         """
 
-        from brain.develop import BUDGET_S, develop
+        from brain.develop import BUDGET_S, WINDOW_MS, develop
 
         mind = self.need()
         left = BUDGET_S - mind.cfg.develop_done_s
@@ -672,13 +680,20 @@ class BrainHost:
             raise ValueError(f"бюджет развития исчерпан: прожито {mind.cfg.develop_done_s:.0f} из {BUDGET_S:.0f} с — "
                              "дальше только медленный гомеостаз")
 
+        done = [0]
+
         def progress(w: int, n: int, rates) -> None:
+            done[0] = w + 1
             self.busy = f"доразвитие: {w + 1} из {n} с"
             self.emit(self.status())
 
-        develop(mind, s, warm_ms=0.0, on_window=progress)
-        mind.cfg.develop_done_s += s
-        return {"developed": s, "done": mind.cfg.develop_done_s, "budget": BUDGET_S}
+        before = mind.cfg.develop_done_s
+        try:
+            develop(mind, s, warm_ms=0.0, on_window=progress, stop=self.stopping.is_set)
+        finally:
+            # Прожитые окна — в бюджет, и при остановке посреди (сдвиги фона уже в мозге).
+            mind.cfg.develop_done_s = before + done[0] * WINDOW_MS / 1000.0
+        return {"developed": mind.cfg.develop_done_s - before, "done": mind.cfg.develop_done_s, "budget": BUDGET_S}
 
     def save(self) -> str:
         return str(self.need().save())
@@ -686,6 +701,8 @@ class BrainHost:
     def shutdown(self) -> None:
         if self.session is not None:
             self.session.halt = True
+        self.closing = True
+        self.stopping.set()
 
         self.jobs.put(None)
         self.thread.join(timeout=60)
@@ -855,6 +872,9 @@ async def repeat(body: Phrase) -> dict:
 async def stop() -> dict:
     if host.session is not None:
         host.session.halt = True
+    # Долгая работа потока мозга (развитие) — прервать после текущего окна.
+    if host.busy:
+        host.stopping.set()
     return {"ok": True}
 
 
@@ -996,7 +1016,25 @@ else:
 def main() -> None:
     import uvicorn
 
-    uvicorn.run(app, host=os.environ.get("BRAIN_HOST", "127.0.0.1"), port=int(os.environ.get("BRAIN_PORT", "8000")))
+    config = uvicorn.Config(app, host=os.environ.get("BRAIN_HOST", "127.0.0.1"),
+                            port=int(os.environ.get("BRAIN_PORT", "8000")))
+    server = uvicorn.Server(config)
+    handle_exit = server.handle_exit
+
+    def on_exit(sig, frame) -> None:
+        # Ctrl+C: uvicorn сначала ждёт открытые запросы (создание мозга с развитием —
+        # минуты), а lifespan (host.shutdown) — после них. Флаг «стоп» — сразу.
+        host.closing = True
+        host.stopping.set()
+        if host.session is not None:
+            host.session.halt = True
+        handle_exit(sig, frame)
+
+    server.handle_exit = on_exit
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        pass  # uvicorn повторяет сигнал после остановки — как uvicorn.run
 
 
 if __name__ == "__main__":

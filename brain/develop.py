@@ -33,6 +33,10 @@ WINDOW_MS = 1000.0
 BUDGET_S = 30.0
 
 
+class Stopped(Exception):
+    """Развитие прервано по просьбе (кнопка «стоп», остановка сервера)."""
+
+
 def blank(mind: Mind) -> Callable[[float], torch.Tensor]:
     """Растр тишины на ms: пустой экран у мозга с глазом, молчащий порт слов без глаза."""
 
@@ -49,13 +53,15 @@ def blank(mind: Mind) -> Callable[[float], torch.Tensor]:
 def develop(mind: Mind, seconds: float, win_ms: float = WINDOW_MS, warm_ms: float = WARM_MS,
             on_window: Callable[[int, int, torch.Tensor], None] | None = None,
             window: Callable[[float], torch.Tensor] | None = None,
-            quiet: Callable[[float], torch.Tensor] | None = None) -> torch.Tensor:
+            quiet: Callable[[float], torch.Tensor] | None = None,
+            stop: Callable[[], bool] | None = None) -> torch.Tensor:
     """
     Прожить warm_ms + seconds с гомеостазом; вернуть сдвиги фона [мВ, клетки].
     on_window(номер окна с 0, всего окон, частоты окна) — после каждого окна
     (прогресс, отчёт). window(ms) — частоты окна вместо b.observe на тишине
     (отчёт со снимками веток в tools/develop.py). quiet(ms) — растр тишины,
-    если у вызывающего он уже есть (по умолчанию blank(mind)).
+    если у вызывающего он уже есть (по умолчанию blank(mind)). stop() — проверка
+    после прогрева и каждого окна: True — Stopped (окна и счёт те же, что без неё).
     """
 
     b = mind.brain
@@ -66,12 +72,16 @@ def develop(mind: Mind, seconds: float, win_ms: float = WINDOW_MS, warm_ms: floa
     try:
         if warm_ms > 0:
             b.run(warm_ms, quiet(warm_ms))
+        if stop and stop():
+            raise Stopped("развитие остановлено")
         n = int(seconds * 1000.0 / win_ms)
         for w in range(n):
             rates = window(win_ms) if window else b.observe(win_ms, quiet(win_ms))
             b.homeostasis_update(rates)
             if on_window:
                 on_window(w, n, rates)
+            if stop and stop():
+                raise Stopped(f"развитие остановлено после {w + 1} из {n} с")
     finally:
         b.plasticity = plastic
         mind.cfg.homeostasis = homeo

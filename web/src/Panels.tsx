@@ -106,7 +106,7 @@ export function Conversation({ face, entries, screen, typing, busy, onSay, thoug
         <input value={text} onChange={(e) => setText(e.target.value)} placeholder={busy ? `мозг занят: ${busy}` : "реплика"} />
         <button type="submit" disabled={!text.trim()} title="показать реплику на экране мира; мозг читает её и печатает ответ, пока не замолчит на 2 с (не дольше 10 с своей жизни)">Сказать</button>
         {/* Прервать ответ или урок: мозг дочитывает текущее окно (~0.1 с жизни мозга) и останавливается. */}
-        {busy && <button type="button" className="stop" onClick={() => api.stop()} title="прервать ответ или урок">Стоп</button>}
+        {busy && <button type="button" className="stop" onClick={() => api.stop()} title="прервать ответ, урок или развитие">Стоп</button>}
       </form>
     </div>
   );
@@ -348,7 +348,7 @@ export function Menu({ status, actions }: { status: Status; actions: MenuActions
                   title="награда: 0.3 с вкуса сладкого — дофамин закрепляет то, что мозг только что делал">Верно — сладкое</button>
           <button type="button" onClick={() => api.praise(false).then(() => actions.info("горькое (неверно)")).catch(fail)}
                   title="наказание: 0.3 с вкуса горького — провал дофамина ослабляет то, что мозг только что делал">Неверно — горькое</button>
-          <button type="button" onClick={() => api.stop().then(() => actions.info("остановлено")).catch(fail)} title="прервать ответ или урок (жизнь в тишине выключается отдельно, флажком ниже)">Стоп</button>
+          <button type="button" onClick={() => api.stop().then(() => actions.info("остановлено")).catch(fail)} title="прервать ответ, урок или развитие (жизнь в тишине выключается отдельно, флажком ниже)">Стоп</button>
         </div>
       </div>
       <Scenarios actions={actions} />

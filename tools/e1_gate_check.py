@@ -23,6 +23,11 @@
     for c in 1 2 3 4; do PYTHONPATH=tools:. .venv/bin/python tools/e1_gate_check.py cond=$c & done; wait
     PYTHONPATH=tools:. .venv/bin/python tools/e1_gate_check.py report=1 [out=/tmp/e1b/gate.png]
 (одно условие ~5 мин: шаг E1 ~1.7 мс × 150 тыс. шагов)
+Пачка (GPU) и проверка утечки между строками пачки:
+    PYTHONPATH=tools:. .venv/bin/python tools/e1_gate_check.py batch=8            # смешанная пачка
+    PYTHONPATH=tools:. .venv/bin/python tools/e1_gate_check.py batch=8 same=4     # все строки в условии 4
+    PYTHONPATH=tools:. .venv/bin/python tools/e1_gate_check.py leak=4             # строки условия 4 бит в бит?
+    PYTHONPATH=tools:. .venv/bin/python tools/e1_gate_check.py report=1 from=batch
 """
 
 from __future__ import annotations
@@ -79,11 +84,16 @@ def run(pos_to_bg: float, s_mode: str, r_mode: str) -> dict:
     return out
 
 
-def run_batch(trials: int, dev: str) -> dict:
+def run_batch(trials: int, dev: str, same: int = 0) -> dict:
     """
     Все 4 условия в одной пачке (по trials строк на условие): проверка, что пробы пачки не
     обмениваются состоянием — каждое условие должно совпасть со своим отдельным прогоном.
-    Возвращает средние по строкам условия в формате run().
+    Возвращает средние по строкам условия в формате run() и сырые записи по строкам ("rows").
+
+    same=k (1..4) — все строки пачки в условии k: проверка утечки. На CUDA пуассон берёт поток
+    Philox по номеру элемента, розыгрыши безусловные и одной формы, ветвления — только по времени,
+    поэтому строки условия k должны совпасть бит в бит со строками того же номера в смешанной пачке;
+    любое расхождение — обмен состоянием между строками.
     """
 
     names = list(CONDS)
@@ -91,7 +101,8 @@ def run_batch(trials: int, dev: str) -> dict:
     net = E1Net(len(TEXT), s_mode="task", msn=MSN_MODEL, B=B, dev=dev)
     if ADV == "inhib":
         net.reset_e_adv = None
-    cond = torch.arange(len(names), device=dev).repeat_interleave(trials)
+    cond = (torch.full((B,), same - 1, device=dev) if same else
+            torch.arange(len(names), device=dev).repeat_interleave(trials))
     pg = torch.tensor([CONDS[n][0] for n in names], device=dev)[cond]
     net.pos_to_bg = pg[:, None]
     net.s_enable = torch.tensor([CONDS[n][1] == "task" for n in names], device=dev)[cond]
@@ -115,9 +126,11 @@ def run_batch(trials: int, dev: str) -> dict:
             rec["s"][b] += net.s_on.float()
             rec["r"][b] += net.task_on.float()
     hz = 1000.0 / BIN_MS
-    out = {}
+    out = {"rows": {k: v.cpu() for k, v in rec.items()}, "cond": cond.cpu()}
     for i, n in enumerate(names):
         sel = cond == i
+        if not sel.any():
+            continue
         m = lambda x: x[:, sel].mean(1).cpu()
         out[n] = {"msn_w": m(rec["msn_w"]) / (P * NMSN) * hz, "msn_r": m(rec["msn_r"]) / (P * NMSN) * hz,
                   "ans": m(rec["ans"]) / (P * NANS) * hz, "pos": m(rec["pos"]) / net.src_cur.numel() * hz,
@@ -138,10 +151,22 @@ def main(opts: dict) -> None:
 
         t0 = time.time()
         torch.manual_seed(seed)
-        out = run_batch(int(opts["batch"]), opts.get("device", "cuda"))
-        for i, n in enumerate(names):
-            torch.save(out[n], f"/tmp/e1b/gate{tag}_batch_{i + 1}.pt")
-        print(f"пачка {int(opts['batch'])} × 4 условия: {time.time() - t0:.0f} с", flush=True)
+        same = int(opts.get("same", 0))
+        out = run_batch(int(opts["batch"]), opts.get("device", "cuda"), same)
+        torch.save({"rows": out["rows"], "cond": out["cond"]}, f"/tmp/e1b/gate{tag}_batch_rows{'_same' + str(same) if same else ''}.pt")
+        if not same:
+            for i, n in enumerate(names):
+                torch.save(out[n], f"/tmp/e1b/gate{tag}_batch_{i + 1}.pt")
+        print(f"пачка {int(opts['batch'])} × 4 условия{f' (все в условии {same})' if same else ''}: {time.time() - t0:.0f} с", flush=True)
+        return
+    if "leak" in opts:
+        k = int(opts["leak"])
+        a = torch.load(f"/tmp/e1b/gate{tag}_batch_rows.pt")
+        b = torch.load(f"/tmp/e1b/gate{tag}_batch_rows_same{k}.pt")
+        sel = a["cond"] == k - 1
+        for key in a["rows"]:
+            x, y = a["rows"][key][:, sel], b["rows"][key][:, sel]
+            print(f"{key:6s}: строк {int(sel.sum())}, бит в бит {bool(torch.equal(x, y))}, макс. |разн.| {float((x - y).abs().max()):.3g}")
         return
     if "cond" in opts:
         name = names[int(opts["cond"]) - 1]

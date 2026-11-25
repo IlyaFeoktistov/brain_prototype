@@ -19,6 +19,12 @@
     Δg = lr · DA · метка; у D2 знак DA обращён, при DA > 0 и метке < 0 — ×0.1 (GateNoGoPosLR);
     g ∈ [0, gmax]. Перевод «активности» PBWM в спайки (n_i) — допущение (ISSUES 42).
 
+task=sir (б3б) — задача sir с одной ячейкой и отложенной наградой (sir2_env.go StepSIR без второй
+ячейки): S (буква из 4) — только если хранить нечего, I (буква-помеха), R — только если есть что
+вспомнить; ячейка ПФК — регистр-костыль: открыт канал 0 → записана буква пробы, открыт канал 1 →
+выдано содержимое до записи; награда только на R (верно — буква последнего S); дофамин только на R;
+след PBWM — tr += ntr − min(1, |ntr|)·tr у весов входа пробы (Decay 1), обучение по всем следам на R.
+
 Строки пачки — независимые агенты (свои веса g, V, случайные задачи) на одной сети.
 
     PYTHONPATH=tools:. .venv/bin/python tools/bg_learn.py trials=100 B=32 seed=1 out=/tmp/bgl/learn_s1
@@ -98,10 +104,20 @@ def main(o: dict) -> None:
         net.step()
     print(f"прогрев {time.time() - t0:.0f} с", flush=True)
     ar = torch.arange(B, device=dev)
+    sir = o.get("task", "ctrl") == "sir"
+    maint = torch.full((B,), -1, dtype=torch.long, device=dev)   # среда: буква последнего S (−1 — нет)
+    reg = torch.full((B,), -1, dtype=torch.long, device=dev)     # ячейка ПФК (костыль-регистр)
+    trace = torch.zeros(B, nC, 3, device=dev)
     for tr in range(trials):
         for _ in range(steps_rest):
             net.step()
-        task = torch.randint(0, 3, (B,), generator=gen).to(dev)
+        if sir:
+            # среда sir (sir2_env.go StepSIR, одна ячейка): S — только если хранить нечего, R — только если есть
+            allowed = torch.stack([maint < 0, torch.ones_like(maint, dtype=torch.bool), maint >= 0], 1).float()
+            task = torch.multinomial(allowed.cpu(), 1, generator=gen).squeeze(1).to(dev)
+            letter = torch.where(task == 2, torch.full_like(task, -1), torch.randint(0, 4, (B,), generator=gen).to(dev))
+        else:
+            task = torch.randint(0, 3, (B,), generator=gen).to(dev)
         rate = base[None, :] * g[ar, :, task]                       # [B, nC], Гц
         lam = rate * (DT * 1e-3)
         n_msn = torch.zeros(B, nC, device=dev)
@@ -119,16 +135,33 @@ def main(o: dict) -> None:
         opened = sn_hz < THRESHOLD                                   # [B, 2]
         if "debug" in o:
             print("SNr каналов", sn_hz.tolist(), "MSN спайков", float(n_msn.sum()), flush=True)
-        r = (opened == CORRECT.to(dev)[task]).all(1).float()
-        da = r - V[ar, task]
-        V[ar, task] += alpha * da
-        # след PBWM: метка = pre_k · n_i, знак по тому, открылся ли канал клетки
         gate_sign = torch.where(opened[:, chan], 1.0, -0.7)          # [B, nC]
-        tag = gate_sign * n_msn
-        d = da[:, None] * torch.where(is_d2[None, :], -1.0, 1.0)
-        mult = torch.where(is_d2[None, :] & (da[:, None] > 0) & (tag < 0), 0.1, 1.0)
-        dg = lr * d * tag * mult
-        g[ar, :, task] = (g[ar, :, task] + dg).clamp(0.0, gmax)
+        ntr = gate_sign * n_msn                                      # метка пробы (вход задачи k = task)
+        sgn = torch.where(is_d2[None, :], -1.0, 1.0)
+        if sir:
+            # вывод: открыт канал 1 → содержимое ячейки до записи этой пробы
+            out_letter = torch.where(opened[:, 1], reg, torch.full_like(reg, -2))
+            is_r = task == 2
+            r = torch.where(is_r, (out_letter == maint).float(), torch.full_like(task, float("nan"), dtype=torch.float))
+            reg = torch.where(opened[:, 0], letter, reg)             # запись: открыт канал 0 → буква пробы
+            maint = torch.where(task == 0, letter, torch.where(is_r, torch.full_like(maint, -1), maint))
+            # дофамин только на R (награда — только на Recall, sir2.go ApplyReward)
+            da = torch.where(is_r, torch.nan_to_num(r) - V[:, 2], torch.zeros_like(V[:, 2]))
+            V[:, 2] += alpha * da
+            # след PBWM (DWtMatrix, Decay 1): tr += ntr − min(1, |ntr|)·tr — у весов входа этой пробы
+            t_old = trace[ar, :, task]
+            trace[ar, :, task] = t_old + ntr - ntr.abs().clamp(max=1.0) * t_old
+            # обучение по всем следам при дофамине
+            mult = torch.where(is_d2[None, :, None] & (da[:, None, None] > 0) & (trace < 0), 0.1, 1.0)
+            g = (g + lr * da[:, None, None] * sgn[:, :, None] * trace * mult).clamp(0.0, gmax)
+        else:
+            r = (opened == CORRECT.to(dev)[task]).all(1).float()
+            da = r - V[ar, task]
+            V[ar, task] += alpha * da
+            # след PBWM: метка = pre_k · n_i, знак по тому, открылся ли канал клетки
+            mult = torch.where(is_d2[None, :] & (da[:, None] > 0) & (ntr < 0), 0.1, 1.0)
+            dg = lr * da[:, None] * sgn * ntr * mult
+            g[ar, :, task] = (g[ar, :, task] + dg).clamp(0.0, gmax)
         log["task"].append(task.cpu()); log["open"].append(opened.cpu()); log["reward"].append(r.cpu())
         log["da"].append(da.cpu())
         log["g_mean"].append(torch.stack([g[:, (chan == ch) & (is_d2 == d2), :].mean((0, 1)) for ch in range(2)
@@ -136,7 +169,13 @@ def main(o: dict) -> None:
         if (tr + 1) % 10 == 0:
             rr = torch.stack(log["reward"][-10:]).mean(0)
             tk = torch.stack(log["task"][-10:]); rw = torch.stack(log["reward"][-10:])
-            per = " ".join(f"{TASKS[k]} {float(rw[tk == k].mean()):.2f}" for k in range(3))
+            if sir:
+                op = torch.stack(log["open"][-10:]).float()
+                per = " ".join(f"{TASKS[k]}: откр. 0 {float(op[..., 0][tk == k].mean()):.2f}, 1 {float(op[..., 1][tk == k].mean()):.2f};"
+                               for k in range(3))
+                rr = torch.nanmean(rw)
+            else:
+                per = " ".join(f"{TASKS[k]} {float(rw[tk == k].mean()):.2f}" for k in range(3))
             print(f"проба {tr + 1}: верно {float(rr.mean()):.2f} ({per}), SNr {float(sn_hz.mean()):.1f} Гц, "
                   f"{time.time() - t0:.0f} с", flush=True)
     if "sweep" in o:
@@ -161,10 +200,14 @@ def plot(out: str) -> None:
     k = 10
     sm = lambda x: torch.nn.functional.avg_pool1d(x[None, None].float(), k, 1)[0, 0]
     fig, ax = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
-    ax[0].plot(torch.arange(k - 1, T), sm(rew.mean(1)), label="все", color="k")
+    ok = ~torch.isnan(rew)
+    rz = torch.nan_to_num(rew)
+    ax[0].plot(torch.arange(k - 1, T), sm(rz.sum(1) / ok.sum(1).clamp(min=1)), label="все", color="k")
     for i, name in enumerate(TASKS):
-        m = (task == i).float()
-        frac = (rew * m).sum(1) / m.sum(1).clamp(min=1)
+        m = ((task == i) & ok).float()
+        if m.sum() == 0:
+            continue
+        frac = (rz * m).sum(1) / m.sum(1).clamp(min=1)
         ax[0].plot(torch.arange(k - 1, T), sm(frac), label=name)
     ax[0].set_ylabel("доля верных (окно 10 проб)")
     ax[0].set_ylim(0, 1.05)
